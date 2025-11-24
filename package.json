@@ -1,0 +1,53 @@
+{
+  "name": "timewellspent",
+  "productName": "TimeWellSpent",
+  "version": "0.1.0",
+  "description": "Mac-first focus companion that rewards deep work with f-coins and enforces browsing budgets.",
+  "author": "",
+  "license": "MIT",
+  "main": "out/main/main.js",
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "preinstall": "npx only-allow pnpm",
+    "start": "electron-forge start",
+    "dev": "electron-forge start",
+    "build": "electron-forge package",
+    "make": "electron-forge make",
+    "lint": "eslint --cache --ext .ts,.tsx src",
+    "test": "vitest",
+    "test:watch": "vitest --watch",
+    "typecheck": "tsc --noEmit",
+    "dev:ext": "pnpm --filter=extension dev"
+  },
+  "dependencies": {
+    "active-win": "^9.0.0",
+    "better-sqlite3": "^12.4.5",
+    "express": "^4.19.0",
+    "express-ws": "^5.0.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "ws": "^8.15.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^7.4.0",
+    "@electron-forge/maker-dmg": "^7.4.0",
+    "@electron-forge/maker-zip": "^7.4.0",
+    "@electron-forge/plugin-vite": "^7.4.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.11.30",
+    "@types/react": "^18.2.45",
+    "@types/react-dom": "^18.2.17",
+    "@types/ws": "^8.5.10",
+    "@typescript-eslint/eslint-plugin": "^7.3.1",
+    "@typescript-eslint/parser": "^7.3.1",
+    "@vitejs/plugin-react": "^4.2.0",
+    "electron": "^39.2.3",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-react": "^7.33.2",
+    "typescript": "^5.4.0",
+    "vite": "^5.1.0",
+    "vitest": "^1.4.0"
+  }
+}

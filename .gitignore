@@ -1,0 +1,10 @@
+node_modules/
+.dmg/
+dist/
+.cache/
+.DS_Store
+out/
+*.log
+sqlite.db
+coverage/
+web-ext-artifacts/

@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "TimeWellSpent Companion",
+  "version": "0.1.0",
+  "description": "Companion extension that defers to the TimeWellSpent desktop app for paywall decisions.",
+  "permissions": ["declarativeNetRequest", "storage"],
+  "host_permissions": ["http://localhost:17600/*"],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

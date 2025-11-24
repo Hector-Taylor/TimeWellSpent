@@ -1,0 +1,8 @@
+{
+  "name": "timewellspent-extension",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "echo 'TODO: implement extension build/watch pipeline.'"
+  }
+}
