@@ -19,8 +19,13 @@ async function createWindow() {
     height: 800,
     title: 'Time Well Spent',
     show: false,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 20, y: 20 },
+    ...(isMac ? {
+      titleBarStyle: 'hiddenInset',
+      trafficLightPosition: { x: 20, y: 20 },
+    } : {
+      // Windows/Linux defaults
+      autoHideMenuBar: true
+    }),
     webPreferences: {
       preload: path.join(__dirname, '../preload/preload.js'),
       nodeIntegration: false,
@@ -40,21 +45,35 @@ async function createWindow() {
   let rendererUrl = process.env.ELECTRON_RENDERER_URL || process.env.MAIN_WINDOW_VITE_DEV_SERVER_URL;
 
   if (!rendererUrl && !app.isPackaged) {
-    rendererUrl = 'http://localhost:5173';
+    rendererUrl = 'http://127.0.0.1:5173';
     console.log('Using fallback renderer URL:', rendererUrl);
   }
 
+  console.log('Loading renderer from:', rendererUrl);
+
   if (rendererUrl) {
     await mainWindow.loadURL(rendererUrl);
+    mainWindow.show(); // Force show for debugging
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
     await mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+    mainWindow.show();
   }
+
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    console.error('Failed to load window:', errorCode, errorDescription);
+  });
+
+  mainWindow.webContents.on('render-process-gone', (event, details) => {
+    console.error('Render process gone:', details.reason);
+  });
 }
 
 async function bootstrap() {
+  console.log('Bootstrap starting...');
   const singleLock = app.requestSingleInstanceLock();
   if (!singleLock) {
+    console.log('Second instance detected, quitting...');
     app.quit();
     return;
   }
@@ -70,9 +89,14 @@ async function bootstrap() {
   nativeTheme.themeSource = 'system';
 
   await app.whenReady();
+  console.log('App ready');
 
   db = new Database();
+  console.log('Database initialized');
+
   const backend = await createBackend(db);
+  console.log('Backend created');
+
   stopBackend = backend.stop;
 
   const emitToRenderers = (channel: string, payload: unknown) => {
@@ -83,16 +107,28 @@ async function bootstrap() {
 
   const updateTray = (label: string) => {
     if (tray) {
-      tray.setTitle(label);
+      if (isMac) {
+        tray.setTitle(label);
+      } else {
+        tray.setToolTip(label);
+      }
     }
   };
 
-  // Initialize Tray with an empty image for text-only widget
+  // Initialize Tray
   const { nativeImage } = require('electron');
+  // On macOS, we use an empty image for text-only. 
+  // On Windows, we need a real icon. For now, we'll use the empty one but it might be invisible.
+  // TODO: Add a proper .ico for Windows
   const emptyImage = nativeImage.createFromBuffer(Buffer.alloc(0));
   tray = new Tray(emptyImage);
 
-  tray.setTitle('TimeWellSpent');
+  if (isMac) {
+    tray.setTitle('TimeWellSpent');
+  } else {
+    tray.setToolTip('Time Well Spent');
+  }
+  console.log('Tray initialized');
 
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Show App', click: () => mainWindow?.show() },
@@ -120,7 +156,7 @@ async function bootstrap() {
 
   backend.economy.on('wallet-updated', (payload) => {
     emitToRenderers('wallet:update', payload);
-    // Only show wallet balance if not in focus mode (simple logic for now)
+    // Only show wallet balance if not in focus mode
     if (!backend.focus.getCurrent()) {
       updateTray(`💰 ${payload.balance}`);
     }
@@ -138,10 +174,12 @@ async function bootstrap() {
     onActivity: (event) => backend.handleActivity(event)
   });
   stopWatcher = watcher.stop;
+  console.log('Watcher started');
 
   createIpc({ backend, db });
 
   await createWindow();
+  console.log('Window created');
 
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {

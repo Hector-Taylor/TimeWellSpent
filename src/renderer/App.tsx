@@ -16,7 +16,7 @@ type View = 'dashboard' | 'settings' | 'economy';
 
 export default function App() {
   const [view, setView] = useState<View>('dashboard');
-  const [wallet, setWallet] = useState<WalletSnapshot | null>(null);
+  const [wallet, setWallet] = useState<WalletSnapshot>({ balance: 0 });
   const [marketRates, setMarketRates] = useState<MarketRate[]>([]);
   const [economyState, setEconomyState] = useState<EconomyState | null>(null);
   const [categorisation, setCategorisation] = useState<CategorisationConfig | null>(null);
@@ -80,7 +80,7 @@ export default function App() {
             className={view === 'economy' ? 'active' : ''}
             onClick={() => setView('economy')}
           >
-            Economy Tuner
+            Economy
           </button>
           <button
             className={view === 'settings' ? 'active' : ''}

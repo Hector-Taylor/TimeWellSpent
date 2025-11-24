@@ -1,6 +1,6 @@
 // import { activeWindow } from 'active-win';
 const activeWindow = async (): Promise<any> => undefined;
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { promisify } from 'node:util';
 import type { ActivityEvent } from './activity-tracker';
@@ -8,7 +8,9 @@ import { logger } from '@shared/logger';
 
 const execFileAsync = promisify(execFile);
 
-const BROWSER_SCRIPTS: Record<string, string> = {
+// --- macOS Implementation ---
+
+const MAC_BROWSER_SCRIPTS: Record<string, string> = {
   Safari: 'tell application "Safari" to if (count of windows) > 0 then return URL of current tab of window 1',
   'Google Chrome': 'tell application "Google Chrome" to if (count of windows) > 0 then return URL of active tab of front window',
   'Brave Browser': 'tell application "Brave Browser" to if (count of windows) > 0 then return URL of active tab of front window',
@@ -16,13 +18,150 @@ const BROWSER_SCRIPTS: Record<string, string> = {
   Arc: 'tell application "Arc" to if (count of windows) > 0 then tell front window to tell active tab to return its URL'
 };
 
-const BROWSER_CLOSE_SCRIPTS: Record<string, string> = {
+const MAC_BROWSER_CLOSE_SCRIPTS: Record<string, string> = {
   Safari: 'tell application "Safari" to if (count of windows) > 0 then close current tab of window 1',
   'Google Chrome': 'tell application "Google Chrome" to if (count of windows) > 0 then close active tab of front window',
   'Brave Browser': 'tell application "Brave Browser" to if (count of windows) > 0 then close active tab of front window',
   'Microsoft Edge': 'tell application "Microsoft Edge" to if (count of windows) > 0 then close active tab of front window',
   Arc: 'tell application "Arc" to if (count of windows) > 0 then tell front window to tell active tab to close'
 };
+
+async function getMacActiveWindow() {
+  try {
+    const [appName, bundleId, idleSecondsStr] = await Promise.all([
+      execFileAsync('osascript', ['-e', 'tell application "System Events" to get name of first application process whose frontmost is true']).then(r => r.stdout.trim()),
+      execFileAsync('osascript', ['-e', 'tell application "System Events" to get bundle identifier of first application process whose frontmost is true']).then(r => r.stdout.trim()),
+      execFileAsync('ioreg', ['-c', 'IOHIDSystem']).then(r => {
+        const match = r.stdout.match(/"HIDIdleTime" = (\d+)/);
+        return match ? (parseInt(match[1], 10) / 1000000000).toString() : '0';
+      }).catch(() => '0')
+    ]);
+
+    let windowTitle = '';
+    try {
+      const { stdout } = await execFileAsync('osascript', ['-e', 'tell application "System Events" to get name of window 1 of first application process whose frontmost is true']);
+      windowTitle = stdout.trim();
+    } catch (e) {
+      // Ignore
+    }
+
+    return {
+      appName,
+      bundleId,
+      windowTitle,
+      idleSeconds: parseFloat(idleSecondsStr)
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+async function readMacBrowserUrl(appName: string): Promise<string | null> {
+  const script = MAC_BROWSER_SCRIPTS[appName];
+  if (!script) return null;
+  try {
+    const { stdout } = await execFileAsync('osascript', ['-e', script], { timeout: 1000 });
+    const result = stdout.trim();
+    if (!result || result === 'missing value') return null;
+    return result;
+  } catch (error) {
+    return null;
+  }
+}
+
+async function closeMacBrowserTab(appName: string) {
+  const script = MAC_BROWSER_CLOSE_SCRIPTS[appName];
+  if (!script) return;
+  try {
+    await execFileAsync('osascript', ['-e', script], { timeout: 1000 });
+  } catch (error) {
+    logger.warn('Failed to close tab for', appName, error);
+  }
+}
+
+// --- Windows Implementation ---
+
+const POWERSHELL_SCRIPT = `
+Add-Type @"
+    using System;
+    using System.Runtime.InteropServices;
+    public class Win32 {
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")]
+        public static extern int GetWindowThreadProcessId(IntPtr hWnd, out int lpdwProcessId);
+        [DllImport("user32.dll")]
+        public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);
+        [DllImport("user32.dll")]
+        public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+        [StructLayout(LayoutKind.Sequential)]
+        public struct LASTINPUTINFO {
+            public uint cbSize;
+            public uint dwTime;
+        }
+    }
+"@
+
+try {
+    $hwnd = [Win32]::GetForegroundWindow()
+    $pidOut = 0
+    [Win32]::GetWindowThreadProcessId($hwnd, [ref]$pidOut) | Out-Null
+    $process = Get-Process -Id $pidOut -ErrorAction Stop
+    $sb = New-Object System.Text.StringBuilder 256
+    [Win32]::GetWindowText($hwnd, $sb, 256) | Out-Null
+
+    $lii = New-Object Win32+LASTINPUTINFO
+    $lii.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf($lii)
+    [Win32]::GetLastInputInfo([ref]$lii) | Out-Null
+    $idleMillis = [Environment]::TickCount - $lii.dwTime
+
+    $obj = @{
+        appName = $process.ProcessName
+        windowTitle = $sb.ToString()
+        idleSeconds = [Math]::Floor($idleMillis / 1000)
+    }
+    $obj | ConvertTo-Json -Compress
+} catch {
+    Write-Output "{}"
+}
+`;
+
+async function getWindowsActiveWindow() {
+  return new Promise<{ appName: string; windowTitle: string; idleSeconds: number } | null>((resolve) => {
+    const child = spawn('powershell', ['-Command', '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+
+    child.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0 || !stdout.trim()) {
+        resolve(null);
+        return;
+      }
+      try {
+        const data = JSON.parse(stdout);
+        if (!data.appName) {
+          resolve(null);
+          return;
+        }
+        resolve({
+          appName: data.appName,
+          windowTitle: data.windowTitle,
+          idleSeconds: data.idleSeconds
+        });
+      } catch (e) {
+        resolve(null);
+      }
+    });
+
+    child.stdin.write(POWERSHELL_SCRIPT);
+    child.stdin.end();
+  });
+}
+
+// --- Shared Logic ---
 
 export type UrlWatcherOptions = {
   onActivity: (event: ActivityEvent & { idleSeconds?: number }) => void;
@@ -31,70 +170,42 @@ export type UrlWatcherOptions = {
 };
 
 export function createUrlWatcher(options: UrlWatcherOptions) {
-  if (process.platform !== 'darwin' && !options.macOverride) {
-    logger.warn('URL watcher currently implemented for macOS only');
-    return { stop() { } };
-  }
-
   const emitter = new EventEmitter();
   let lastSignature = '';
-  const interval = options.intervalMs ?? 800;
+  const interval = options.intervalMs ?? 1000;
   let timer: NodeJS.Timeout;
-
-  async function getActiveWindowInfo() {
-    try {
-      const [appName, bundleId, idleSecondsStr] = await Promise.all([
-        execFileAsync('osascript', ['-e', 'tell application "System Events" to get name of first application process whose frontmost is true']).then(r => r.stdout.trim()),
-        execFileAsync('osascript', ['-e', 'tell application "System Events" to get bundle identifier of first application process whose frontmost is true']).then(r => r.stdout.trim()),
-        execFileAsync('ioreg', ['-c', 'IOHIDSystem']).then(r => {
-          const match = r.stdout.match(/"HIDIdleTime" = (\d+)/);
-          return match ? (parseInt(match[1], 10) / 1000000000).toString() : '0';
-        }).catch(() => '0')
-      ]);
-
-      // Get window title - this can fail if app doesn't support scripting or has no windows
-      let windowTitle = '';
-      try {
-        const { stdout } = await execFileAsync('osascript', ['-e', 'tell application "System Events" to get name of window 1 of first application process whose frontmost is true']);
-        windowTitle = stdout.trim();
-      } catch (e) {
-        // Ignore window title errors
-      }
-
-      return {
-        owner: { name: appName, bundleId },
-        title: windowTitle,
-        idle: parseFloat(idleSecondsStr)
-      };
-    } catch (error) {
-      return null;
-    }
-  }
 
   async function poll() {
     try {
-      const win = await getActiveWindowInfo();
-      if (!win) return;
-      const appName: string = win.owner.name;
-      const bundleId: string | undefined = win.owner.bundleId;
-      const idleSeconds: number = Math.floor(win.idle);
-
+      let win: { appName: string; windowTitle: string; idleSeconds: number; bundleId?: string } | null = null;
       let url: string | null = null;
-      if (BROWSER_SCRIPTS[appName]) {
-        url = await readBrowserUrl(BROWSER_SCRIPTS[appName]);
+
+      if (process.platform === 'darwin') {
+        win = await getMacActiveWindow();
+        if (win) {
+          url = await readMacBrowserUrl(win.appName);
+        }
+      } else if (process.platform === 'win32') {
+        win = await getWindowsActiveWindow();
+        // URL fetching on Windows is hard without native modules. 
+        // We'll rely on window title for now or maybe infer domain from title if possible.
       }
+
+      if (!win) return;
+
       const domain = url ? extractDomain(url) : null;
-      const signature = `${appName}|${domain ?? ''}`;
+      const signature = `${win.appName}|${domain ?? ''}|${win.windowTitle}`;
+
       if (signature === lastSignature) {
         options.onActivity({
           timestamp: new Date(),
           source: url ? 'url' : 'app',
-          appName,
-          bundleId,
-          windowTitle: win.title,
+          appName: win.appName,
+          bundleId: win.bundleId,
+          windowTitle: win.windowTitle,
           url,
           domain,
-          idleSeconds
+          idleSeconds: win.idleSeconds
         });
         return;
       }
@@ -103,12 +214,12 @@ export function createUrlWatcher(options: UrlWatcherOptions) {
       const event: ActivityEvent & { idleSeconds?: number } = {
         timestamp: new Date(),
         source: url ? 'url' : 'app',
-        appName,
-        bundleId,
-        windowTitle: win.title,
+        appName: win.appName,
+        bundleId: win.bundleId,
+        windowTitle: win.windowTitle,
         url,
         domain,
-        idleSeconds
+        idleSeconds: win.idleSeconds
       };
 
       options.onActivity(event);
@@ -135,24 +246,13 @@ export function createUrlWatcher(options: UrlWatcherOptions) {
 }
 
 export async function closeActiveBrowserTab(appName: string) {
-  const script = BROWSER_CLOSE_SCRIPTS[appName];
-  if (!script) return;
-  try {
-    await execFileAsync('osascript', ['-e', script], { timeout: 1000 });
-  } catch (error) {
-    logger.warn('Failed to close tab for', appName, error);
-  }
-}
-
-async function readBrowserUrl(script: string): Promise<string | null> {
-  try {
-    const { stdout } = await execFileAsync('osascript', ['-e', script], { timeout: 1000 });
-    const result = stdout.trim();
-    if (!result || result === 'missing value') return null;
-    return result;
-  } catch (error) {
-    logger.warn('Failed to read browser URL', error);
-    return null;
+  if (process.platform === 'darwin') {
+    await closeMacBrowserTab(appName);
+  } else if (process.platform === 'win32') {
+    // On Windows, we can't easily close just the tab without native automation.
+    // We could kill the process or send Alt+F4, but that's aggressive.
+    // For now, we'll log a warning.
+    logger.warn('Closing tabs on Windows is not yet supported');
   }
 }
 

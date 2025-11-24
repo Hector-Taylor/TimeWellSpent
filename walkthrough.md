@@ -1,6 +1,6 @@
 # App Launch Debugging Walkthrough
 
-The application was failing to launch due to a combination of configuration issues, missing environment variables, and native module incompatibilities.
+The application was failing to launch due to a combination of configuration issues, missing environment variables, native module incompatibilities, and a runtime crash in the renderer.
 
 ## Issues Identified and Fixed
 
@@ -23,14 +23,14 @@ Once the app was running the bundled code, it failed because Vite tried to bundl
   - `better-sqlite3` (native module)
   - `active-win` (native module)
 
-### 3. Missing Environment Variables
-The app failed to load the renderer because `process.env.ELECTRON_RENDERER_URL` (and `MAIN_WINDOW_VITE_DEV_SERVER_URL`) were undefined at runtime. This seems to be an issue with how `electron-forge` injects variables when the entry point is modified.
+### 3. Missing Environment Variables & IPv6 Issues
+The app failed to load the renderer because `process.env.ELECTRON_RENDERER_URL` (and `MAIN_WINDOW_VITE_DEV_SERVER_URL`) were undefined at runtime. Additionally, `localhost` was resolving to IPv6 (`::1`) while the Vite server was listening on IPv4 (`127.0.0.1`), causing connection refusals.
 
 **Fix:**
-- Added a fallback in `src/main/main.ts`:
+- Added a fallback in `src/main/main.ts` using the explicit IPv4 address:
   ```typescript
   if (!rendererUrl && !app.isPackaged) {
-    rendererUrl = 'http://localhost:5173';
+    rendererUrl = 'http://127.0.0.1:5173';
   }
   ```
 
@@ -48,6 +48,36 @@ The renderer failed to load because it couldn't find the preload script. The bui
   ```typescript
   preload: path.join(__dirname, '../preload/preload.js'),
   ```
+
+### 6. Renderer Crash (Wallet State)
+The application window remained hidden or blank because the React application crashed immediately upon mounting. The `Dashboard` component attempted to access `wallet.balance` while `wallet` was initialized to `null`.
+
+**Fix:**
+- Updated `src/renderer/App.tsx` to initialize the wallet state with a default value:
+  ```typescript
+  const [wallet, setWallet] = useState<WalletSnapshot>({ balance: 0 });
+  ```
+
+### 7. Menu Bar Widget Crash
+The main process encountered an error when trying to update the tray widget because it called a non-existent method `backend.focus.getSession()`.
+
+**Fix:**
+- Updated `src/main/main.ts` to use the correct method `backend.focus.getCurrent()`.
+
+## Cross-Platform Support (Windows & macOS)
+
+### URL Watcher
+- **macOS:** Uses `osascript` (AppleScript) to query the active window and browser URL.
+- **Windows:** Uses a custom PowerShell script (invoked via `spawn`) to retrieve the active window title, process name, and system idle time via P/Invoke.
+  - *Note:* URL retrieval on Windows is currently limited to window titles due to the lack of native automation APIs without extra dependencies.
+
+### Window Management
+- **macOS:** Uses `titleBarStyle: 'hiddenInset'` and custom traffic light positioning for a sleek look.
+- **Windows:** Uses standard window frames with `autoHideMenuBar: true` to ensure native compatibility and smooth behavior.
+
+### Tray Widget
+- **macOS:** Displays live stats (time/balance) directly in the menu bar title.
+- **Windows:** Displays live stats in the tray icon tooltip (on hover), as Windows tray icons do not support text labels.
 
 ## UI Improvements
 
@@ -69,15 +99,13 @@ The application uses a custom title bar style (`hiddenInset`), which requires a 
   - **Normal Mode:** Shows wallet balance (e.g., "💰 50").
 - The widget uses a dynamically generated empty native image to function as a text-only tray item on macOS, avoiding issues with missing icon files.
 - The widget updates in real-time as you earn coins or run focus sessions.
-- **Fix:** Resolved a crash where `backend.focus.getSession()` was called but didn't exist (replaced with `backend.focus.getCurrent()`).
 
 ### Economy Tuner
+- **Renamed to "Economy":** Simplified the navigation label.
+- **Tabbed Interface:** Added a segmented control to switch between "Productive" and "Frivolous" items, making it easier to manage different types of rates.
 - **Granular Rates:** Implemented a system where each app or domain can have its own specific base rate (income or cost).
 - **Time Curves:** Added support for hourly rate multipliers (0x to 3x).
-- **UI:** Created a new "Economy Tuner" view where users can:
-  - Select any configured app/domain.
-  - Set its base rate.
-  - Draw a curve on a 24-hour chart to adjust the rate for specific times of day (e.g., make Twitter more expensive at night).
+- **UI:** Users can select any configured app/domain, set its base rate, and draw a curve on a 24-hour chart to adjust the rate for specific times of day.
 - **Backend:** Updated the database schema to store hourly modifiers and modified the economy engine to calculate earnings and costs dynamically based on the current time.
 
 ## Packaging Instructions
@@ -97,10 +125,10 @@ To package the application for distribution (e.g., to share with friends):
     You can share the generated `.dmg` or `.zip` file. Friends can install it like any other macOS application.
 
 ## Verification
-The app now launches successfully. The backend starts on port 17600, and the renderer loads from `http://localhost:5173`.
+The app now launches successfully. The backend starts on port 17600, and the renderer loads from `http://127.0.0.1:5173`.
 The URL watcher is active and tracking window activity using native macOS commands.
 Window dragging works via the sidebar.
 Settings changes provide visual feedback and allow multi-line editing.
 The Dashboard now includes a time distribution chart.
 The Menu Bar widget appears and updates with live stats.
-The Economy Tuner allows customizing rates and time curves for individual apps.
+The Economy view allows customizing rates and time curves, organized by Productive and Frivolous tabs.

@@ -15,6 +15,7 @@ type TunerItem = {
 export default function EconomyTuner({ api }: EconomyTunerProps) {
     const [items, setItems] = useState<TunerItem[]>([]);
     const [selectedId, setSelectedId] = useState<string | null>(null);
+    const [activeTab, setActiveTab] = useState<'productive' | 'frivolity'>('productive');
     const [saving, setSaving] = useState(false);
 
     useEffect(() => {
@@ -49,15 +50,28 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
         // Add any market rates that aren't in config (custom ones)
         rates.forEach(rate => {
             if (!merged.find(m => m.id === rate.domain)) {
+                // Default to frivolity if unknown, or maybe neutral? 
+                // For now let's assume neutral items are frivolity for tuning purposes unless specified
                 merged.push({ id: rate.domain, type: 'neutral', rate });
             }
         });
 
         setItems(merged);
-        if (!selectedId && merged.length > 0) {
-            setSelectedId(merged[0].id);
-        }
     }
+
+    const filteredItems = items.filter(item => {
+        if (activeTab === 'productive') return item.type === 'productive';
+        return item.type === 'frivolity' || item.type === 'neutral';
+    });
+
+    // Auto-select first item when tab changes or data loads
+    useEffect(() => {
+        if (filteredItems.length > 0 && (!selectedId || !filteredItems.find(i => i.id === selectedId))) {
+            setSelectedId(filteredItems[0].id);
+        } else if (filteredItems.length === 0) {
+            setSelectedId(null);
+        }
+    }, [activeTab, items]);
 
     const selectedItem = items.find(i => i.id === selectedId);
 
@@ -86,14 +100,28 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
         <section className="panel">
             <header className="panel-header">
                 <div>
-                    <h1>Economy Tuner</h1>
+                    <h1>Economy</h1>
                     <p className="subtle">Fine-tune value and costs over time.</p>
+                </div>
+                <div className="segmented-control">
+                    <button
+                        className={activeTab === 'productive' ? 'active' : ''}
+                        onClick={() => setActiveTab('productive')}
+                    >
+                        Productive
+                    </button>
+                    <button
+                        className={activeTab === 'frivolity' ? 'active' : ''}
+                        onClick={() => setActiveTab('frivolity')}
+                    >
+                        Frivolous
+                    </button>
                 </div>
             </header>
 
             <div className="tuner-layout" style={{ display: 'grid', gridTemplateColumns: '250px 1fr', gap: '24px', height: 'calc(100vh - 140px)' }}>
                 <aside className="sidebar-list" style={{ borderRight: '1px solid rgba(0,0,0,0.1)', overflowY: 'auto' }}>
-                    {items.map(item => (
+                    {filteredItems.map(item => (
                         <div
                             key={item.id}
                             onClick={() => setSelectedId(item.id)}
@@ -107,10 +135,13 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
                         >
                             <div style={{ fontWeight: 500 }}>{item.id}</div>
                             <div style={{ fontSize: '12px', color: 'var(--text-subtle)', textTransform: 'capitalize' }}>
-                                {item.type} • {item.rate.ratePerMin}/min
+                                {item.rate.ratePerMin}/min
                             </div>
                         </div>
                     ))}
+                    {filteredItems.length === 0 && (
+                        <div className="subtle" style={{ padding: '12px' }}>No items in this category.</div>
+                    )}
                 </aside>
 
                 <main className="tuner-editor">
