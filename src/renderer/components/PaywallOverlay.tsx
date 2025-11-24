@@ -28,9 +28,12 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
     return null;
   }
 
+  const [error, setError] = useState<string | null>(null);
+
   async function startMetered() {
     if (!state) return;
     setLoading(true);
+    setError(null);
     try {
       await api.paywall.startMetered(state.domain);
       const snapshot = await api.wallet.get();
@@ -38,6 +41,7 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
       onClose();
     } catch (error) {
       console.error(error);
+      setError((error as Error).message);
     } finally {
       setLoading(false);
     }
@@ -46,6 +50,7 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
   async function buyPack(minutes: number, price: number) {
     if (!state) return;
     setLoading(true);
+    setError(null);
     try {
       await api.paywall.buyPack(state.domain, minutes);
       const snapshot = await api.wallet.get();
@@ -53,6 +58,7 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
       onClose();
     } catch (error) {
       console.error(error);
+      setError((error as Error).message);
     } finally {
       setLoading(false);
     }
@@ -76,8 +82,9 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
           <span>Balance</span>
           <strong>{wallet.balance}</strong>
         </div>
-        {blocked && <p className="warning">Pay-as-you-go or grab a pack to re-open the site.</p>}
-        {insufficient && (
+        {error && <p className="warning" style={{ color: 'var(--color-danger)' }}>{error}</p>}
+        {blocked && !error && <p className="warning">Pay-as-you-go or grab a pack to re-open the site.</p>}
+        {insufficient && !error && (
           <p className="warning">Session paused — add more coins or choose a smaller pack.</p>
         )}
         <div className="options">

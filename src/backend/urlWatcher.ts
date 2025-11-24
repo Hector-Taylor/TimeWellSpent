@@ -15,7 +15,8 @@ const MAC_BROWSER_SCRIPTS: Record<string, string> = {
   'Google Chrome': 'tell application "Google Chrome" to if (count of windows) > 0 then return URL of active tab of front window',
   'Brave Browser': 'tell application "Brave Browser" to if (count of windows) > 0 then return URL of active tab of front window',
   'Microsoft Edge': 'tell application "Microsoft Edge" to if (count of windows) > 0 then return URL of active tab of front window',
-  Arc: 'tell application "Arc" to if (count of windows) > 0 then tell front window to tell active tab to return its URL'
+  Arc: 'tell application "Arc" to if (count of windows) > 0 then tell front window to tell active tab to return its URL',
+  Firefox: 'tell application "System Events" to tell process "Firefox" to get value of attribute "AXURL" of text field 1 of toolbar 1 of group 1 of front window'
 };
 
 const MAC_BROWSER_CLOSE_SCRIPTS: Record<string, string> = {
@@ -23,7 +24,8 @@ const MAC_BROWSER_CLOSE_SCRIPTS: Record<string, string> = {
   'Google Chrome': 'tell application "Google Chrome" to if (count of windows) > 0 then close active tab of front window',
   'Brave Browser': 'tell application "Brave Browser" to if (count of windows) > 0 then close active tab of front window',
   'Microsoft Edge': 'tell application "Microsoft Edge" to if (count of windows) > 0 then close active tab of front window',
-  Arc: 'tell application "Arc" to if (count of windows) > 0 then tell front window to tell active tab to close'
+  Arc: 'tell application "Arc" to if (count of windows) > 0 then tell front window to tell active tab to close',
+  Firefox: 'tell application "Firefox" to activate\ntell application "System Events" to keystroke "w" using command down'
 };
 
 async function getMacActiveWindow() {
@@ -63,6 +65,7 @@ async function readMacBrowserUrl(appName: string): Promise<string | null> {
     const { stdout } = await execFileAsync('osascript', ['-e', script], { timeout: 1000 });
     const result = stdout.trim();
     if (!result || result === 'missing value') return null;
+    logger.info(`Raw URL for ${appName}: ${result}`);
     return result;
   } catch (error) {
     return null;
@@ -71,11 +74,21 @@ async function readMacBrowserUrl(appName: string): Promise<string | null> {
 
 async function closeMacBrowserTab(appName: string) {
   const script = MAC_BROWSER_CLOSE_SCRIPTS[appName];
-  if (!script) return;
-  try {
-    await execFileAsync('osascript', ['-e', script], { timeout: 1000 });
-  } catch (error) {
-    logger.warn('Failed to close tab for', appName, error);
+  if (script) {
+    try {
+      logger.info(`Closing tab for ${appName}`);
+      await execFileAsync('osascript', ['-e', script], { timeout: 1000 });
+    } catch (error) {
+      logger.warn('Failed to close tab for', appName, error);
+    }
+  } else {
+    // Fallback: Try to quit the app if it's not a known browser
+    try {
+      logger.info(`Quitting app ${appName}`);
+      await execFileAsync('osascript', ['-e', `tell application "${appName}" to quit`], { timeout: 1000 });
+    } catch (error) {
+      logger.warn('Failed to quit app', appName, error);
+    }
   }
 }
 

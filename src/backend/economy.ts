@@ -4,7 +4,8 @@ import type { ActivityEvent } from './activity-tracker';
 import type { WalletManager } from './wallet';
 import type { MarketService } from './market';
 import type { PaywallManager } from './paywall';
-import type { SettingsService, CategorisationConfig } from './settings';
+import type { SettingsService } from './settings';
+import type { CategorisationConfig } from '@shared/types';
 import { logger } from '@shared/logger';
 
 const PRODUCTIVE_RATE_PER_MIN = 5;
@@ -77,10 +78,12 @@ export class EconomyEngine extends EventEmitter {
       lastUpdated: Date.now()
     };
 
-    if (!idle && category === 'frivolity' && domain) {
-      if (!this.paywall.hasValidPass(domain)) {
-        this.emit('paywall-required', { domain, appName: app });
-        this.emit('paywall-block', { domain, appName: app });
+    if (!idle && category === 'frivolity') {
+      const identifier = domain || app;
+      if (identifier && !this.paywall.hasValidPass(identifier)) {
+        logger.info(`Blocking ${identifier} on ${app}`);
+        this.emit('paywall-required', { domain: identifier, appName: app });
+        this.emit('paywall-block', { domain: identifier, appName: app });
       }
     }
 
@@ -155,14 +158,40 @@ export class EconomyEngine extends EventEmitter {
   }
 
   startPayAsYouGo(domain: string) {
+    let rate = this.market.getRate(domain);
+    if (!rate) {
+      logger.info(`Initializing default market rate for ${domain}`);
+      rate = {
+        domain,
+        ratePerMin: 3,
+        packs: [
+          { minutes: 10, price: 25 },
+          { minutes: 30, price: 60 },
+          { minutes: 60, price: 100 }
+        ],
+        hourlyModifiers: Array(24).fill(1)
+      };
+      this.market.upsertRate(rate);
+    }
     const session = this.paywall.startMetered(domain);
     return session;
   }
 
   buyPack(domain: string, minutes: number) {
-    const rate = this.market.getRate(domain);
+    let rate = this.market.getRate(domain);
     if (!rate) {
-      throw new Error(`Market rate not configured for ${domain}`);
+      logger.info(`Initializing default market rate for ${domain}`);
+      rate = {
+        domain,
+        ratePerMin: 3,
+        packs: [
+          { minutes: 10, price: 25 },
+          { minutes: 30, price: 60 },
+          { minutes: 60, price: 100 }
+        ],
+        hourlyModifiers: Array(24).fill(1)
+      };
+      this.market.upsertRate(rate);
     }
     const pack = rate.packs.find((p) => p.minutes === minutes);
     if (!pack) {

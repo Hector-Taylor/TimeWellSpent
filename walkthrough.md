@@ -79,6 +79,23 @@ The main process encountered an error when trying to update the tray widget beca
 - **macOS:** Displays live stats (time/balance) directly in the menu bar title.
 - **Windows:** Displays live stats in the tray icon tooltip (on hover), as Windows tray icons do not support text labels.
 
+## Domain Blocking & Paywall Fixes
+
+### Expanded Browser Support
+- **Firefox:** Added support for Firefox on macOS using UI scripting to retrieve the current URL and close tabs.
+- **Native Apps:** Added a fallback mechanism to quit native apps (e.g., Twitter app) if they are categorized as frivolous but don't support tab closing.
+
+### Robust Blocking Logic
+- **Missing Domains:** Updated `EconomyEngine` to block apps even if the specific domain cannot be determined (e.g., native apps or unsupported browsers), provided the app name matches a frivolous category.
+- **Generic Fallback:** If a specific close script is not found for an app, the system now attempts to quit the application gracefully.
+- **Chrome URL Detection:** Fixed an issue where AppleScript would target a background/zombie Chrome process (e.g., from an automated task) instead of the active user instance, causing it to report "newtab" incorrectly. Killing the zombie process resolved the issue.
+
+### Paywall & Notifications
+- **Market Initialization:** Fixed a bug where new frivolous domains failed to unlock because they lacked a default market rate. The system now automatically initializes default rates (3 coins/min) for new domains.
+- **UI Feedback:** Added error handling to the Paywall Overlay so users can see why an action failed instead of the UI freezing.
+- **Tray Updates:** The macOS menu bar (and Windows tray tooltip) now displays the remaining time for active frivolous sessions (e.g., "Instagram: 5m").
+- **System Notifications:** Added system-level notifications when 2 minutes and 1 minute remain in a session, and when the session ends.
+
 ## UI Improvements
 
 ### Window Dragging
@@ -132,3 +149,7 @@ Settings changes provide visual feedback and allow multi-line editing.
 The Dashboard now includes a time distribution chart.
 The Menu Bar widget appears and updates with live stats.
 The Economy view allows customizing rates and time curves, organized by Productive and Frivolous tabs.
+Domain blocking is active and supports Chrome, Safari, Edge, Brave, Arc, and Firefox, with fallbacks for native apps.
+Chrome URL detection is verified to work correctly after resolving process conflicts.
+Paywall unlocking works, displaying package options and handling errors gracefully.
+Tray icon updates with remaining session time, and system notifications fire at 2m and 1m warnings.

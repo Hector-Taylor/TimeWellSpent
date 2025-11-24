@@ -91,6 +91,8 @@ export class PaywallManager extends EventEmitter {
       } else {
         session.remainingSeconds -= intervalSeconds;
         session.lastTick = now;
+        this.emit('session-tick', session);
+
         if (session.remainingSeconds <= 0) {
           this.sessions.delete(session.domain);
           this.emit('session-ended', { domain: session.domain, reason: 'completed' });

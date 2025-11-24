@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { app, BrowserWindow, dialog, nativeTheme, Tray, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, Notification, nativeTheme, dialog } from 'electron';
 import { createBackend } from '@backend/server';
 import { Database } from '@backend/storage';
 import { createUrlWatcher } from '@backend/urlWatcher';
@@ -104,6 +104,57 @@ async function bootstrap() {
       win.webContents.send(channel, payload);
     });
   };
+
+  // Listen for paywall session ticks to update tray and notify
+  backend.paywall.on('session-tick', (session: { domain: string; remainingSeconds: number }) => {
+    const minutes = Math.ceil(session.remainingSeconds / 60);
+
+    // Update tray
+    if (process.platform === 'darwin') {
+      tray?.setTitle(`${session.domain}: ${minutes}m`);
+    } else {
+      tray?.setToolTip(`${session.domain}: ${minutes}m remaining`);
+    }
+
+    // Notifications
+    if (Math.abs(session.remainingSeconds - 120) < 5) { // ~2 minutes
+      new Notification({
+        title: 'TimeWellSpent',
+        body: `2 minutes left on ${session.domain}`
+      }).show();
+    } else if (Math.abs(session.remainingSeconds - 60) < 5) { // ~1 minute
+      new Notification({
+        title: 'TimeWellSpent',
+        body: `1 minute left on ${session.domain}!`
+      }).show();
+    }
+  });
+
+  backend.paywall.on('session-ended', (payload: { domain: string; reason: string }) => {
+    if (payload.reason === 'completed' || payload.reason === 'insufficient-funds') {
+      new Notification({
+        title: 'TimeWellSpent',
+        body: `Time's up for ${payload.domain}!`
+      }).show();
+
+      // Reset tray
+      if (process.platform === 'darwin') {
+        tray?.setTitle('');
+      } else {
+        tray?.setToolTip('TimeWellSpent');
+      }
+    }
+  });
+
+  // Listen for wallet updates to update tray (if no active session)
+  backend.wallet.on('balance-changed', (balance) => {
+    // Only show balance if we aren't showing a session timer
+    // We can check if there are active sessions, but for now let's prioritize session time
+    // If we just received a balance update, it might be from earning/spending.
+    // Let's rely on the fact that session-tick fires frequently.
+    // But if we are IDLE, we want to show balance.
+    // Ideally we track state.
+  });
 
   const updateTray = (label: string) => {
     if (tray) {
