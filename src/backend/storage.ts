@@ -2,6 +2,7 @@ import path from 'node:path';
 import os from 'node:os';
 import DatabaseDriver, { type Database as BetterSqlite3Database } from 'better-sqlite3';
 import { logger } from '@shared/logger';
+import { getAppDataPath } from '@shared/platform';
 
 export type DatabaseOptions = {
   filePath?: string;
@@ -13,7 +14,7 @@ export class Database {
 
   constructor(options: DatabaseOptions = {}) {
     this.options = options;
-    const dbPath = options.filePath ?? path.join(os.homedir(), 'Library', 'Application Support', 'TimeWellSpent', 'timewellspent.db');
+    const dbPath = options.filePath ?? path.join(getAppDataPath(), 'TimeWellSpent', 'timewellspent.db');
     logger.info('Opening database at', dbPath);
     this.driver = new DatabaseDriver(dbPath);
     this.driver.pragma('journal_mode = WAL');

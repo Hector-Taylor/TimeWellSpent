@@ -167,12 +167,29 @@ async function bootstrap() {
   };
 
   // Initialize Tray
-  const { nativeImage } = require('electron');
-  // On macOS, we use an empty image for text-only. 
-  // On Windows, we need a real icon. For now, we'll use the empty one but it might be invisible.
-  // TODO: Add a proper .ico for Windows
-  const emptyImage = nativeImage.createFromBuffer(Buffer.alloc(0));
-  tray = new Tray(emptyImage);
+  // On macOS, we use an empty image for text-only tray.
+  // On Windows, we need a real icon.
+  let trayIcon: Electron.NativeImage;
+
+  if (isMac) {
+    trayIcon = nativeImage.createFromBuffer(Buffer.alloc(0));
+  } else {
+    // Load icon for Windows/Linux
+    const iconPath = path.join(__dirname, '../assets/icon.png');
+    try {
+      trayIcon = nativeImage.createFromPath(iconPath);
+      if (trayIcon.isEmpty()) {
+        // Fallback to empty if icon not found
+        console.warn('Tray icon not found, using empty icon');
+        trayIcon = nativeImage.createEmpty();
+      }
+    } catch (error) {
+      console.error('Failed to load tray icon:', error);
+      trayIcon = nativeImage.createEmpty();
+    }
+  }
+
+  tray = new Tray(trayIcon);
 
   if (isMac) {
     tray.setTitle('TimeWellSpent');

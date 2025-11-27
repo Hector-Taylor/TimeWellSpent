@@ -1,13 +1,18 @@
 # TimeWellSpent
 
-TimeWellSpent is a Mac-first, local-first focus companion that turns deep work into **f-coins** and sells time on distracting sites via a configurable market. It runs entirely on-device using Electron, React, TypeScript, and SQLite.
+TimeWellSpent is a **cross-platform**, local-first focus companion that turns deep work into **f-coins** and sells time on distracting sites via a configurable market. It runs entirely on-device using Electron, React, TypeScript, and SQLite, supporting **Windows, macOS, and Linux**.
 
 ## Features
 
 - Always-on-top paywall that intercepts frivolous domains, instantly closes the offending tab, and enforces pay-as-you-go or pre-paid time packs.
 - Local economy with productive/neutral/frivolity categorisation, Pomodoro payouts, and idle detection.
 - Dashboard with wallet balance, activity feed, focus session controls, intentions, budgets, and market editor.
-- macOS URL watcher (AppleScript + `active-win`) that reads the frontmost tab for Safari, Chrome, Brave, Edge, and Arc.
+- **Cross-platform URL monitoring:**
+  - **macOS:** AppleScript-based URL watching for Safari, Chrome, Brave, Edge, Arc, and Firefox
+  - **Windows:** Chrome DevTools Protocol (CDP) for Chromium browsers + title-based fallback
+- **Cross-platform tab closing:**
+  - **macOS:** AppleScript automation
+  - **Windows:** PowerShell SendKeys (Ctrl+W)
 - Local HTTP + WebSocket bridge on `localhost:17600` for the optional browser extension and debugging tools.
 - Vitest coverage for core earning/spending logic, URL watcher emission, and scoring heuristics.
 
@@ -23,8 +28,8 @@ The `dev` script launches Electron Forge with Vite. Logs in the terminal show th
 ### Building
 
 ```bash
-pnpm build        # package app
-pnpm make         # create DMG/ZIP via Electron Forge
+pnpm build        # package app for your current platform
+pnpm make         # create installer (DMG on macOS, Squirrel on Windows, ZIP on all platforms)
 ```
 
 ### Testing
@@ -33,7 +38,9 @@ pnpm make         # create DMG/ZIP via Electron Forge
 pnpm test         # run Vitest suite
 ```
 
-## macOS permissions
+## Platform-specific setup
+
+### macOS permissions
 
 The app needs Accessibility & Automation permissions to read the active window and close tabs whenever a paywall is enforced.
 
@@ -41,6 +48,22 @@ The app needs Accessibility & Automation permissions to read the active window a
 2. Click the lock, authenticate, and enable **TimeWellSpent**.
 3. Repeat under **Automation** to allow scripting of your browsers.
 4. Optional shortcut: paste `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility` into Spotlight to jump straight there.
+
+### Windows browser URL monitoring (optional)
+
+For the best URL tracking experience on Windows with Chromium browsers (Chrome, Edge, Brave), launch your browser with remote debugging enabled:
+
+**Chrome:**
+```bash
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+```
+
+**Edge:**
+```bash
+"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9223
+```
+
+Without remote debugging, the app will fall back to extracting domains from window titles, which is less reliable but still functional.
 
 ## Local API surface
 

@@ -1,5 +1,3 @@
-// import { activeWindow } from 'active-win';
-const activeWindow = async (): Promise<any> => undefined;
 import { execFile, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { promisify } from 'node:util';
@@ -94,6 +92,17 @@ async function closeMacBrowserTab(appName: string) {
 
 // --- Windows Implementation ---
 
+// Browser CDP (Chrome DevTools Protocol) ports
+const CDP_PORTS: Record<string, number> = {
+  chrome: 9222,
+  msedge: 9223,
+  brave: 9222,
+};
+
+// Cache CDP connections to avoid reconnecting
+let cdpConnectionCache: Map<string, { ws: any; lastUsed: number }> = new Map();
+let windowsPsFailedLogged = false;
+
 const POWERSHELL_SCRIPT = `
 Add-Type @"
     using System;
@@ -115,6 +124,73 @@ Add-Type @"
     }
 "@
 
+Add-Type -AssemblyName UIAutomationClient
+
+function Get-ElementValue($element) {
+    if (-not $element) { return $null }
+    try {
+        $pattern = $element.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        return $pattern.Current.Value
+    } catch {
+        return $null
+    }
+}
+
+function Get-ActiveBrowserUrl([IntPtr]$hwnd) {
+    try {
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+        if (-not $root) { return $null }
+
+        # Bubble up to the top-level window for this process (the foreground handle might be a child)
+        $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+        $current = $root
+        while ($true) {
+            $parent = $walker.GetParent($current)
+            if (-not $parent) { break }
+            if ($parent.Current.ProcessId -ne $current.Current.ProcessId) { break }
+            $current = $parent
+        }
+        $root = $current
+
+        $addressNames = @(
+            "Address and search bar",
+            "Address and Search Bar",
+            "Search or enter web address",
+            "Search or enter address",
+            "Search with Google or enter address",
+            "Address bar"
+        )
+
+        foreach ($name in $addressNames) {
+            $condition = New-Object System.Windows.Automation.AndCondition(
+                New-Object System.Windows.Automation.PropertyCondition(
+                    [System.Windows.Automation.AutomationElement]::NameProperty, $name),
+                New-Object System.Windows.Automation.PropertyCondition(
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                    [System.Windows.Automation.ControlType]::Edit)
+            )
+            $element = $root.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $condition)
+            $val = Get-ElementValue $element
+            if ($val) { return $val }
+        }
+
+        # Fallback: first visible edit box that looks like a URL
+        $editCondition = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::Edit)
+        $edits = $root.FindAll([System.Windows.Automation.TreeScope]::Subtree, $editCondition)
+        foreach ($edit in $edits) {
+            if ($edit.Current.IsOffscreen -or $edit.Current.IsPassword) { continue }
+            $val = Get-ElementValue $edit
+            if ($val -and $val -match "^[a-zA-Z][a-zA-Z0-9+.-]*://") { return $val }
+            if ($val -and $val -match "^[a-z0-9.-]+\\.[a-z]{2,}(/.*)?$") { return "https://$val" }
+        }
+    } catch {
+        # ignore automation errors
+    }
+    return $null
+}
+
 try {
     $hwnd = [Win32]::GetForegroundWindow()
     $pidOut = 0
@@ -128,10 +204,20 @@ try {
     [Win32]::GetLastInputInfo([ref]$lii) | Out-Null
     $idleMillis = [Environment]::TickCount - $lii.dwTime
 
+    $url = $null
+    $normalized = $process.ProcessName.ToLowerInvariant()
+    if (@("chrome", "msedge", "brave", "firefox") -contains $normalized) {
+        $url = Get-ActiveBrowserUrl $hwnd
+        if ($url -and $url -notmatch "^[a-zA-Z][a-zA-Z0-9+.-]*://") {
+            $url = "https://$url"
+        }
+    }
+
     $obj = @{
         appName = $process.ProcessName
         windowTitle = $sb.ToString()
         idleSeconds = [Math]::Floor($idleMillis / 1000)
+        url = $url
     }
     $obj | ConvertTo-Json -Compress
 } catch {
@@ -139,39 +225,226 @@ try {
 }
 `;
 
-async function getWindowsActiveWindow() {
-  return new Promise<{ appName: string; windowTitle: string; idleSeconds: number } | null>((resolve) => {
-    const child = spawn('powershell', ['-Command', '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
+async function getWindowsActiveWindowViaPowerShell() {
+  return new Promise<{ appName: string; windowTitle: string; idleSeconds: number; url?: string | null } | null>((resolve) => {
+    let settled = false;
+    const finish = (value: { appName: string; windowTitle: string; idleSeconds: number; url?: string | null } | null) => {
+      if (!settled) {
+        settled = true;
+        resolve(value);
+      }
+    };
+
     let stdout = '';
+    const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
 
     child.stdout.on('data', (data) => {
       stdout += data.toString();
     });
 
+    child.on('error', () => {
+      finish(null);
+    });
+
     child.on('close', (code) => {
       if (code !== 0 || !stdout.trim()) {
-        resolve(null);
+        finish(null);
         return;
       }
       try {
         const data = JSON.parse(stdout);
         if (!data.appName) {
-          resolve(null);
+          finish(null);
           return;
         }
-        resolve({
+        finish({
           appName: data.appName,
           windowTitle: data.windowTitle,
-          idleSeconds: data.idleSeconds
+          idleSeconds: data.idleSeconds,
+          url: data.url ?? null
         });
       } catch (e) {
-        resolve(null);
+        finish(null);
       }
     });
 
     child.stdin.write(POWERSHELL_SCRIPT);
     child.stdin.end();
   });
+}
+
+async function getWindowsActiveWindowFallback() {
+  try {
+    const { activeWindow } = await import('active-win');
+    const result = await activeWindow();
+    if (!result || !result.owner) return null;
+    return {
+      appName: result.owner.name,
+      windowTitle: result.title ?? '',
+      idleSeconds: 0,
+      url: null
+    };
+  } catch (error) {
+    logger.warn('active-win fallback failed', error);
+    return null;
+  }
+}
+
+async function getWindowsActiveWindow() {
+  const ps = await getWindowsActiveWindowViaPowerShell();
+  if (ps) {
+    windowsPsFailedLogged = false;
+    return ps;
+  }
+  if (!windowsPsFailedLogged) {
+    logger.warn('Falling back to active-win for window detection (PowerShell probe unavailable)');
+    windowsPsFailedLogged = true;
+  }
+  return getWindowsActiveWindowFallback();
+}
+
+/**
+ * Try to get browser URL on Windows using Chrome DevTools Protocol
+ */
+async function tryGetBrowserUrlViaCDP(appName: string): Promise<string | null> {
+  const normalizedApp = appName.toLowerCase();
+  const port = CDP_PORTS[normalizedApp];
+
+  if (!port) {
+    return null; // Not a Chromium browser we support
+  }
+
+  try {
+    // Try to fetch active tab via CDP HTTP endpoint
+    const response = await fetch(`http://localhost:${port}/json`, {
+      signal: AbortSignal.timeout(500),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const tabs = await response.json();
+    // Find the active tab (type: "page" and not backgroundPage)
+    const activeTab = tabs.find((tab: any) => tab.type === 'page' && tab.url && !tab.url.startsWith('chrome://'));
+
+    if (activeTab && activeTab.url) {
+      logger.info(`Got URL via CDP for ${appName}: ${activeTab.url}`);
+      return activeTab.url;
+    }
+  } catch (error) {
+    // CDP not available, browser not running with remote debugging, or connection failed
+    // This is expected in most cases
+  }
+
+  return null;
+}
+
+/**
+ * Known site title patterns for common platforms
+ * Maps window title keywords to their domains
+ */
+const KNOWN_SITE_PATTERNS: Record<string, string> = {
+  // Social Media
+  'youtube': 'youtube.com',
+  'reddit': 'reddit.com',
+  'twitter': 'twitter.com',
+  'x.com': 'x.com',
+  'facebook': 'facebook.com',
+  'instagram': 'instagram.com',
+  'tiktok': 'tiktok.com',
+  'linkedin': 'linkedin.com',
+  'pinterest': 'pinterest.com',
+  'snapchat': 'snapchat.com',
+
+  // Entertainment
+  'netflix': 'netflix.com',
+  'twitch': 'twitch.tv',
+  'hulu': 'hulu.com',
+  'spotify': 'spotify.com',
+  'discord': 'discord.com',
+
+  // News & Media
+  'cnn': 'cnn.com',
+  'bbc': 'bbc.com',
+  'nytimes': 'nytimes.com',
+  'medium': 'medium.com',
+
+  // Shopping
+  'amazon': 'amazon.com',
+  'ebay': 'ebay.com',
+  'etsy': 'etsy.com',
+};
+
+/**
+ * Extract domain from window title (fallback method)
+ * Enhanced with known site patterns for better detection on Windows
+ */
+function extractDomainFromTitle(windowTitle: string): string | null {
+  if (!windowTitle) return null;
+
+  const lowerTitle = windowTitle.toLowerCase();
+
+  // First, check for known site patterns
+  for (const [keyword, domain] of Object.entries(KNOWN_SITE_PATTERNS)) {
+    if (lowerTitle.includes(keyword)) {
+      logger.info(`Matched known site pattern in title "${windowTitle}": ${domain}`);
+      return domain;
+    }
+  }
+
+  // Try to extract domain from common title patterns:
+  // "Page Title - example.com"
+  // "Page Title — example.com"  
+  // "example.com - Page Title"
+  // "(123) Page Title - example.com"
+  const patterns = [
+    // Domain after dash or em-dash
+    /(?:^|[-—|])\s*([a-z0-9-]+\.[a-z]{2,})\s*(?:[-—|]|$)/i,
+    // Domain at word boundary
+    /\b([a-z0-9-]+\.[a-z]{2,})(?:\s|$)/i,
+    // Domain in parentheses (e.g., "(123) New notifications - twitter.com")
+    /\)\s+[^-]+[-—]\s*([a-z0-9-]+\.[a-z]{2,})/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = windowTitle.match(pattern);
+    if (match && match[1]) {
+      const domain = match[1].toLowerCase();
+      // Basic validation - must have at least one dot and TLD
+      if (domain.includes('.') && !domain.startsWith('.') && !domain.endsWith('.')) {
+        logger.info(`Extracted domain from title pattern "${windowTitle}": ${domain}`);
+        return domain;
+      }
+    }
+  }
+
+  // If we still haven't found anything, log it for debugging
+  if (lowerTitle.includes('chrome') || lowerTitle.includes('edge') || lowerTitle.includes('firefox')) {
+    logger.info(`Could not extract domain from browser title: "${windowTitle}"`);
+  }
+
+  return null;
+}
+
+/**
+ * Read browser URL on Windows
+ */
+async function readWindowsBrowserUrl(appName: string, windowTitle: string): Promise<string | null> {
+  // Try CDP first (most reliable for Chromium browsers)
+  const cdpUrl = await tryGetBrowserUrlViaCDP(appName);
+  if (cdpUrl) {
+    return cdpUrl;
+  }
+
+  // Fallback: Try to extract domain from window title
+  const domain = extractDomainFromTitle(windowTitle);
+  if (domain) {
+    // Return as a simple URL
+    return `https://${domain}`;
+  }
+
+  return null;
 }
 
 // --- Shared Logic ---
@@ -190,7 +463,7 @@ export function createUrlWatcher(options: UrlWatcherOptions) {
 
   async function poll() {
     try {
-      let win: { appName: string; windowTitle: string; idleSeconds: number; bundleId?: string } | null = null;
+      let win: { appName: string; windowTitle: string; idleSeconds: number; bundleId?: string; url?: string | null } | null = null;
       let url: string | null = null;
 
       if (process.platform === 'darwin') {
@@ -200,8 +473,9 @@ export function createUrlWatcher(options: UrlWatcherOptions) {
         }
       } else if (process.platform === 'win32') {
         win = await getWindowsActiveWindow();
-        // URL fetching on Windows is hard without native modules. 
-        // We'll rely on window title for now or maybe infer domain from title if possible.
+        if (win) {
+          url = win.url ?? await readWindowsBrowserUrl(win.appName, win.windowTitle);
+        }
       }
 
       if (!win) return;
@@ -258,19 +532,38 @@ export function createUrlWatcher(options: UrlWatcherOptions) {
   };
 }
 
+/**
+ * Close browser tab on Windows using PowerShell to send Ctrl+W
+ */
+async function closeWindowsBrowserTab(appName: string) {
+  try {
+    // PowerShell script to send Ctrl+W to close the active tab
+    const script = `
+Add-Type -AssemblyName System.Windows.Forms
+Start-Sleep -Milliseconds 100
+[System.Windows.Forms.SendKeys]::SendWait("^w")
+`;
+
+    logger.info(`Attempting to close tab for ${appName} on Windows`);
+    await execFileAsync('powershell', ['-Command', script], { timeout: 2000 });
+  } catch (error) {
+    logger.warn('Failed to close tab on Windows', error);
+  }
+}
+
 export async function closeActiveBrowserTab(appName: string) {
   if (process.platform === 'darwin') {
     await closeMacBrowserTab(appName);
   } else if (process.platform === 'win32') {
-    // On Windows, we can't easily close just the tab without native automation.
-    // We could kill the process or send Alt+F4, but that's aggressive.
-    // For now, we'll log a warning.
-    logger.warn('Closing tabs on Windows is not yet supported');
+    await closeWindowsBrowserTab(appName);
   }
 }
 
 function extractDomain(url: string): string | null {
   try {
+    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url)) {
+      url = `https://${url}`;
+    }
     const parsed = new URL(url);
     return parsed.hostname.replace(/^www\./, '');
   } catch {
