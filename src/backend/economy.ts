@@ -70,6 +70,19 @@ export class EconomyEngine extends EventEmitter {
     const app = event.appName ?? null;
 
     const idle = (event.idleSeconds ?? 0) > 10;
+
+    // Check if we've navigated away from a domain with an active paywall session
+    const previousDomain = this.state.activeDomain;
+    if (previousDomain && previousDomain !== domain) {
+      // User navigated away - clear the previous domain's session if it exists
+      const previousSession = this.paywall.getSession(previousDomain);
+      if (previousSession) {
+        logger.info(`User navigated away from ${previousDomain}, clearing paywall session`);
+        this.paywall.clearSession(previousDomain);
+        this.emit('paywall-session-ended', { domain: previousDomain, reason: 'navigated-away' });
+      }
+    }
+
     this.state = {
       ...this.state,
       activeCategory: idle ? 'idle' : category,

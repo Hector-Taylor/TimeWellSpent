@@ -16,7 +16,7 @@ class FakeWallet {
     this.balance -= Math.round(amount);
     return { balance: this.balance };
   }
-  adjust() {}
+  adjust() { }
   getSnapshot() {
     return { balance: this.balance };
   }
@@ -26,7 +26,7 @@ class FakeWallet {
 }
 
 class FakeMarket {
-  constructor(private rates: Record<string, MarketRate>) {}
+  constructor(private rates: Record<string, MarketRate>) { }
   getRate(domain: string) {
     return this.rates[domain] ?? null;
   }
@@ -39,11 +39,11 @@ class FakeMarket {
 }
 
 class FakeSettings {
-  constructor(private config: any) {}
+  constructor(private config: any) { }
   getCategorisation() {
     return this.config;
   }
-  setCategorisation() {}
+  setCategorisation() { }
 }
 
 describe('EconomyEngine', () => {
@@ -97,7 +97,8 @@ describe('EconomyEngine', () => {
       'twitter.com': {
         domain: 'twitter.com',
         ratePerMin: 4,
-        packs: [{ minutes: 10, price: 30 }]
+        packs: [{ minutes: 10, price: 30 }],
+        hourlyModifiers: Array(24).fill(1)
       }
     });
     const settings = new FakeSettings({ productive: [], neutral: [], frivolity: ['twitter.com'] });

@@ -74,7 +74,7 @@ export class PaywallManager extends EventEmitter {
         let currentRate = session.ratePerMin;
         const marketRate = this.market.getRate(session.domain);
         if (marketRate) {
-          const modifier = marketRate.hourlyModifiers[currentHour] ?? 1;
+          const modifier = marketRate.hourlyModifiers?.[currentHour] ?? 1;
           currentRate = marketRate.ratePerMin * modifier;
         }
 

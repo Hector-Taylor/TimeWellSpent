@@ -72,7 +72,7 @@ export class MarketService {
       domain: row.domain,
       ratePerMin: row.rate_per_min,
       packs: JSON.parse(row.packs_json),
-      hourlyModifiers: row.hourly_modifiers_json ? JSON.parse(row.hourly_modifiers_json) : Array(24).fill(1)
+      hourlyModifiers: (row.hourly_modifiers_json ? JSON.parse(row.hourly_modifiers_json) : null) ?? Array(24).fill(1)
     }));
   }
 
@@ -87,7 +87,7 @@ export class MarketService {
       domain: row.domain,
       ratePerMin: row.rate_per_min,
       packs: JSON.parse(row.packs_json),
-      hourlyModifiers: row.hourly_modifiers_json ? JSON.parse(row.hourly_modifiers_json) : Array(24).fill(1)
+      hourlyModifiers: (row.hourly_modifiers_json ? JSON.parse(row.hourly_modifiers_json) : null) ?? Array(24).fill(1)
     };
   }
 }

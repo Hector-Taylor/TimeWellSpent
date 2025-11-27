@@ -167,12 +167,21 @@ async function bootstrap() {
   };
 
   // Initialize Tray
-  // On macOS, we use an empty image for text-only tray.
+  // On macOS, we use a template image (monochrome icon) + text
   // On Windows, we need a real icon.
   let trayIcon: Electron.NativeImage;
 
   if (isMac) {
-    trayIcon = nativeImage.createFromBuffer(Buffer.alloc(0));
+    // Create a simple 16x16 template image (macOS menu bar uses template images)
+    // We'll use a minimal icon - a simple filled circle as a placeholder
+    const size = 16;
+    const canvas = Buffer.from(
+      `<svg width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="8" cy="8" r="6" fill="black"/>
+      </svg>`
+    );
+    trayIcon = nativeImage.createFromBuffer(canvas);
+    trayIcon.setTemplateImage(true); // This makes it work with dark/light mode
   } else {
     // Load icon for Windows/Linux
     const iconPath = path.join(__dirname, '../assets/icon.png');

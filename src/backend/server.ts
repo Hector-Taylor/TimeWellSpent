@@ -171,6 +171,29 @@ export async function createBackend(database: Database): Promise<BackendServices
   ws.app.ws('/events', (socket) => {
     clients.add(socket);
     logger.info('WS client connected', clients.size);
+
+    socket.on('message', (msg: string) => {
+      try {
+        const data = JSON.parse(msg);
+        if (data.type === 'activity' && data.payload) {
+          // Extension is sending us activity events
+          logger.info('Received activity from extension:', data.payload.domain);
+          handleActivity({
+            timestamp: new Date(data.payload.timestamp),
+            source: data.payload.source,
+            appName: data.payload.appName,
+            bundleId: data.payload.bundleId,
+            windowTitle: data.payload.windowTitle,
+            url: data.payload.url,
+            domain: data.payload.domain,
+            idleSeconds: data.payload.idleSeconds || 0
+          });
+        }
+      } catch (e) {
+        logger.error('Failed to parse WS message', e);
+      }
+    });
+
     socket.on('close', () => {
       clients.delete(socket);
     });

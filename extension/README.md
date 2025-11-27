@@ -1,9 +1,35 @@
-# TimeWellSpent Browser Extension (placeholder)
+# TimeWellSpent Chrome Extension
 
-This directory is reserved for the Manifest V3 companion extension. The desktop app already exposes a WebSocket + HTTP bridge on `localhost:17600`. A production extension would:
+A Chrome extension companion for the TimeWellSpent desktop app that provides reliable URL tracking and in-browser blocking.
 
-1. Block frivolity domains with `declarativeNetRequest` rules unless a valid pass exists.
-2. Redirect blocked requests to `http://localhost:17600/paywall?domain=...` so the desktop paywall can guide the user.
-3. Stream `{url, title, ts}` telemetry back to the desktop over WebSocket.
+## Features
 
-The current scaffold simply provides a manifest and `background.js` stub so the project structure is ready for future work.
+- **Real-time URL tracking**: Uses Chrome APIs to track active tabs and send activity to the desktop app.
+- **In-browser blocking**: Shows a blocking overlay when a paywall is enforced (instead of closing the tab).
+- **WebSocket connection**: Connects to the desktop app at `ws://localhost:17600/events`.
+
+## Development
+
+```bash
+pnpm install
+pnpm dev      # Watch mode for development
+pnpm build    # Production build
+```
+
+## Installation
+
+1. Build the extension: `pnpm build`
+2. Open Chrome and navigate to `chrome://extensions/`
+3. Enable "Developer mode" (top right)
+4. Click "Load unpacked"
+5. Select the `dist/` directory
+
+## Architecture
+
+- **background.ts**: Service worker that manages WebSocket connection and tab tracking
+- **content.ts**: Content script injected into all pages to show blocking overlays
+- **popup.tsx**: Extension popup (future: show wallet balance, quick actions)
+
+## Requirements
+
+The TimeWellSpent desktop app must be running for the extension to function.
