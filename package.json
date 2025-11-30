@@ -9,6 +9,7 @@
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "preinstall": "npx only-allow pnpm",
+    "prebuild": "pnpm --filter extension build",
     "start": "electron-forge start",
     "dev": "electron-forge start",
     "build": "electron-forge package",

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import Dashboard from './components/Dashboard';
 import Settings from './components/Settings';
 import EconomyTuner from './components/EconomyTuner';
+import PaywallOverlay from './components/PaywallOverlay';
 import type {
   CategorisationConfig,
   EconomyState,
@@ -63,6 +64,12 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      <div className="window-chrome">
+        <div className="window-chrome-title">TimeWellSpent</div>
+        <div className="window-chrome-meta">
+          <span className="pill ghost">Wallet {wallet?.balance ?? 0}c</span>
+        </div>
+      </div>
       <aside className="sidebar">
         <div className="brand">
           <div className="logo">⏳</div>
@@ -124,23 +131,19 @@ export default function App() {
       </main>
 
       {paywallBlock && (
-        <div className="paywall-overlay">
-          <div className="paywall-modal">
-            <h1>🚫 Access Blocked</h1>
-            <p>You need to pay to access <strong>{paywallBlock.domain || paywallBlock.appName}</strong>.</p>
-            {paywallBlock.reason === 'insufficient-funds' && (
-              <p className="error">Insufficient funds!</p>
-            )}
-            <div className="actions">
-              <button className="primary" onClick={() => api.paywall.startMetered(paywallBlock.domain)}>
-                Pay As You Go
-              </button>
-              <button onClick={() => api.paywall.decline(paywallBlock.domain)}>
-                Close Tab
-              </button>
-            </div>
-          </div>
-        </div>
+        <PaywallOverlay
+          open={!!paywallBlock}
+          state={{
+            domain: paywallBlock.domain || paywallBlock.appName,
+            mode: paywallBlock.mode ?? 'pack',
+            reason: paywallBlock.reason
+          }}
+          wallet={wallet}
+          api={api}
+          marketRates={marketRates}
+          onWallet={setWallet}
+          onClose={() => setPaywallBlock(null)}
+        />
       )}
     </div>
   );

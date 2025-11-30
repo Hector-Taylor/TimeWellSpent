@@ -25,6 +25,9 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('activities:recent', async (_event, payload: { limit?: number }) => {
     return backend.activityTracker.getRecent(payload.limit ?? 50);
   });
+  ipcMain.handle('activities:summary', async (_event, payload: { windowHours?: number }) => {
+    return backend.activityTracker.getSummary(payload.windowHours ?? 24);
+  });
 
   ipcMain.handle('focus:start', async (_event, payload: { duration: number }) => {
     return backend.focus.startSession(payload.duration);
@@ -66,6 +69,9 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('paywall:decline', async (_event, payload: { domain: string }) => {
     await backend.declineDomain(payload.domain);
   });
+  ipcMain.handle('paywall:sessions', () => backend.paywall.listSessions());
+  ipcMain.handle('paywall:pause', (_event, payload: { domain: string }) => backend.paywall.pause(payload.domain));
+  ipcMain.handle('paywall:resume', (_event, payload: { domain: string }) => backend.paywall.resume(payload.domain));
 
   ipcMain.handle('settings:categorisation', () => backend.settings.getCategorisation());
   ipcMain.handle('settings:update-categorisation', (_event, payload) => backend.settings.setCategorisation(payload));

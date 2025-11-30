@@ -16,6 +16,29 @@ export type ActivityRecord = {
   idleSeconds: number;
 };
 
+export type ActivitySummary = {
+  windowHours: number;
+  sampleCount: number;
+  totalSeconds: number;
+  totalsByCategory: Record<ActivityCategory | 'idle' | 'uncategorised', number>;
+  totalsBySource: Record<ActivitySource, number>;
+  topContexts: Array<{
+    label: string;
+    category: ActivityCategory | null;
+    seconds: number;
+    source: ActivitySource;
+    domain: string | null;
+    appName: string | null;
+  }>;
+  timeline: Array<{
+    hour: string;
+    productive: number;
+    neutral: number;
+    frivolity: number;
+    idle: number;
+  }>;
+};
+
 export type WalletSnapshot = {
   balance: number;
 };
@@ -72,6 +95,14 @@ export type Budget = {
   secondsBudgeted: number;
 };
 
+export type PaywallSession = {
+  domain: string;
+  mode: 'metered' | 'pack';
+  ratePerMin: number;
+  remainingSeconds: number;
+  paused?: boolean;
+};
+
 export type RendererApi = {
   wallet: {
     get(): Promise<WalletSnapshot>;
@@ -85,6 +116,7 @@ export type RendererApi = {
   };
   activities: {
     recent(limit?: number): Promise<ActivityRecord[]>;
+    summary(windowHours?: number): Promise<ActivitySummary>;
   };
   market: {
     list(): Promise<MarketRate[]>;
@@ -109,6 +141,9 @@ export type RendererApi = {
     startMetered(domain: string): Promise<unknown>;
     buyPack(domain: string, minutes: number): Promise<unknown>;
     decline(domain: string): Promise<void>;
+    sessions(): Promise<PaywallSession[]>;
+    pause(domain: string): Promise<void>;
+    resume(domain: string): Promise<void>;
   };
   settings: {
     categorisation(): Promise<CategorisationConfig>;

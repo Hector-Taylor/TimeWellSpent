@@ -124,6 +124,11 @@ export async function createBackend(database: Database): Promise<BackendServices
     res.json(activityTracker.getRecent(limit));
   });
 
+  app.get('/activities/summary', (req, res) => {
+    const windowHours = Number(req.query.windowHours ?? 24);
+    res.json(activityTracker.getSummary(windowHours));
+  });
+
   app.get('/intentions', (req, res) => {
     const date = String(req.query.date ?? new Date().toISOString().slice(0, 10));
     res.json(intentions.list(date));
@@ -168,6 +173,45 @@ export async function createBackend(database: Database): Promise<BackendServices
     res.json({ ok: true });
   });
 
+  // Extension sync endpoint
+  app.get('/extension/state', (_req, res) => {
+    try {
+      const categorisation = settings.getCategorisation();
+      const marketRates: Record<string, MarketRate> = {};
+
+      for (const rate of market.listRates()) {
+        marketRates[rate.domain] = rate;
+      }
+
+      const sessionsRecord = paywall.listSessions().reduce<Record<string, { domain: string; mode: 'metered' | 'pack'; ratePerMin: number; remainingSeconds: number; paused?: boolean }>>((acc, session) => {
+        acc[session.domain] = {
+          domain: session.domain,
+          mode: session.mode,
+          ratePerMin: session.ratePerMin,
+          remainingSeconds: session.remainingSeconds,
+          paused: session.paused
+        };
+        return acc;
+      }, {});
+
+      res.json({
+        wallet: {
+          balance: wallet.getSnapshot().balance,
+          lastSynced: Date.now()
+        },
+        marketRates,
+        settings: {
+          frivolityDomains: categorisation.frivolity,
+          productiveDomains: categorisation.productive,
+          neutralDomains: categorisation.neutral
+        },
+        sessions: sessionsRecord
+      });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
   ws.app.ws('/events', (socket) => {
     clients.add(socket);
     logger.info('WS client connected', clients.size);
@@ -188,11 +232,33 @@ export async function createBackend(database: Database): Promise<BackendServices
             domain: data.payload.domain,
             idleSeconds: data.payload.idleSeconds || 0
           });
-        }
-      } catch (e) {
-        logger.error('Failed to parse WS message', e);
+    } else if (data.type === 'paywall:start-metered' && data.payload?.domain) {
+      try {
+        const session = economy.startPayAsYouGo(String(data.payload.domain));
+        broadcast({ type: 'paywall-session-started', payload: session });
+      } catch (error) {
+        logger.error('Failed to start metered from extension', error);
+            socket.send(JSON.stringify({ type: 'error', payload: { message: (error as Error).message } }));
+          }
+    } else if (data.type === 'paywall:buy-pack' && data.payload?.domain && data.payload?.minutes) {
+      try {
+        const session = economy.buyPack(String(data.payload.domain), Number(data.payload.minutes));
+        broadcast({ type: 'paywall-session-started', payload: session });
+      } catch (error) {
+        logger.error('Failed to buy pack from extension', error);
+        socket.send(JSON.stringify({ type: 'error', payload: { message: (error as Error).message } }));
       }
-    });
+    } else if (data.type === 'paywall:pause' && data.payload?.domain) {
+      paywall.pause(String(data.payload.domain));
+      broadcast({ type: 'paywall-session-paused', payload: { domain: data.payload.domain, reason: 'manual' } });
+    } else if (data.type === 'paywall:resume' && data.payload?.domain) {
+      paywall.resume(String(data.payload.domain));
+      broadcast({ type: 'paywall-session-resumed', payload: { domain: data.payload.domain } });
+    }
+  } catch (e) {
+    logger.error('Failed to parse WS message', e);
+  }
+});
 
     socket.on('close', () => {
       clients.delete(socket);
@@ -211,6 +277,8 @@ export async function createBackend(database: Database): Promise<BackendServices
   economy.on('wallet-updated', (snapshot) => broadcast({ type: 'wallet', payload: snapshot }));
   economy.on('paywall-required', (payload) => broadcast({ type: 'paywall-required', payload }));
   economy.on('paywall-session-started', (payload) => broadcast({ type: 'paywall-session-started', payload }));
+  economy.on('paywall-session-paused', (payload) => broadcast({ type: 'paywall-session-paused', payload }));
+  economy.on('paywall-session-resumed', (payload) => broadcast({ type: 'paywall-session-resumed', payload }));
   economy.on('paywall-session-ended', (payload) => broadcast({ type: 'paywall-session-ended', payload }));
   economy.on('activity', (payload) => broadcast({ type: 'activity', payload }));
   economy.on('paywall-block', (payload: { domain: string; appName?: string | null }) => {

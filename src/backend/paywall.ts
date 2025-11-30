@@ -9,6 +9,7 @@ export type PaywallSession = {
   ratePerMin: number;
   remainingSeconds: number;
   lastTick: number;
+  paused?: boolean;
 };
 
 export class PaywallManager extends EventEmitter {
@@ -29,6 +30,10 @@ export class PaywallManager extends EventEmitter {
     return session.remainingSeconds > 0;
   }
 
+  listSessions() {
+    return Array.from(this.sessions.values()).map((session) => ({ ...session }));
+  }
+
   clearSession(domain: string) {
     this.sessions.delete(domain);
   }
@@ -41,7 +46,8 @@ export class PaywallManager extends EventEmitter {
       mode: 'metered',
       ratePerMin: rate.ratePerMin,
       remainingSeconds: Infinity,
-      lastTick: Date.now()
+      lastTick: Date.now(),
+      paused: false
     };
     this.sessions.set(domain, session);
     this.emit('session-started', session);
@@ -58,18 +64,45 @@ export class PaywallManager extends EventEmitter {
       mode: 'pack',
       ratePerMin: rate.ratePerMin,
       remainingSeconds: minutes * 60,
-      lastTick: Date.now()
+      lastTick: Date.now(),
+      paused: false
     };
     this.sessions.set(domain, session);
     this.emit('session-started', session);
     return session;
   }
 
-  tick(intervalSeconds: number) {
+  pause(domain: string) {
+    const session = this.sessions.get(domain);
+    if (!session || session.paused) return;
+    session.paused = true;
+    this.emit('session-paused', { domain, reason: 'manual' });
+  }
+
+  resume(domain: string) {
+    const session = this.sessions.get(domain);
+    if (!session || !session.paused) return;
+    session.paused = false;
+    this.emit('session-resumed', { domain });
+  }
+
+  tick(intervalSeconds: number, activeDomain?: string | null) {
     const now = Date.now();
     const currentHour = new Date().getHours();
 
     for (const session of [...this.sessions.values()]) {
+      const isActive = activeDomain ? session.domain === activeDomain : false;
+      if (!isActive) {
+        if (!session.paused) {
+          session.paused = true;
+          this.emit('session-paused', { domain: session.domain, reason: 'inactive' });
+        }
+        continue;
+      } else if (session.paused) {
+        session.paused = false;
+        this.emit('session-resumed', { domain: session.domain });
+      }
+
       if (session.mode === 'metered') {
         let currentRate = session.ratePerMin;
         const marketRate = this.market.getRate(session.domain);

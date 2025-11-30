@@ -245,6 +245,8 @@ async function bootstrap() {
   backend.economy.on('paywall-required', (payload) => emitToRenderers('paywall:required', payload));
   backend.economy.on('paywall-session-started', (payload) => emitToRenderers('paywall:session-started', payload));
   backend.economy.on('paywall-session-ended', (payload) => emitToRenderers('paywall:session-ended', payload));
+  backend.economy.on('paywall-session-paused', (payload) => emitToRenderers('paywall:session-paused', payload));
+  backend.economy.on('paywall-session-resumed', (payload) => emitToRenderers('paywall:session-resumed', payload));
   backend.economy.on('activity', (payload) => emitToRenderers('economy:activity', payload));
 
   const watcher = createUrlWatcher({

@@ -1,42 +1,82 @@
+:root {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: #050810;
+  color: #f1f4ff;
+}
+
+body {
+  margin: 0;
+}
+
 #root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+  min-width: 320px;
+  max-width: 420px;
+  padding: 16px;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+.banner {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 14px;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
-  }
+.badge {
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
 }
 
-.card {
-  padding: 2em;
+.badge.on {
+  background: rgba(124, 244, 212, 0.15);
+  color: #7cf4d4;
 }
 
-.read-the-docs {
-  color: #888;
+.badge.off {
+  background: rgba(255, 139, 139, 0.18);
+  color: #ffb6b6;
+}
+
+.session-card {
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: grid;
+  gap: 6px;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+}
+
+button {
+  border: none;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: linear-gradient(120deg, #7cf4d4, #2c7dff);
+  color: #050810;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f1f4ff;
+}
+
+small {
+  color: #a7b6d8;
 }

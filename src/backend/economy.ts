@@ -49,6 +49,12 @@ export class EconomyEngine extends EventEmitter {
     this.paywall.on('session-started', (session) => {
       this.emit('paywall-session-started', session);
     });
+    this.paywall.on('session-paused', (payload) => {
+      this.emit('paywall-session-paused', payload);
+    });
+    this.paywall.on('session-resumed', (payload) => {
+      this.emit('paywall-session-resumed', payload);
+    });
     this.paywall.on('wallet-update', (snapshot) => {
       this.emit('wallet-updated', snapshot);
     });
@@ -163,7 +169,7 @@ export class EconomyEngine extends EventEmitter {
   }
 
   private tickSpend() {
-    this.paywall.tick(SPEND_INTERVAL_SECONDS);
+    this.paywall.tick(SPEND_INTERVAL_SECONDS, this.state.activeDomain);
   }
 
   getState() {
@@ -207,9 +213,10 @@ export class EconomyEngine extends EventEmitter {
       this.market.upsertRate(rate);
     }
     const pack = rate.packs.find((p) => p.minutes === minutes);
+    const price = pack ? pack.price : Math.max(1, Math.round(minutes * rate.ratePerMin));
     if (!pack) {
-      throw new Error(`Pack ${minutes} minutes not found for ${domain}`);
+      logger.info(`Creating ad-hoc pack for ${domain} (${minutes} minutes @ ${price} coins)`);
     }
-    return this.paywall.buyPack(domain, pack.minutes, pack.price);
+    return this.paywall.buyPack(domain, minutes, price);
   }
 }

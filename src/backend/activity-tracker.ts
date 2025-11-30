@@ -1,6 +1,6 @@
 import type { Database as BetterSqlite3Database, Statement } from 'better-sqlite3';
 import type { Database } from './storage';
-import type { ActivityRecord, ActivityCategory } from '@shared/types';
+import type { ActivityRecord, ActivityCategory, ActivitySummary, ActivitySource } from '@shared/types';
 import { logger } from '@shared/logger';
 
 export type ActivityEvent = {
@@ -30,6 +30,7 @@ export class ActivityTracker {
   private updateStmt: Statement;
   private closeStmt: Statement;
   private recentStmt: Statement;
+  private summaryStmt: Statement;
   private current: CurrentActivity | null = null;
 
   constructor(database: Database) {
@@ -47,6 +48,9 @@ export class ActivityTracker {
     );
     this.recentStmt = this.db.prepare(
       'SELECT id, started_at as startedAt, ended_at as endedAt, source, app_name as appName, bundle_id as bundleId, window_title as windowTitle, url, domain, category, seconds_active as secondsActive, idle_seconds as idleSeconds FROM activities ORDER BY started_at DESC LIMIT ?'
+    );
+    this.summaryStmt = this.db.prepare(
+      'SELECT started_at as startedAt, source, app_name as appName, domain, category, seconds_active as secondsActive, idle_seconds as idleSeconds FROM activities WHERE started_at >= datetime(\'now\', ?) ORDER BY started_at DESC'
     );
   }
 
@@ -110,6 +114,97 @@ export class ActivityTracker {
 
   getRecent(limit = 50) {
     return this.recentStmt.all(limit) as ActivityRecord[];
+  }
+
+  getSummary(windowHours = 24): ActivitySummary {
+    const rangeHours = Math.min(Math.max(windowHours, 1), 168); // clamp between 1h and 7d
+    const rows = this.summaryStmt.all(`-${rangeHours} hours`) as Array<{
+      startedAt: string;
+      source: ActivitySource;
+      appName: string | null;
+      domain: string | null;
+      category: ActivityCategory | null;
+      secondsActive: number;
+      idleSeconds: number;
+    }>;
+
+    const totalsByCategory: Record<ActivityCategory | 'idle' | 'uncategorised', number> = {
+      productive: 0,
+      neutral: 0,
+      frivolity: 0,
+      idle: 0,
+      uncategorised: 0
+    };
+    const totalsBySource: Record<ActivitySource, number> = { app: 0, url: 0 };
+    const contextTotals = new Map<string, {
+      label: string;
+      category: ActivityCategory | null;
+      seconds: number;
+      source: ActivitySource;
+      domain: string | null;
+      appName: string | null;
+    }>();
+
+    const now = Date.now();
+    const hourMs = 1000 * 60 * 60;
+    const timeline = Array.from({ length: rangeHours }).map((_, idx) => {
+      const ts = new Date(now - (rangeHours - 1 - idx) * hourMs);
+      const hour = ts.toLocaleTimeString([], { hour: 'numeric' });
+      return { hour, productive: 0, neutral: 0, frivolity: 0, idle: 0 };
+    });
+
+    let totalSeconds = 0;
+
+    for (const row of rows) {
+      const category: ActivityCategory | 'uncategorised' = row.category ?? 'uncategorised';
+      const activeSeconds = Math.max(0, Math.round(row.secondsActive));
+      const idleSeconds = Math.max(0, Math.round(row.idleSeconds));
+      totalSeconds += activeSeconds;
+
+      totalsByCategory[category] = (totalsByCategory[category] ?? 0) + activeSeconds;
+      totalsByCategory.idle += idleSeconds;
+      totalsBySource[row.source] += activeSeconds;
+
+      const key = row.domain ?? row.appName ?? 'Unknown';
+      if (!contextTotals.has(key)) {
+        contextTotals.set(key, {
+          label: key,
+          category: row.category,
+          seconds: 0,
+          source: row.source,
+          domain: row.domain ?? null,
+          appName: row.appName ?? null
+        });
+      }
+      const existing = contextTotals.get(key)!;
+      existing.seconds += activeSeconds;
+
+      const ts = new Date(row.startedAt).getTime();
+      const diffHours = Math.floor((now - ts) / hourMs);
+      const bucketIndex = rangeHours - diffHours - 1;
+      if (bucketIndex >= 0 && bucketIndex < timeline.length) {
+        if (row.category && timeline[bucketIndex][row.category] !== undefined) {
+          timeline[bucketIndex][row.category] += activeSeconds;
+        } else {
+          timeline[bucketIndex].neutral += activeSeconds;
+        }
+        timeline[bucketIndex].idle += idleSeconds;
+      }
+    }
+
+    const topContexts = Array.from(contextTotals.values())
+      .sort((a, b) => b.seconds - a.seconds)
+      .slice(0, 8);
+
+    return {
+      windowHours: rangeHours,
+      sampleCount: rows.length,
+      totalSeconds,
+      totalsByCategory,
+      totalsBySource,
+      topContexts,
+      timeline
+    };
   }
 
   stop() {

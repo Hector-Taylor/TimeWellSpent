@@ -22,7 +22,8 @@ const api: RendererApi = {
     }
   },
   activities: {
-    recent: (limit) => ipcRenderer.invoke('activities:recent', { limit })
+    recent: (limit) => ipcRenderer.invoke('activities:recent', { limit }),
+    summary: (windowHours) => ipcRenderer.invoke('activities:summary', { windowHours })
   },
   market: {
     list: () => ipcRenderer.invoke('market:list'),
@@ -46,7 +47,10 @@ const api: RendererApi = {
   paywall: {
     startMetered: (domain) => ipcRenderer.invoke('paywall:start-metered', { domain }),
     buyPack: (domain, minutes) => ipcRenderer.invoke('paywall:buy-pack', { domain, minutes }),
-    decline: (domain) => ipcRenderer.invoke('paywall:decline', { domain })
+    decline: (domain) => ipcRenderer.invoke('paywall:decline', { domain }),
+    sessions: () => ipcRenderer.invoke('paywall:sessions'),
+    pause: (domain) => ipcRenderer.invoke('paywall:pause', { domain }),
+    resume: (domain) => ipcRenderer.invoke('paywall:resume', { domain })
   },
   settings: {
     categorisation: () => ipcRenderer.invoke('settings:categorisation'),
