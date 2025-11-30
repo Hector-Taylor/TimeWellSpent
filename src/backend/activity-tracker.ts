@@ -147,11 +147,34 @@ export class ActivityTracker {
 
     const now = Date.now();
     const hourMs = 1000 * 60 * 60;
-    const timeline = Array.from({ length: rangeHours }).map((_, idx) => {
-      const ts = new Date(now - (rangeHours - 1 - idx) * hourMs);
-      const hour = ts.toLocaleTimeString([], { hour: 'numeric' });
-      return { hour, productive: 0, neutral: 0, frivolity: 0, idle: 0 };
+    const latestStart = rows.length ? new Date(rows[0].startedAt).getTime() : now;
+    const earliestStart = rows.length ? new Date(rows[rows.length - 1].startedAt).getTime() : now - rangeHours * hourMs;
+    const spanHours = rows.length ? Math.max(1, Math.ceil((latestStart - earliestStart) / hourMs) + 1) : rangeHours;
+    const bucketCount = Math.min(rangeHours, Math.max(1, spanHours));
+    const baseTs = (rows.length ? latestStart : now) - (bucketCount - 1) * hourMs;
+
+    const timeline = Array.from({ length: bucketCount }).map((_, idx) => {
+      const ts = new Date(baseTs + idx * hourMs);
+      const hour = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return {
+        hour,
+        start: ts.toISOString(),
+        productive: 0,
+        neutral: 0,
+        frivolity: 0,
+        idle: 0,
+        dominant: 'idle' as ActivityCategory | 'idle',
+        topContext: null as ActivitySummary['timeline'][number]['topContext']
+      };
     });
+    const timelineContexts: Array<Map<string, {
+      label: string;
+      category: ActivityCategory | null;
+      seconds: number;
+      source: ActivitySource;
+      domain: string | null;
+      appName: string | null;
+    }>> = Array.from({ length: bucketCount }).map(() => new Map());
 
     let totalSeconds = 0;
 
@@ -180,8 +203,7 @@ export class ActivityTracker {
       existing.seconds += activeSeconds;
 
       const ts = new Date(row.startedAt).getTime();
-      const diffHours = Math.floor((now - ts) / hourMs);
-      const bucketIndex = rangeHours - diffHours - 1;
+      const bucketIndex = Math.min(bucketCount - 1, Math.max(0, Math.floor((ts - baseTs) / hourMs)));
       if (bucketIndex >= 0 && bucketIndex < timeline.length) {
         if (row.category && timeline[bucketIndex][row.category] !== undefined) {
           timeline[bucketIndex][row.category] += activeSeconds;
@@ -189,15 +211,46 @@ export class ActivityTracker {
           timeline[bucketIndex].neutral += activeSeconds;
         }
         timeline[bucketIndex].idle += idleSeconds;
+
+        const key = row.domain ?? row.appName ?? 'Unknown';
+        const contextMap = timelineContexts[bucketIndex];
+        const ctx = contextMap.get(key) ?? {
+          label: key,
+          category: row.category ?? null,
+          seconds: 0,
+          source: row.source,
+          domain: row.domain ?? null,
+          appName: row.appName ?? null
+        };
+        ctx.seconds += activeSeconds;
+        contextMap.set(key, ctx);
       }
     }
+
+    timeline.forEach((slot, idx) => {
+      const counts: Array<{ key: ActivityCategory | 'idle'; value: number }> = [
+        { key: 'productive', value: slot.productive },
+        { key: 'neutral', value: slot.neutral },
+        { key: 'frivolity', value: slot.frivolity },
+        { key: 'idle', value: slot.idle }
+      ];
+      const dominant = counts.reduce((prev, curr) => (curr.value > prev.value ? curr : prev), counts[0]);
+      slot.dominant = dominant.value > 0 ? dominant.key : 'idle';
+      const contextMap = timelineContexts[idx];
+      if (contextMap.size > 0) {
+        const top = [...contextMap.values()].sort((a, b) => b.seconds - a.seconds)[0];
+        slot.topContext = top;
+      } else {
+        slot.topContext = null;
+      }
+    });
 
     const topContexts = Array.from(contextTotals.values())
       .sort((a, b) => b.seconds - a.seconds)
       .slice(0, 8);
 
     return {
-      windowHours: rangeHours,
+      windowHours: bucketCount,
       sampleCount: rows.length,
       totalSeconds,
       totalsByCategory,

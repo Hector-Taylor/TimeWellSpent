@@ -8,7 +8,7 @@ import type {
   PaywallSession,
   WalletSnapshot
 } from '@shared/types';
-import ProductivitySignal from './ProductivitySignal';
+import DayCompass from './DayCompass';
 import ActivityChart from './ActivityChart';
 
 interface DashboardProps {
@@ -101,7 +101,7 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
       </header>
 
       <div className="panel-body dashboard-grid">
-        <ProductivitySignal economy={economy} />
+        <DayCompass summary={summary} economy={economy} />
 
         <div className="card now-card">
           <div className="card-header-row">

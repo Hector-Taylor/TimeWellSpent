@@ -32,10 +32,20 @@ export type ActivitySummary = {
   }>;
   timeline: Array<{
     hour: string;
+    start: string;
     productive: number;
     neutral: number;
     frivolity: number;
     idle: number;
+    dominant: ActivityCategory | 'idle';
+    topContext: {
+      label: string;
+      category: ActivityCategory | null;
+      seconds: number;
+      source: ActivitySource;
+      domain: string | null;
+      appName: string | null;
+    } | null;
   }>;
 };
 
