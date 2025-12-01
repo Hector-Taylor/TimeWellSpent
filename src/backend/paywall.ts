@@ -38,6 +38,14 @@ export class PaywallManager extends EventEmitter {
     this.sessions.delete(domain);
   }
 
+  cancelPack(domain: string) {
+    const session = this.sessions.get(domain);
+    if (!session || session.mode !== 'pack') return null;
+    this.sessions.delete(domain);
+    this.emit('session-ended', { domain, reason: 'cancelled' });
+    return session;
+  }
+
   startMetered(domain: string) {
     const rate = this.market.getRate(domain);
     if (!rate) throw new Error(`No market rate configured for ${domain}`);

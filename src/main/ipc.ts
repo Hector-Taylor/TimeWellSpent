@@ -69,6 +69,9 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('paywall:decline', async (_event, payload: { domain: string }) => {
     await backend.declineDomain(payload.domain);
   });
+  ipcMain.handle('paywall:cancel-pack', (_event, payload: { domain: string }) => {
+    return backend.paywall.cancelPack(payload.domain);
+  });
   ipcMain.handle('paywall:sessions', () => backend.paywall.listSessions());
   ipcMain.handle('paywall:pause', (_event, payload: { domain: string }) => backend.paywall.pause(payload.domain));
   ipcMain.handle('paywall:resume', (_event, payload: { domain: string }) => backend.paywall.resume(payload.domain));

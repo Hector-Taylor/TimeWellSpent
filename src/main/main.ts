@@ -207,17 +207,42 @@ async function bootstrap() {
   }
   console.log('Tray initialized');
 
-  const contextMenu = Menu.buildFromTemplate([
-    { label: 'Show App', click: () => mainWindow?.show() },
-    { type: 'separator' },
-    { label: 'Quit', click: () => app.quit() }
-  ]);
-  tray.setContextMenu(contextMenu);
+  const buildTrayMenu = () => {
+    const walletBalance = backend.wallet.getSnapshot().balance;
+    const focus = backend.focus.getCurrent();
+    const sessions = backend.paywall.listSessions();
+
+    const sessionItems = sessions.map((session) => ({
+      label: `${session.domain} • ${session.mode === 'pack' ? Math.ceil(session.remainingSeconds / 60) + 'm' : 'metered'}${session.paused ? ' (paused)' : ''}`,
+      submenu: [
+        session.mode === 'pack' ? {
+          label: 'Cancel pack',
+          click: () => backend.paywall.cancelPack(session.domain)
+        } : { label: 'End metered session', click: () => backend.paywall.clearSession(session.domain) }
+      ]
+    }));
+
+    const focusLabel = focus ? `Focus: ${Math.ceil(focus.remaining / 60)}m left` : 'Focus: none';
+
+    const contextMenu = Menu.buildFromTemplate([
+      { label: `Wallet: ${walletBalance} coins`, enabled: false },
+      { label: focusLabel, enabled: false },
+      ...(sessionItems.length ? [{ type: 'separator' }, ...sessionItems] : []),
+      { type: 'separator' },
+      { label: 'Show App', click: () => mainWindow?.show() },
+      { type: 'separator' },
+      { label: 'Quit', click: () => app.quit() }
+    ]);
+    tray?.setContextMenu(contextMenu);
+  };
+
+  buildTrayMenu();
 
   backend.focus.on('tick', (payload) => {
     emitToRenderers('focus:tick', payload);
     const minutes = Math.ceil(payload.remaining / 60);
     updateTray(`🎯 ${minutes}m`);
+    buildTrayMenu();
   });
 
   backend.focus.on('start', (payload) => {
@@ -229,6 +254,7 @@ async function bootstrap() {
     emitToRenderers('focus:stop', payload);
     const balance = backend.wallet.getSnapshot().balance;
     updateTray(`💰 ${balance}`);
+    buildTrayMenu();
   });
 
   backend.economy.on('wallet-updated', (payload) => {
@@ -237,6 +263,7 @@ async function bootstrap() {
     if (!backend.focus.getCurrent()) {
       updateTray(`💰 ${payload.balance}`);
     }
+    buildTrayMenu();
   });
 
   // Initial tray state

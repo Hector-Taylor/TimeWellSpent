@@ -215,7 +215,7 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
           </ul>
         </div>
 
-        <div className="card">
+        <div className="card activity-scroll">
           <h2>Recent activity</h2>
           <ul className="activity-list">
             {activities.map((activity) => (

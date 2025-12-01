@@ -173,6 +173,16 @@ export async function createBackend(database: Database): Promise<BackendServices
     res.json({ ok: true });
   });
 
+  app.post('/paywall/cancel', (req, res) => {
+    try {
+      const { domain } = req.body as { domain: string };
+      const session = paywall.cancelPack(domain);
+      res.json({ session });
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
   // Extension sync endpoint
   app.get('/extension/state', (_req, res) => {
     try {
