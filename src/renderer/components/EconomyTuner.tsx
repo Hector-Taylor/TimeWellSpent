@@ -18,6 +18,9 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
     const [activeTab, setActiveTab] = useState<'productive' | 'frivolity'>('productive');
     const [saving, setSaving] = useState(false);
 
+    const [isAdding, setIsAdding] = useState(false);
+    const [newDomain, setNewDomain] = useState('');
+
     useEffect(() => {
         loadData();
     }, []);
@@ -66,12 +69,12 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
 
     // Auto-select first item when tab changes or data loads
     useEffect(() => {
-        if (filteredItems.length > 0 && (!selectedId || !filteredItems.find(i => i.id === selectedId))) {
+        if (!isAdding && filteredItems.length > 0 && (!selectedId || !filteredItems.find(i => i.id === selectedId))) {
             setSelectedId(filteredItems[0].id);
-        } else if (filteredItems.length === 0) {
+        } else if (filteredItems.length === 0 && !isAdding) {
             setSelectedId(null);
         }
-    }, [activeTab, items]);
+    }, [activeTab, items, isAdding]);
 
     const selectedItem = items.find(i => i.id === selectedId);
 
@@ -96,6 +99,32 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
         setSaving(false);
     };
 
+    const handleAddProfile = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newDomain.trim()) return;
+
+        const domain = newDomain.trim();
+        // Check if already exists
+        if (items.find(i => i.id === domain)) {
+            alert('Profile already exists');
+            return;
+        }
+
+        const newRate: MarketRate = {
+            domain,
+            ratePerMin: 3,
+            packs: [],
+            hourlyModifiers: Array(24).fill(1)
+        };
+
+        await api.market.upsert(newRate);
+        await loadData();
+        setNewDomain('');
+        setIsAdding(false);
+        setSelectedId(domain);
+        setActiveTab('frivolity'); // Switch to frivolity as that's where new items go
+    };
+
     const title = useMemo(() => activeTab === 'productive' ? 'Earn profiles' : 'Spend profiles', [activeTab]);
     const subtitle = useMemo(() => activeTab === 'productive'
         ? 'Tune how productive apps reward you over the day.'
@@ -115,7 +144,7 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
 
     return (
         <section className="panel tuner-panel">
-            <header className="panel-header">
+            <header className="panel-header tuner-header-row">
                 <div>
                     <p className="eyebrow">Economy</p>
                     <h1>{title}</h1>
@@ -137,6 +166,26 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
 
             <div className="tuner-layout">
                 <aside className="tuner-list">
+                    <div style={{ padding: '0 4px 8px 4px', borderBottom: '1px solid rgba(255,255,255,0.05)', marginBottom: '8px' }}>
+                        {!isAdding ? (
+                            <button className="ghost" style={{ width: '100%', textAlign: 'center', fontSize: '13px' }} onClick={() => setIsAdding(true)}>
+                                + Add Profile
+                            </button>
+                        ) : (
+                            <form onSubmit={handleAddProfile} style={{ display: 'flex', gap: '6px' }}>
+                                <input
+                                    autoFocus
+                                    placeholder="domain.com"
+                                    value={newDomain}
+                                    onChange={e => setNewDomain(e.target.value)}
+                                    style={{ flex: 1, minWidth: 0, padding: '6px 8px', fontSize: '13px', background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: 'white' }}
+                                />
+                                <button type="submit" className="primary" style={{ padding: '6px 10px', fontSize: '13px' }}>Add</button>
+                                <button type="button" className="ghost" style={{ padding: '6px', fontSize: '13px' }} onClick={() => setIsAdding(false)}>✕</button>
+                            </form>
+                        )}
+                    </div>
+
                     {filteredItems.map(item => (
                         <button
                             key={item.id}
@@ -154,7 +203,7 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
 
                 <main className="tuner-editor">
                     {selectedItem ? (
-                        <div className="tuner-grid">
+                        <div className={`tuner-grid ${selectedItem.type === 'productive' ? 'single' : ''}`}>
                             <div className="card tuner-primary">
                                 <div className="tuner-header">
                                     <div>

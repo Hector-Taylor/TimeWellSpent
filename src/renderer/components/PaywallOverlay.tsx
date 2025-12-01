@@ -110,13 +110,16 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
   return (
     <div className="paywall-overlay">
       <div className="paywall-modal">
-        <header>
-          <h2>{state.domain}</h2>
-          <p className="subtle">
-            {blocked
-              ? 'TimeWellSpent closed this tab — unlock access by paying for screen time.'
-              : 'Stay intentional: spend f-coins to access this site.'}
-          </p>
+        <header className="paywall-modal-header">
+          <div>
+            <h2>{state.domain}</h2>
+            <p className="subtle">
+              {blocked
+                ? 'TimeWellSpent closed this tab — unlock access by paying for screen time.'
+                : 'Stay intentional: spend f-coins to access this site.'}
+            </p>
+          </div>
+          <button className="modal-close" aria-label="Close paywall" onClick={onClose}>×</button>
         </header>
         <div className="wallet-inline">
           <span>Balance</span>

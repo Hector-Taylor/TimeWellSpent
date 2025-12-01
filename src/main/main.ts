@@ -16,7 +16,9 @@ let stopWatcher: (() => void) | null = null;
 async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
-    height: 800,
+    height: 820,
+    minWidth: 1100,
+    minHeight: 760,
     title: 'Time Well Spent',
     show: false,
     ...(isMac ? {

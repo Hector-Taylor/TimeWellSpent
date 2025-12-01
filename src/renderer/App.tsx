@@ -65,9 +65,12 @@ export default function App() {
   return (
     <div className="app-shell">
       <div className="window-chrome">
-        <div className="window-chrome-title">TimeWellSpent</div>
+        <div className="window-chrome-title" aria-hidden>
+          <div className="title-dot" />
+          <span>TimeWellSpent</span>
+        </div>
         <div className="window-chrome-meta">
-          <span className="pill ghost">Wallet {wallet?.balance ?? 0}c</span>
+          <span className="pill ghost big">Wallet {wallet?.balance ?? 0}c</span>
         </div>
       </div>
       <aside className="sidebar">
