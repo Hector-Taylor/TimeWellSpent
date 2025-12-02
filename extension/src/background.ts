@@ -275,8 +275,11 @@ function startActivityTicker() {
     }, 10000);
 }
 
-function hydrateIdleState() {
-    chrome.idle.queryState(15, (state) => {
+async function hydrateIdleState() {
+    const threshold = await storage.getIdleThreshold();
+    chrome.idle.setDetectionInterval(threshold);
+
+    chrome.idle.queryState(threshold, (state) => {
         idleState = state as IdleState;
         if (state === 'active') {
             lastIdleChange = Date.now();
@@ -287,6 +290,22 @@ function hydrateIdleState() {
         idleState = state as IdleState;
         if (state === 'active') {
             lastIdleChange = Date.now();
+        }
+    });
+
+    // Listen for storage changes to update threshold
+    chrome.storage.onChanged.addListener((changes) => {
+        if (changes.state && changes.state.newValue) {
+            const newState = changes.state.newValue as { settings?: { idleThreshold?: number } };
+            const oldState = changes.state.oldValue as { settings?: { idleThreshold?: number } } | undefined;
+
+            const newThreshold = newState.settings?.idleThreshold;
+            const oldThreshold = oldState?.settings?.idleThreshold;
+
+            if (newThreshold && newThreshold !== oldThreshold) {
+                console.log('Updating idle threshold to', newThreshold);
+                chrome.idle.setDetectionInterval(newThreshold);
+            }
         }
     });
 }

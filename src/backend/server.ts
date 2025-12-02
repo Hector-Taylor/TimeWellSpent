@@ -183,6 +183,16 @@ export async function createBackend(database: Database): Promise<BackendServices
     }
   });
 
+  app.get('/settings/idle-threshold', (_req, res) => {
+    res.json({ threshold: settings.getIdleThreshold() });
+  });
+
+  app.post('/settings/idle-threshold', (req, res) => {
+    const { threshold } = req.body as { threshold: number };
+    settings.setIdleThreshold(Number(threshold));
+    res.json({ ok: true });
+  });
+
   // Extension sync endpoint
   app.get('/extension/state', (_req, res) => {
     try {
@@ -213,7 +223,8 @@ export async function createBackend(database: Database): Promise<BackendServices
         settings: {
           frivolityDomains: categorisation.frivolity,
           productiveDomains: categorisation.productive,
-          neutralDomains: categorisation.neutral
+          neutralDomains: categorisation.neutral,
+          idleThreshold: settings.getIdleThreshold()
         },
         sessions: sessionsRecord
       });
@@ -242,33 +253,33 @@ export async function createBackend(database: Database): Promise<BackendServices
             domain: data.payload.domain,
             idleSeconds: data.payload.idleSeconds || 0
           });
-    } else if (data.type === 'paywall:start-metered' && data.payload?.domain) {
-      try {
-        const session = economy.startPayAsYouGo(String(data.payload.domain));
-        broadcast({ type: 'paywall-session-started', payload: session });
-      } catch (error) {
-        logger.error('Failed to start metered from extension', error);
+        } else if (data.type === 'paywall:start-metered' && data.payload?.domain) {
+          try {
+            const session = economy.startPayAsYouGo(String(data.payload.domain));
+            broadcast({ type: 'paywall-session-started', payload: session });
+          } catch (error) {
+            logger.error('Failed to start metered from extension', error);
             socket.send(JSON.stringify({ type: 'error', payload: { message: (error as Error).message } }));
           }
-    } else if (data.type === 'paywall:buy-pack' && data.payload?.domain && data.payload?.minutes) {
-      try {
-        const session = economy.buyPack(String(data.payload.domain), Number(data.payload.minutes));
-        broadcast({ type: 'paywall-session-started', payload: session });
-      } catch (error) {
-        logger.error('Failed to buy pack from extension', error);
-        socket.send(JSON.stringify({ type: 'error', payload: { message: (error as Error).message } }));
+        } else if (data.type === 'paywall:buy-pack' && data.payload?.domain && data.payload?.minutes) {
+          try {
+            const session = economy.buyPack(String(data.payload.domain), Number(data.payload.minutes));
+            broadcast({ type: 'paywall-session-started', payload: session });
+          } catch (error) {
+            logger.error('Failed to buy pack from extension', error);
+            socket.send(JSON.stringify({ type: 'error', payload: { message: (error as Error).message } }));
+          }
+        } else if (data.type === 'paywall:pause' && data.payload?.domain) {
+          paywall.pause(String(data.payload.domain));
+          broadcast({ type: 'paywall-session-paused', payload: { domain: data.payload.domain, reason: 'manual' } });
+        } else if (data.type === 'paywall:resume' && data.payload?.domain) {
+          paywall.resume(String(data.payload.domain));
+          broadcast({ type: 'paywall-session-resumed', payload: { domain: data.payload.domain } });
+        }
+      } catch (e) {
+        logger.error('Failed to parse WS message', e);
       }
-    } else if (data.type === 'paywall:pause' && data.payload?.domain) {
-      paywall.pause(String(data.payload.domain));
-      broadcast({ type: 'paywall-session-paused', payload: { domain: data.payload.domain, reason: 'manual' } });
-    } else if (data.type === 'paywall:resume' && data.payload?.domain) {
-      paywall.resume(String(data.payload.domain));
-      broadcast({ type: 'paywall-session-resumed', payload: { domain: data.payload.domain } });
-    }
-  } catch (e) {
-    logger.error('Failed to parse WS message', e);
-  }
-});
+    });
 
     socket.on('close', () => {
       clients.delete(socket);

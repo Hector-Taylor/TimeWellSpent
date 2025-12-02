@@ -28,6 +28,7 @@ export interface ExtensionState {
         frivolityDomains: string[];
         productiveDomains: string[];
         neutralDomains: string[];
+        idleThreshold: number;
     };
     sessions: Record<string, PaywallSession>;
     lastDesktopSync: number; // timestamp of last successful sync with desktop
@@ -67,7 +68,8 @@ const DEFAULT_STATE: ExtensionState = {
     settings: {
         frivolityDomains: ['twitter.com', 'reddit.com', 'youtube.com', 'facebook.com', 'instagram.com', 'tiktok.com'],
         productiveDomains: ['github.com', 'stackoverflow.com'],
-        neutralDomains: ['gmail.com', 'calendar.google.com']
+        neutralDomains: ['gmail.com', 'calendar.google.com'],
+        idleThreshold: 15
     },
     sessions: {},
     lastDesktopSync: 0
@@ -138,6 +140,11 @@ class ExtensionStorage {
         return this.state!.settings.frivolityDomains.some(d =>
             domain.includes(d) || d.includes(domain)
         );
+    }
+
+    async getIdleThreshold(): Promise<number> {
+        if (!this.state) await this.init();
+        return this.state!.settings.idleThreshold ?? 15;
     }
 
     async getSession(domain: string): Promise<PaywallSession | null> {

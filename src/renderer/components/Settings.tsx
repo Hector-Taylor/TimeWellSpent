@@ -16,12 +16,15 @@ export default function Settings({ api, categorisation, onCategorisation }: Sett
   const [neutralText, setNeutralText] = useState('');
   const [frivolityText, setFrivolityText] = useState('');
 
+  const [idleThreshold, setIdleThreshold] = useState(15);
+
   useEffect(() => {
     if (categorisation) {
       setProductiveText(categorisation.productive.join('\n'));
       setNeutralText(categorisation.neutral.join('\n'));
       setFrivolityText(categorisation.frivolity.join('\n'));
     }
+    api.settings.idleThreshold().then(setIdleThreshold);
   }, [categorisation]);
 
   if (!categorisation) {
@@ -48,6 +51,7 @@ export default function Settings({ api, categorisation, onCategorisation }: Sett
     };
 
     await api.settings.updateCategorisation(newConfig);
+    await api.settings.updateIdleThreshold(idleThreshold);
     onCategorisation(newConfig);
     setSaving(false);
     setSaved(true);
@@ -64,6 +68,17 @@ export default function Settings({ api, categorisation, onCategorisation }: Sett
       </header>
 
       <form className="settings-grid" onSubmit={save}>
+        <label>
+          Idle Threshold (seconds)
+          <input
+            type="number"
+            min="5"
+            max="300"
+            value={idleThreshold}
+            onChange={(e) => setIdleThreshold(Number(e.target.value))}
+          />
+          <p className="subtle">Time before activity is considered idle.</p>
+        </label>
         <label>
           Productive identifiers
           <textarea value={productiveText} onChange={(e) => setProductiveText(e.target.value)} />

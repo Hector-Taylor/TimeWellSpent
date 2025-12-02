@@ -151,6 +151,7 @@ export type RendererApi = {
     startMetered(domain: string): Promise<unknown>;
     buyPack(domain: string, minutes: number): Promise<unknown>;
     decline(domain: string): Promise<void>;
+    cancelPack(domain: string): Promise<void>;
     sessions(): Promise<PaywallSession[]>;
     pause(domain: string): Promise<void>;
     resume(domain: string): Promise<void>;
@@ -158,6 +159,8 @@ export type RendererApi = {
   settings: {
     categorisation(): Promise<CategorisationConfig>;
     updateCategorisation(value: CategorisationConfig): Promise<void>;
+    idleThreshold(): Promise<number>;
+    updateIdleThreshold(value: number): Promise<void>;
   };
   events: {
     on<T = unknown>(channel: string, callback: (payload: T) => void): () => void;

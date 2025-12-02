@@ -55,7 +55,9 @@ const api: RendererApi = {
   },
   settings: {
     categorisation: () => ipcRenderer.invoke('settings:categorisation'),
-    updateCategorisation: (value) => ipcRenderer.invoke('settings:update-categorisation', value)
+    updateCategorisation: (value) => ipcRenderer.invoke('settings:update-categorisation', value),
+    idleThreshold: () => ipcRenderer.invoke('settings:idle-threshold'),
+    updateIdleThreshold: (value) => ipcRenderer.invoke('settings:update-idle-threshold', value)
   },
   events: {
     on: (channel, callback) => {

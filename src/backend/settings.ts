@@ -44,4 +44,13 @@ export class SettingsService {
   setCategorisation(value: CategorisationConfig) {
     this.setJson('categorisation', value);
   }
+
+  getIdleThreshold(): number {
+    const val = this.getJson<number>('idleThreshold');
+    return typeof val === 'number' ? val : 15;
+  }
+
+  setIdleThreshold(value: number) {
+    this.setJson('idleThreshold', value);
+  }
 }
