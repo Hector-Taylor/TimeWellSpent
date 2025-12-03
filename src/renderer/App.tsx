@@ -39,6 +39,9 @@ export default function App() {
   useEffect(() => {
     const unsubWallet = api.events.on<WalletSnapshot>('wallet:update', setWallet);
     const unsubEconomy = api.events.on<EconomyState>('economy:activity', setEconomyState);
+    const unsubMarket = api.events.on<Record<string, MarketRate>>('market:update', () => {
+      api.market.list().then(setMarketRates);
+    });
 
     const unsubPaywallReq = api.events.on<{ domain: string; appName: string }>('paywall:required', (payload) => {
       setPaywallBlock({ ...payload, reason: 'blocked' });
@@ -60,6 +63,7 @@ export default function App() {
     return () => {
       unsubWallet();
       unsubEconomy();
+      unsubMarket();
       unsubPaywallReq();
       unsubPaywallStart();
       unsubPaywallEnd();

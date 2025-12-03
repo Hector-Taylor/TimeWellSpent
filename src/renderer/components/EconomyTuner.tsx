@@ -19,6 +19,7 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
     const [saving, setSaving] = useState(false);
     const [activeSessions, setActiveSessions] = useState<Record<string, PaywallSession>>({});
     const [error, setError] = useState<string | null>(null);
+    const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
     const [isAdding, setIsAdding] = useState(false);
     const [newDomain, setNewDomain] = useState('');
@@ -113,6 +114,12 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
     const lockedSession = selectedItem ? activeSessions[selectedItem.id] : undefined;
     const locked = !!lockedSession;
 
+    useEffect(() => {
+        if (!saveMessage) return;
+        const timer = setTimeout(() => setSaveMessage(null), 2000);
+        return () => clearTimeout(timer);
+    }, [saveMessage]);
+
     const handleRateChange = (newRate: number) => {
         if (!selectedItem || locked) return;
         updateItemRate(selectedItem.id, { ...selectedItem.rate, ratePerMin: newRate });
@@ -135,8 +142,12 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
         }
         setSaving(true);
         setError(null);
+        setSaveMessage(null);
         try {
             await api.market.upsert(selectedItem.rate);
+            setSaveMessage('Saved to market');
+            await loadData();
+            setSelectedId(selectedItem.id);
         } catch (err) {
             setError((err as Error).message);
         } finally {
@@ -209,6 +220,12 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
                     <span className="subtle">Frivolous</span>
                 </div>
             </header>
+
+            {saveMessage && (
+                <div className="inline-note" style={{ maxWidth: '420px' }}>
+                    {saveMessage}
+                </div>
+            )}
 
             <div className="tuner-layout">
                 <aside className="tuner-list">

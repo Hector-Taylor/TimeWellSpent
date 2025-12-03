@@ -64,6 +64,18 @@ export async function createBackend(database: Database): Promise<BackendServices
 
   app.use(express.json());
 
+  const broadcastMarketRates = () => {
+    const record = market.listRates().reduce<Record<string, MarketRate>>((acc, rate) => {
+      acc[rate.domain] = rate;
+      return acc;
+    }, {});
+    broadcast({ type: 'market-update', payload: record });
+  };
+
+  market.on('update', () => {
+    broadcastMarketRates();
+  });
+
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });
   });
@@ -104,6 +116,7 @@ export async function createBackend(database: Database): Promise<BackendServices
         return res.status(409).json({ error: `Cannot change exchange rate for ${rate.domain} while a session is active.` });
       }
       market.upsertRate(rate);
+      broadcastMarketRates();
       res.json({ ok: true });
     } catch (error) {
       res.status(400).json({ error: (error as Error).message });

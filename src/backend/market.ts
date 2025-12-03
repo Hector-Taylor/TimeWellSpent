@@ -1,15 +1,17 @@
+import { EventEmitter } from 'node:events';
 import type { Statement } from 'better-sqlite3';
 import type { MarketRate } from '@shared/types';
 import type { Database } from './storage';
 import { DEFAULT_MARKET_RATES } from './defaults';
 
-export class MarketService {
+export class MarketService extends EventEmitter {
   private db = this.database.connection;
   private upsertStmt: Statement;
   private listStmt: Statement;
   private getStmt: Statement;
 
   constructor(private database: Database) {
+    super();
     this.upsertStmt = this.db.prepare(
       'INSERT INTO market_rates(domain, rate_per_min, packs_json, hourly_modifiers_json) VALUES (?, ?, ?, ?) ON CONFLICT(domain) DO UPDATE SET rate_per_min=excluded.rate_per_min, packs_json=excluded.packs_json, hourly_modifiers_json=excluded.hourly_modifiers_json'
     );
@@ -47,6 +49,7 @@ export class MarketService {
 
   upsertRate(rate: MarketRate) {
     this.upsertStmt.run(rate.domain, rate.ratePerMin, JSON.stringify(rate.packs), JSON.stringify(rate.hourlyModifiers));
+    this.emit('update', rate);
   }
 
   getRate(domain: string): MarketRate | null {

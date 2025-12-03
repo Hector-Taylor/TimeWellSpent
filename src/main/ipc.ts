@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron';
+import { BrowserWindow, ipcMain } from 'electron';
 import type { BackendServices } from '@backend/server';
 import type { Database } from '@backend/storage';
 
@@ -46,7 +46,11 @@ export function createIpc(context: IpcContext) {
         throw new Error(`Cannot change exchange rate for ${domain} while a session is active.`);
       }
     }
-    return backend.market.upsertRate(payload);
+    const result = backend.market.upsertRate(payload);
+    if (domain) {
+      BrowserWindow.getAllWindows().forEach((win) => win.webContents.send('market:update', { [domain]: payload }));
+    }
+    return result;
   });
 
   ipcMain.handle('intentions:list', async (_event, payload: { date: string }) => backend.intentions.list(payload.date));

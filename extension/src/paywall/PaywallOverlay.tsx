@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 
 type StatusResponse = {
   balance: number;
@@ -25,45 +25,64 @@ type Props = {
   onClose(): void;
 };
 
-const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
-
 export default function PaywallOverlay({ domain, status, reason, onClose }: Props) {
   const [selectedMinutes, setSelectedMinutes] = useState(15);
-  const rate = status.rate;
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  // Fallback rate if none is provided (e.g. 1 coin/min)
+  const ratePerMin = status.rate?.ratePerMin ?? status.session?.ratePerMin ?? 1;
 
   const sliderBounds = useMemo(() => {
-    const minutes = rate?.packs.map((pack) => pack.minutes) ?? [];
-    const min = minutes.length ? Math.min(...minutes) : 10;
-    const maxFromPacks = minutes.length ? Math.max(...minutes) : 30;
-    const max = Math.max(maxFromPacks, min + 15, 45);
-    return { min: Math.max(5, min), max, step: 5 };
-  }, [rate]);
+    return { min: 5, max: 120, step: 5 };
+  }, []);
 
-  useEffect(() => {
-    const defaultMinutes = rate?.packs?.[0]?.minutes ?? sliderBounds.min;
-    setSelectedMinutes(clamp(defaultMinutes, sliderBounds.min, sliderBounds.max));
-  }, [rate, sliderBounds.max, sliderBounds.min]);
-
-  const baseRate = rate?.ratePerMin ?? status.session?.ratePerMin ?? 0;
-  const matchedPack = rate?.packs.find((pack) => pack.minutes === selectedMinutes);
-  const sliderPrice = matchedPack ? matchedPack.price : Math.max(1, Math.round(selectedMinutes * baseRate));
-  const walletPercent = status.balance > 0 ? Math.min(1, sliderPrice / status.balance) : 1;
-  const coinsLeft = Math.max(0, status.balance - sliderPrice);
+  const sliderPrice = Math.max(1, Math.ceil(selectedMinutes * ratePerMin));
   const sliderAffordable = status.balance >= sliderPrice;
-  const sliderMidLabel = Math.round((sliderBounds.min + sliderBounds.max) / 2);
-  const gaugeRadius = 72;
-  const circumference = 2 * Math.PI * gaugeRadius;
-  const dashOffset = circumference * (1 - walletPercent);
-  const dayShare = Math.min(1, selectedMinutes / (24 * 60));
-  const walletSharePct = walletPercent * 100;
-  const daySharePct = Math.round(dayShare * 100);
-  const meteredPreviewPercent = status.balance > 0 ? Math.min(1, (baseRate * 15) / status.balance) : 1;
 
-  const projections = [
-    { label: 'Quick peek', minutes: Math.max(5, Math.round(selectedMinutes * 0.4)) },
-    { label: 'This choice', minutes: selectedMinutes },
-    { label: 'Deep dive', minutes: Math.min(120, Math.round(selectedMinutes * 1.6)) }
-  ].map((p) => ({ ...p, cost: Math.max(1, Math.round(p.minutes * baseRate)) }));
+  // Handlers
+  const handleBuyPack = async () => {
+    if (isProcessing) return;
+    setIsProcessing(true);
+    try {
+      const result = await chrome.runtime.sendMessage({
+        type: 'BUY_PACK',
+        payload: { domain, minutes: selectedMinutes }
+      });
+      if (result.success) {
+        cleanup();
+        onClose();
+      } else {
+        alert(`Failed to purchase: ${result.error}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert('Failed to communicate with extension');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleStartMetered = async () => {
+    if (isProcessing) return;
+    setIsProcessing(true);
+    try {
+      const result = await chrome.runtime.sendMessage({
+        type: 'START_METERED',
+        payload: { domain }
+      });
+      if (result.success) {
+        cleanup();
+        onClose();
+      } else {
+        alert(`Failed to start metered session: ${result.error}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert('Failed to communicate with extension');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   const heading = status.session
     ? status.session.mode === 'pack' ? 'Session paused' : 'Metered session paused'
@@ -86,159 +105,81 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
             <h2>{heading}</h2>
             <p className="tws-subtle">{infoLine}</p>
           </div>
+          <div className="tws-wallet-badge">
+            <span>Balance</span>
+            <strong>{status.balance} coins</strong>
+          </div>
         </header>
 
-        <div className="tws-wallet-inline">
-          <span>Balance</span>
-          <strong>{status.balance} coins</strong>
-        </div>
+        <div className="tws-paywall-body">
+          {/* Option 1: Pay As You Go */}
+          <section className="tws-paywall-option">
+            <div className="tws-option-header">
+              <h3>Pay As You Go</h3>
+              <p className="tws-subtle">Pay only for the time you spend.</p>
+            </div>
+            <div className="tws-option-action">
+              <div className="tws-price-tag">
+                <strong>{ratePerMin}</strong>
+                <small>coins / min</small>
+              </div>
+              <button
+                className="tws-secondary"
+                onClick={handleStartMetered}
+                disabled={status.balance < 1 || isProcessing}
+              >
+                Start Metered
+              </button>
+            </div>
+          </section>
 
-        <section className="tws-spend-lab">
-          <div className="tws-budget-visual">
-            <div className="tws-budget-circle" role="img" aria-label={`Spending ${sliderPrice} coins for ${selectedMinutes} minutes`}>
-              <svg viewBox="0 0 200 200" width="200" height="200">
-                <circle className="tws-budget-track" cx="100" cy="100" r={gaugeRadius} strokeWidth="14" />
-                <circle
-                  className="tws-budget-fill"
-                  cx="100"
-                  cy="100"
-                  r={gaugeRadius}
-                  strokeWidth="14"
-                  strokeDasharray={circumference}
-                  strokeDashoffset={dashOffset}
-                />
-              </svg>
-              <div className="tws-budget-figures">
+          <div className="tws-divider">
+            <span>OR</span>
+          </div>
+
+          {/* Option 2: Pre-pay (Slider) */}
+          <section className="tws-paywall-option">
+            <div className="tws-option-header">
+              <h3>Pre-pay Session</h3>
+              <p className="tws-subtle">Commit to a fixed time.</p>
+            </div>
+
+            <div className="tws-slider-container">
+              <div className="tws-slider-labels">
+                <span>{selectedMinutes} minutes</span>
                 <strong>{sliderPrice} coins</strong>
-                <span>{selectedMinutes} minute unlock</span>
-                <small className="tws-subtle">{walletSharePct.toFixed(0)}% of spendable</small>
+              </div>
+              <input
+                type="range"
+                min={sliderBounds.min}
+                max={sliderBounds.max}
+                step={sliderBounds.step}
+                value={selectedMinutes}
+                onChange={(e) => setSelectedMinutes(Number(e.target.value))}
+              />
+              <div className="tws-slider-scale">
+                <small>{sliderBounds.min}m</small>
+                <small>{sliderBounds.max}m</small>
               </div>
             </div>
-            <div className="tws-impact-bars">
-              <div>
-                <div className="tws-impact-label">Wallet impact</div>
-                <div className="tws-impact-meter">
-                  <span style={{ width: `${walletSharePct}%` }} />
-                </div>
-                <small className="tws-subtle">Leaves {coinsLeft} coins</small>
-              </div>
-              <div>
-                <div className="tws-impact-label">Day share</div>
-                <div className="tws-impact-meter day">
-                  <span style={{ width: `${daySharePct}%` }} />
-                </div>
-                <small className="tws-subtle">{daySharePct}% of your day if you stay that long</small>
-              </div>
-            </div>
-          </div>
-          <div className="tws-budget-controls">
-            <div className="tws-eyebrow">Shape your session</div>
-            <p className="tws-subtle">Use the slider to choreograph how much time (and money) you want to burn on this domain.</p>
-            <input
-              id="tws-focus-budget"
-              type="range"
-              min={sliderBounds.min}
-              max={sliderBounds.max}
-              step={sliderBounds.step}
-              value={selectedMinutes}
-              onChange={(event) => setSelectedMinutes(Number(event.target.value))}
-            />
-            <div className="tws-budget-scale">
-              <span>{sliderBounds.min} min</span>
-              <span>{sliderMidLabel} min</span>
-              <span>{sliderBounds.max}+ min</span>
-            </div>
-            <div className="tws-projection-grid">
-              {projections.map((proj) => (
-                <div key={proj.label} className="tws-projection-card">
-                  <div className="tws-projection-minutes">{proj.minutes}m</div>
-                  <div className="tws-projection-label">{proj.label}</div>
-                  <div className="tws-projection-cost">{proj.cost} coins</div>
-                  <div className="tws-projection-bar">
-                    <span style={{ width: `${Math.min(100, (proj.cost / Math.max(status.balance, proj.cost)) * 100)}%` }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-            <button
-              className="tws-primary"
-              disabled={!sliderAffordable}
-              onClick={() => buyPack(domain, selectedMinutes, onClose)}
-            >
-              Unlock {selectedMinutes} min for {sliderPrice} coins
-            </button>
-            {!sliderAffordable && (
-              <p className="tws-warning tws-subtle">You need {sliderPrice - status.balance} more coins for this burst.</p>
-            )}
-          </div>
-        </section>
 
-        <section className="tws-paywall-section">
-          <div className="tws-eyebrow">Other unlocks</div>
-          <div className="tws-option-grid">
-            <button className="tws-option-card" onClick={() => startMetered(domain, onClose)}>
-              <div>
-                <strong>Fluid meter</strong>
-                <p className="tws-subtle">Only pay while you scroll — perfect for quick peeks.</p>
-              </div>
-              <div className="tws-option-meter">
-                <span style={{ width: `${meteredPreviewPercent * 100}%` }} />
-              </div>
-              <small className="tws-chip">{baseRate} coins / min</small>
-            </button>
-            {rate?.packs.map((pack) => {
-              const percent = status.balance > 0 ? Math.min(1, pack.price / status.balance) : 1;
-              return (
-                <button
-                  key={pack.minutes}
-                  className="tws-option-card"
-                  disabled={status.balance < pack.price}
-                  onClick={() => buyPack(domain, pack.minutes, onClose)}
-                >
-                  <div>
-                    <strong>{pack.minutes} minute ritual</strong>
-                    <p className="tws-subtle">Set it and forget it — pause anytime.</p>
-                  </div>
-                  <div className="tws-option-meter">
-                    <span style={{ width: `${percent * 100}%` }} />
-                  </div>
-                  <small className="tws-chip">{pack.price} coins</small>
-                </button>
-              );
-            })}
-          </div>
-        </section>
+            <div className="tws-option-action">
+              <button
+                className="tws-primary"
+                onClick={handleBuyPack}
+                disabled={!sliderAffordable || isProcessing}
+              >
+                Unlock for {sliderPrice} coins
+              </button>
+              {!sliderAffordable && (
+                <p className="tws-error-text">Need {sliderPrice - status.balance} more coins</p>
+              )}
+            </div>
+          </section>
+        </div>
       </div>
     </div>
   );
-}
-
-async function buyPack(domain: string, minutes: number, onClose: () => void) {
-  const result = await chrome.runtime.sendMessage({
-    type: 'BUY_PACK',
-    payload: { domain, minutes }
-  });
-
-  if (result.success) {
-    cleanup();
-    onClose();
-  } else {
-    alert(`Failed to purchase: ${result.error}`);
-  }
-}
-
-async function startMetered(domain: string, onClose: () => void) {
-  const result = await chrome.runtime.sendMessage({
-    type: 'START_METERED',
-    payload: { domain }
-  });
-
-  if (result.success) {
-    cleanup();
-    onClose();
-  } else {
-    alert(`Failed to start metered session: ${result.error}`);
-  }
 }
 
 function cleanup() {

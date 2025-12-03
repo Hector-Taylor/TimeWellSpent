@@ -246,6 +246,7 @@ main {
 
 .tuner-panel {
   gap: 18px;
+  min-height: 0;
 }
 
 .tuner-header-row {
@@ -257,6 +258,7 @@ main {
   grid-template-columns: 320px 1fr;
   gap: 24px;
   align-items: start;
+  min-height: 0;
 }
 
 .tuner-list {
@@ -313,6 +315,7 @@ main {
   gap: 14px;
   align-self: start;
   min-height: 0;
+  max-height: 70vh;
   overflow: auto;
 }
 
