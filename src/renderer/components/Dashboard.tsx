@@ -23,6 +23,8 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
   const [summary, setSummary] = useState<ActivitySummary | null>(null);
   const [loadingSummary, setLoadingSummary] = useState(true);
   const [paywallSessions, setPaywallSessions] = useState<PaywallSession[]>([]);
+  const [endingDomain, setEndingDomain] = useState<string | null>(null);
+  const [paywallNote, setPaywallNote] = useState<string | null>(null);
 
   const refresh = useCallback(async (silent = false) => {
     if (!silent) setLoadingSummary(true);
@@ -57,6 +59,20 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
     };
   }, [api, refresh]);
 
+  const endSession = async (session: PaywallSession) => {
+    setEndingDomain(session.domain);
+    setPaywallNote(null);
+    try {
+      await api.paywall.end(session.domain, { refundUnused: true });
+      setPaywallNote(session.mode === 'pack' ? `Ended ${session.domain} • refund applied for unused time.` : `Ended ${session.domain}.`);
+      api.paywall.sessions().then(setPaywallSessions).catch(() => {});
+    } catch (error) {
+      setPaywallNote(`Could not end ${session.domain}: ${(error as Error).message}`);
+    } finally {
+      setEndingDomain(null);
+    }
+  };
+
   const activeLabel = economy?.activeDomain ?? economy?.activeApp ?? 'Radar is idle';
   const activeCategory = (economy?.activeCategory ?? 'idle') as string;
   const totalHours = useMemo(() => Math.max(0, Math.round(((summary?.totalSeconds ?? 0) / 3600) * 10) / 10), [summary]);
@@ -71,10 +87,9 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
     <section className="panel">
       <header className="panel-header">
         <div>
-          <p className="eyebrow">Time Observatory</p>
-          <h1>Live radar of your attention</h1>
-          <p className="subtle">We ingest both desktop windows and the companion extension to keep a single stream of record.</p>
-          <div className="pill-row">
+          <p className="eyebrow">Attention control</p>
+          <h1>Your day at a glance</h1>
+          <div className="pill-row pill-row-tight">
             <span className="pill">Now: {activeLabel}</span>
             <span className="pill ghost">Wallet {wallet.balance}c</span>
             <span className="pill soft">{summary ? `${summary.windowHours}h sweep` : 'loading window...'}</span>
@@ -132,12 +147,13 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
           </div>
         </div>
 
-        <div className="card paywall-state">
-          <div className="card-header-row">
-            <h2>Paywall sessions</h2>
-            <span className="subtle">Paused when window/tab is not active</span>
-          </div>
-          <ul className="context-list">
+          <div className="card paywall-state">
+            <div className="card-header-row">
+              <h2>Paywall sessions</h2>
+              <span className="subtle">Paused when window/tab is not active</span>
+            </div>
+          {paywallNote && <div className={`inline-note ${paywallNote.startsWith('Could not') ? 'danger' : ''}`}>{paywallNote}</div>}
+            <ul className="context-list">
             {paywallSessions.length === 0 && <li className="subtle">No active sessions.</li>}
             {paywallSessions.map((session) => (
               <li key={session.domain}>
@@ -150,6 +166,18 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
                     {session.paused ? 'Paused' : 'Spending'}
                   </span>
                   <strong>{session.mode === 'metered' ? '∞' : formatMinutes(session.remainingSeconds ?? 0)}</strong>
+                </div>
+                <div className="paywall-actions">
+                  <button
+                    className="pill danger"
+                    disabled={endingDomain === session.domain}
+                    onClick={() => endSession(session)}
+                  >
+                    {endingDomain === session.domain ? 'Ending…' : 'End session'}
+                  </button>
+                  {session.mode === 'pack' && estimateRefund(session) > 0 && (
+                    <span className="subtle">~{estimateRefund(session)} coin refund</span>
+                  )}
                 </div>
               </li>
             ))}
@@ -273,4 +301,11 @@ function describeRecency(lastUpdated: number | null) {
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
   return `${hours}h ago`;
+}
+
+function estimateRefund(session: PaywallSession) {
+  if (session.mode !== 'pack' || !session.purchasePrice || !session.purchasedSeconds || session.purchasedSeconds <= 0) return 0;
+  const unusedSeconds = Math.max(0, Math.min(session.purchasedSeconds, session.remainingSeconds ?? 0));
+  const fraction = unusedSeconds / session.purchasedSeconds;
+  return Math.round(session.purchasePrice * fraction);
 }

@@ -6,11 +6,14 @@ type DayCompassProps = {
   economy: EconomyState | null;
 };
 
+type CompassView = 'aggregate' | 'timeline';
+
 type SliceMeta = {
   path: string;
   color: string;
   label: string;
-  slot: ActivitySummary['timeline'][number];
+  seconds: number;
+  slot?: ActivitySummary['timeline'][number];
 };
 
 const categoryColors: Record<string, string> = {
@@ -21,28 +24,55 @@ const categoryColors: Record<string, string> = {
 };
 
 export default function DayCompass({ summary, economy }: DayCompassProps) {
-  const [hovered, setHovered] = useState<ActivitySummary['timeline'][number] | null>(null);
+  const [view, setView] = useState<CompassView>('aggregate');
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
-  const slices = useMemo<SliceMeta[]>(() => {
-    if (!summary || summary.timeline.length === 0) return [];
+  const aggregate = useMemo(() => {
+    if (!summary) return null;
+    const totals = summary.totalsByCategory;
+    const slices = [
+      { key: 'productive', label: 'Productive', seconds: totals.productive ?? 0, color: categoryColors.productive },
+      { key: 'neutral', label: 'Neutral', seconds: (totals.neutral ?? 0) + (totals.uncategorised ?? 0), color: categoryColors.neutral },
+      { key: 'frivolity', label: 'Frivolity', seconds: totals.frivolity ?? 0, color: categoryColors.frivolity },
+      { key: 'idle', label: 'Idle', seconds: totals.idle ?? 0, color: categoryColors.idle }
+    ].filter((item) => item.seconds > 0);
+
+    const totalSeconds = slices.reduce((sum, item) => sum + item.seconds, 0);
+    let cursor = -90;
+    const arcs: SliceMeta[] = slices.map((slice) => {
+      const sweep = totalSeconds ? (slice.seconds / totalSeconds) * 360 : 0;
+      const path = buildArc(150, 150, 120, cursor, cursor + sweep);
+      cursor += sweep;
+      return {
+        path,
+        color: slice.color,
+        label: slice.label,
+        seconds: slice.seconds
+      };
+    });
+
+    return { arcs, slices, totalSeconds: Math.max(0, totalSeconds) };
+  }, [summary]);
+
+  const timeline = useMemo(() => {
+    if (!summary || summary.timeline.length === 0) return { arcs: [] as SliceMeta[], centerSeconds: 0 };
     const step = 360 / summary.timeline.length;
-    const radius = 120;
-    const center = 150;
-    return summary.timeline.map((slot, idx) => {
+    const arcs = summary.timeline.map((slot, idx) => {
       const startAngle = idx * step - 90;
       const endAngle = startAngle + step;
-      const path = buildArc(center, center, radius, startAngle, endAngle);
+      const path = buildArc(150, 150, 120, startAngle, endAngle);
       const color = categoryColors[slot.dominant] ?? categoryColors.neutral;
       return {
         path,
         color,
         label: slot.hour,
-        slot
+        slot,
+        seconds: slot.productive + slot.neutral + slot.frivolity + slot.idle
       };
     });
+    const centerSeconds = (summary.totalSeconds ?? 0) + (summary.totalsByCategory.idle ?? 0);
+    return { arcs, centerSeconds };
   }, [summary]);
-
-  const activeSlot = hovered ?? summary?.timeline[summary.timeline.length - 1] ?? null;
 
   if (!summary) {
     return (
@@ -53,55 +83,84 @@ export default function DayCompass({ summary, economy }: DayCompassProps) {
     );
   }
 
-  const activeBreakdown = activeSlot ? [
-    { label: 'Productive', value: activeSlot.productive, color: categoryColors.productive },
-    { label: 'Neutral', value: activeSlot.neutral, color: categoryColors.neutral },
-    { label: 'Frivolity', value: activeSlot.frivolity, color: categoryColors.frivolity },
-    { label: 'Idle', value: activeSlot.idle, color: categoryColors.idle }
-  ] : [];
+  const activeTimelineSlot =
+    view === 'timeline'
+      ? (hoveredIndex !== null ? summary.timeline[hoveredIndex] : summary.timeline[summary.timeline.length - 1])
+      : null;
+
+  const breakdown = view === 'aggregate'
+    ? (aggregate?.slices ?? [])
+    : activeTimelineSlot ? [
+      { label: 'Productive', seconds: activeTimelineSlot.productive, color: categoryColors.productive },
+      { label: 'Neutral', seconds: activeTimelineSlot.neutral, color: categoryColors.neutral },
+      { label: 'Frivolity', seconds: activeTimelineSlot.frivolity, color: categoryColors.frivolity },
+      { label: 'Idle', seconds: activeTimelineSlot.idle, color: categoryColors.idle }
+    ] : [];
+
+  const centerSeconds = view === 'aggregate'
+    ? aggregate?.totalSeconds ?? 0
+    : timeline.centerSeconds;
+
+  const arcs = view === 'aggregate' ? (aggregate?.arcs ?? []) : timeline.arcs;
 
   return (
     <article className="card compass-card">
-      <div className="card-header-row">
+      <div className="card-header-row compass-header">
         <div>
           <p className="eyebrow">Day diagram</p>
           <h2>Orbit of attention</h2>
         </div>
-        <span className="pill ghost">{economy?.activeCategory ?? 'idle'} • live</span>
+        <div className="compass-controls">
+          <div className="compass-toggle">
+            <button
+              className={view === 'aggregate' ? 'active' : ''}
+              onClick={() => { setView('aggregate'); setHoveredIndex(null); }}
+            >
+              Total day
+            </button>
+            <button
+              className={view === 'timeline' ? 'active' : ''}
+              onClick={() => { setView('timeline'); setHoveredIndex(null); }}
+            >
+              24h orbit
+            </button>
+          </div>
+          <span className="pill ghost">{economy?.activeCategory ?? 'idle'} • live</span>
+        </div>
       </div>
       <div className="compass-body">
         <div className="compass-visual">
-          <svg viewBox="0 0 300 300" width="300" height="300">
+          <svg viewBox="0 0 300 300" role="img" aria-label="Day compass">
             <circle cx="150" cy="150" r="140" fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
-            {slices.map((slice) => (
+            {arcs.map((slice, idx) => (
               <path
-                key={slice.label}
+                key={`${slice.label}-${idx}`}
                 d={slice.path}
                 fill={slice.color}
-                opacity={hovered && hovered !== slice.slot ? 0.35 : 0.9}
-                onMouseEnter={() => setHovered(slice.slot)}
-                onMouseLeave={() => setHovered(null)}
+                opacity={hoveredIndex !== null && hoveredIndex !== idx ? 0.35 : 0.92}
+                onMouseEnter={() => setHoveredIndex(idx)}
+                onMouseLeave={() => setHoveredIndex(null)}
               />
             ))}
             <circle cx="150" cy="150" r="80" fill="var(--bg-soft)" stroke="rgba(255,255,255,0.08)" strokeWidth="2" />
             <text x="150" y="140" textAnchor="middle" className="compass-center">
-              {Math.round((summary.totalSeconds / 3600) * 10) / 10}h
+              {formatHours(centerSeconds)}
             </text>
             <text x="150" y="165" textAnchor="middle" className="compass-center-sub">
-              tracked
+              {view === 'aggregate' ? 'hours captured' : `${summary.windowHours}h window`}
             </text>
           </svg>
-          {activeSlot && (
+          {view === 'timeline' && activeTimelineSlot && (
             <div className="compass-tooltip">
               <div>
-                <span className="tooltip-hour">{activeSlot.hour}</span>
-                <span className="tooltip-dominant">{activeSlot.dominant}</span>
+                <span className="tooltip-hour">{activeTimelineSlot.hour}</span>
+                <span className="tooltip-dominant">{activeTimelineSlot.dominant}</span>
               </div>
-              {activeSlot.topContext ? (
+              {activeTimelineSlot.topContext ? (
                 <p>
-                  {activeSlot.topContext.label}
+                  {activeTimelineSlot.topContext.label}
                   <br />
-                  <small>{Math.round(activeSlot.topContext.seconds / 60)} min captured</small>
+                  <small>{Math.round(activeTimelineSlot.topContext.seconds / 60)} min captured</small>
                 </p>
               ) : (
                 <p>No activity recorded</p>
@@ -110,13 +169,13 @@ export default function DayCompass({ summary, economy }: DayCompassProps) {
           )}
         </div>
         <div className="compass-details">
-          {activeBreakdown.map((row) => (
+          {breakdown.map((row) => (
             <div key={row.label} className="detail-row">
               <div className="legend-chip">
                 <span style={{ background: row.color }} />
                 <span>{row.label}</span>
               </div>
-              <strong>{formatMinutes(row.value)}</strong>
+              <strong>{formatMinutes(row.seconds)}</strong>
             </div>
           ))}
         </div>
@@ -133,7 +192,7 @@ function buildArc(cx: number, cy: number, radius: number, startAngle: number, en
 }
 
 function polarToCartesian(cx: number, cy: number, radius: number, angleInDegrees: number) {
-  const angleInRadians = ((angleInDegrees) * Math.PI) / 180.0;
+  const angleInRadians = (angleInDegrees * Math.PI) / 180.0;
   return {
     x: cx + radius * Math.cos(angleInRadians),
     y: cy + radius * Math.sin(angleInRadians)
@@ -144,4 +203,9 @@ function formatMinutes(value: number) {
   if (!value) return '0m';
   const minutes = Math.round(value / 60);
   return `${minutes}m`;
+}
+
+function formatHours(value: number) {
+  const hours = Math.max(0, value) / 3600;
+  return `${Math.round(hours * 10) / 10}h`;
 }

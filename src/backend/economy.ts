@@ -1,12 +1,10 @@
 import { EventEmitter } from 'node:events';
-import type { ActivityCategory } from '@shared/types';
-import type { ActivityEvent } from './activity-tracker';
+import type { ActivityCategory, MarketRate } from '@shared/types';
 import type { WalletManager } from './wallet';
 import type { MarketService } from './market';
 import type { PaywallManager } from './paywall';
-import type { SettingsService } from './settings';
-import type { CategorisationConfig } from '@shared/types';
 import { logger } from '@shared/logger';
+import type { ClassifiedActivity } from './activityClassifier';
 
 const PRODUCTIVE_RATE_PER_MIN = 5;
 const NEUTRAL_RATE_PER_MIN = 3;
@@ -28,18 +26,15 @@ export class EconomyEngine extends EventEmitter {
     lastUpdated: null,
     neutralClockedIn: false
   };
-  private categorisation: CategorisationConfig;
   private earnTimer: NodeJS.Timeout;
   private spendTimer: NodeJS.Timeout;
 
   constructor(
     private wallet: WalletManager,
     private market: MarketService,
-    private paywall: PaywallManager,
-    private settings: SettingsService
+    private paywall: PaywallManager
   ) {
     super();
-    this.categorisation = settings.getCategorisation();
     this.earnTimer = setInterval(() => this.tickEarn(), 60_000);
     this.spendTimer = setInterval(() => this.tickSpend(), SPEND_INTERVAL_SECONDS * 1000);
 
@@ -70,16 +65,15 @@ export class EconomyEngine extends EventEmitter {
     this.emit('neutral-clock', enabled);
   }
 
-  handleActivity(event: ActivityEvent) {
-    const category = this.categorise(event);
+  handleActivity(event: ClassifiedActivity) {
+    const category = event.category;
     const domain = event.domain ?? null;
     const app = event.appName ?? null;
-
-    const idle = (event.idleSeconds ?? 0) > 10;
+    const idle = event.isIdle;
 
     // Check if we've navigated away from a domain with an active paywall session
     const previousDomain = this.state.activeDomain;
-    if (previousDomain && previousDomain !== domain) {
+    if (previousDomain && domain && previousDomain !== domain) {
       // User navigated away - clear the previous domain's session if it exists
       const previousSession = this.paywall.getSession(previousDomain);
       if (previousSession) {
@@ -100,37 +94,12 @@ export class EconomyEngine extends EventEmitter {
     if (!idle && category === 'frivolity') {
       const identifier = domain || app;
       if (identifier && !this.paywall.hasValidPass(identifier)) {
-        logger.info(`Blocking ${identifier} on ${app}`);
+        logger.info(`Prompting paywall for ${identifier} on ${app}`);
         this.emit('paywall-required', { domain: identifier, appName: app });
-        this.emit('paywall-block', { domain: identifier, appName: app });
       }
     }
 
     this.emit('activity', { ...this.state });
-  }
-
-  private categorise(event: ActivityEvent): ActivityCategory {
-    this.categorisation = this.settings.getCategorisation();
-    const domain = event.domain?.toLowerCase() ?? '';
-    const app = event.appName.toLowerCase();
-
-    if (this.matchList(domain, app, this.categorisation.productive)) {
-      return 'productive';
-    }
-    if (this.matchList(domain, app, this.categorisation.neutral)) {
-      return 'neutral';
-    }
-    if (this.matchList(domain, app, this.categorisation.frivolity)) {
-      return 'frivolity';
-    }
-    return 'neutral';
-  }
-
-  private matchList(domain: string, app: string, patterns: string[]) {
-    return patterns.some((pattern) => {
-      const p = pattern.toLowerCase();
-      return domain.includes(p) || app.includes(p);
-    });
   }
 
   private tickEarn() {
@@ -169,7 +138,27 @@ export class EconomyEngine extends EventEmitter {
   }
 
   private tickSpend() {
-    this.paywall.tick(SPEND_INTERVAL_SECONDS, this.state.activeDomain);
+    const activeDomain = this.state.activeCategory === 'idle' ? null : this.state.activeDomain;
+    this.paywall.tick(SPEND_INTERVAL_SECONDS, activeDomain);
+  }
+
+  private ensureRate(domain: string): MarketRate {
+    let rate = this.market.getRate(domain);
+    if (!rate) {
+      logger.info(`Initializing default market rate for ${domain}`);
+      rate = {
+        domain,
+        ratePerMin: 3,
+        packs: [
+          { minutes: 10, price: 25 },
+          { minutes: 30, price: 60 },
+          { minutes: 60, price: 100 }
+        ],
+        hourlyModifiers: Array(24).fill(1)
+      };
+      this.market.upsertRate(rate);
+    }
+    return rate;
   }
 
   getState() {
@@ -177,41 +166,13 @@ export class EconomyEngine extends EventEmitter {
   }
 
   startPayAsYouGo(domain: string) {
-    let rate = this.market.getRate(domain);
-    if (!rate) {
-      logger.info(`Initializing default market rate for ${domain}`);
-      rate = {
-        domain,
-        ratePerMin: 3,
-        packs: [
-          { minutes: 10, price: 25 },
-          { minutes: 30, price: 60 },
-          { minutes: 60, price: 100 }
-        ],
-        hourlyModifiers: Array(24).fill(1)
-      };
-      this.market.upsertRate(rate);
-    }
+    this.ensureRate(domain);
     const session = this.paywall.startMetered(domain);
     return session;
   }
 
   buyPack(domain: string, minutes: number) {
-    let rate = this.market.getRate(domain);
-    if (!rate) {
-      logger.info(`Initializing default market rate for ${domain}`);
-      rate = {
-        domain,
-        ratePerMin: 3,
-        packs: [
-          { minutes: 10, price: 25 },
-          { minutes: 30, price: 60 },
-          { minutes: 60, price: 100 }
-        ],
-        hourlyModifiers: Array(24).fill(1)
-      };
-      this.market.upsertRate(rate);
-    }
+    const rate = this.ensureRate(domain);
     const pack = rate.packs.find((p) => p.minutes === minutes);
     const price = pack ? pack.price : Math.max(1, Math.round(minutes * rate.ratePerMin));
     if (!pack) {

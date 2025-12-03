@@ -10,6 +10,8 @@ export type PaywallSession = {
   remainingSeconds: number;
   lastTick: number;
   paused?: boolean;
+  purchasePrice?: number;
+  purchasedSeconds?: number;
 };
 
 export class PaywallManager extends EventEmitter {
@@ -39,11 +41,7 @@ export class PaywallManager extends EventEmitter {
   }
 
   cancelPack(domain: string) {
-    const session = this.sessions.get(domain);
-    if (!session || session.mode !== 'pack') return null;
-    this.sessions.delete(domain);
-    this.emit('session-ended', { domain, reason: 'cancelled' });
-    return session;
+    return this.endSession(domain, 'cancelled', { refundUnused: true });
   }
 
   startMetered(domain: string) {
@@ -73,7 +71,9 @@ export class PaywallManager extends EventEmitter {
       ratePerMin: rate.ratePerMin,
       remainingSeconds: minutes * 60,
       lastTick: Date.now(),
-      paused: false
+      paused: false,
+      purchasePrice: price,
+      purchasedSeconds: minutes * 60
     };
     this.sessions.set(domain, session);
     this.emit('session-started', session);
@@ -92,6 +92,32 @@ export class PaywallManager extends EventEmitter {
     if (!session || !session.paused) return;
     session.paused = false;
     this.emit('session-resumed', { domain });
+  }
+
+  endSession(domain: string, reason: string = 'manual', options?: { refundUnused?: boolean }) {
+    const session = this.sessions.get(domain);
+    if (!session) return null;
+
+    let refund = 0;
+    if (options?.refundUnused && session.mode === 'pack' && session.purchasePrice && session.purchasedSeconds) {
+      const unusedSeconds = Math.max(0, Math.min(session.purchasedSeconds, session.remainingSeconds));
+      const unusedFraction = unusedSeconds / session.purchasedSeconds;
+      refund = Math.round(session.purchasePrice * unusedFraction);
+
+      if (refund > 0) {
+        this.wallet.adjust(refund, {
+          type: 'pack-refund',
+          domain: session.domain,
+          unusedSeconds,
+          purchasedSeconds: session.purchasedSeconds
+        });
+        this.emit('wallet-update', this.wallet.getSnapshot());
+      }
+    }
+
+    this.sessions.delete(domain);
+    this.emit('session-ended', { domain, reason, refund });
+    return session;
   }
 
   tick(intervalSeconds: number, activeDomain?: string | null) {
@@ -117,6 +143,9 @@ export class PaywallManager extends EventEmitter {
         if (marketRate) {
           const modifier = marketRate.hourlyModifiers?.[currentHour] ?? 1;
           currentRate = marketRate.ratePerMin * modifier;
+        }
+        if (session.ratePerMin !== currentRate) {
+          session.ratePerMin = currentRate;
         }
 
         const due = Math.ceil((currentRate / 60) * intervalSeconds);

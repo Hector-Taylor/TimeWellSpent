@@ -77,6 +77,42 @@ button.secondary {
   color: #f1f4ff;
 }
 
+button.danger {
+  background: linear-gradient(120deg, #ff8c8c, #ff4b4b);
+  color: #050810;
+  box-shadow: 0 8px 20px rgba(255, 75, 75, 0.25);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.button-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.session-card button {
+  width: 100%;
+}
+
+small.note {
+  color: #a7b6d8;
+}
+
+.session-note {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(124, 244, 212, 0.08);
+  border: 1px solid rgba(124, 244, 212, 0.2);
+  color: #e9f3ff;
+  font-size: 13px;
+}
+
 small {
   color: #a7b6d8;
 }

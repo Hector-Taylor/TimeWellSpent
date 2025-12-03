@@ -217,10 +217,10 @@ async function bootstrap() {
     const sessionItems = sessions.map((session) => ({
       label: `${session.domain} • ${session.mode === 'pack' ? Math.ceil(session.remainingSeconds / 60) + 'm' : 'metered'}${session.paused ? ' (paused)' : ''}`,
       submenu: [
-        session.mode === 'pack' ? {
-          label: 'Cancel pack',
-          click: () => backend.paywall.cancelPack(session.domain)
-        } : { label: 'End metered session', click: () => backend.paywall.clearSession(session.domain) }
+        {
+          label: session.mode === 'pack' ? 'Cancel pack (partial refund)' : 'End metered session',
+          click: () => backend.paywall.endSession(session.domain, 'manual-end', { refundUnused: true })
+        }
       ]
     }));
 
@@ -279,10 +279,14 @@ async function bootstrap() {
   backend.economy.on('activity', (payload) => emitToRenderers('economy:activity', payload));
 
   const watcher = createUrlWatcher({
-    onActivity: (event) => backend.handleActivity(event)
+    onActivity: (event) => backend.handleActivity(event, 'system')
   });
   stopWatcher = watcher.stop;
   console.log('Watcher started');
+
+  // Extension status events to renderer
+  backend.extension.onStatus((status) => emitToRenderers('extension:status', status));
+  emitToRenderers('extension:status', backend.extension.status());
 
   createIpc({ backend, db });
 

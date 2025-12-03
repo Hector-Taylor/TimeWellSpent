@@ -10,13 +10,15 @@ type ConnectionState = {
     ratePerMin: number;
     remainingSeconds: number;
     paused?: boolean;
+    purchasePrice?: number;
+    purchasedSeconds?: number;
   }>;
 };
 
 type StatusResponse = {
   balance: number;
   rate: { ratePerMin: number; packs: Array<{ minutes: number; price: number }> } | null;
-  session: { mode: 'metered' | 'pack'; remainingSeconds: number; paused?: boolean } | null;
+  session: { mode: 'metered' | 'pack'; remainingSeconds: number; paused?: boolean; purchasePrice?: number; purchasedSeconds?: number } | null;
   lastSync: number;
   desktopConnected: boolean;
 };
@@ -26,6 +28,8 @@ function App() {
   const [activeTabDomain, setActiveTabDomain] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sessionMessage, setSessionMessage] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
 
   useEffect(() => {
     async function bootstrap() {
@@ -42,6 +46,15 @@ function App() {
     bootstrap();
   }, []);
 
+  const refreshState = async (domain: string | null) => {
+    const conn = await chrome.runtime.sendMessage({ type: 'GET_CONNECTION' }) as ConnectionState;
+    setConnection(conn);
+    if (domain) {
+      const stat = await chrome.runtime.sendMessage({ type: 'GET_STATUS', payload: { domain } }) as StatusResponse;
+      setStatus(stat);
+    }
+  };
+
   const session = useMemo(() => {
     if (!activeTabDomain || !connection) return null;
     return connection.sessions[activeTabDomain] ?? null;
@@ -49,16 +62,55 @@ function App() {
 
   const paused = session?.paused || status?.session?.paused;
   const remaining = session?.remainingSeconds ?? status?.session?.remainingSeconds ?? 0;
+  useEffect(() => {
+    setSessionMessage(null);
+  }, [activeTabDomain]);
+  const refundEstimate = session?.mode === 'pack' && session.purchasePrice && session.purchasedSeconds && session.purchasedSeconds > 0
+    ? Math.round((session.remainingSeconds / session.purchasedSeconds) * session.purchasePrice)
+    : null;
+  useEffect(() => {
+    if (session) {
+      setSessionMessage(null);
+    }
+  }, [session?.mode]);
 
   async function togglePause() {
     if (!activeTabDomain) return;
-    if (paused) {
-      await chrome.runtime.sendMessage({ type: 'RESUME_SESSION', payload: { domain: activeTabDomain } });
-    } else {
-      await chrome.runtime.sendMessage({ type: 'PAUSE_SESSION', payload: { domain: activeTabDomain } });
+    setWorking(true);
+    setSessionMessage(null);
+    try {
+      if (paused) {
+        await chrome.runtime.sendMessage({ type: 'RESUME_SESSION', payload: { domain: activeTabDomain } });
+      } else {
+        await chrome.runtime.sendMessage({ type: 'PAUSE_SESSION', payload: { domain: activeTabDomain } });
+      }
+      await refreshState(activeTabDomain);
+    } catch (error) {
+      setSessionMessage('Could not update the session state.');
+    } finally {
+      setWorking(false);
     }
-    const conn = await chrome.runtime.sendMessage({ type: 'GET_CONNECTION' }) as ConnectionState;
-    setConnection(conn);
+  }
+
+  async function endSession() {
+    if (!activeTabDomain) return;
+    setWorking(true);
+    setSessionMessage(null);
+    try {
+      const result = await chrome.runtime.sendMessage({ type: 'END_SESSION', payload: { domain: activeTabDomain } }) as { success: boolean; refund?: number; error?: string };
+      await refreshState(activeTabDomain);
+      if (!result?.success) {
+        setSessionMessage(result?.error ?? 'Could not end this session.');
+      } else if (result?.refund && result.refund > 0) {
+        setSessionMessage(`Session ended. Refunded ${result.refund} coins.`);
+      } else {
+        setSessionMessage('Session ended and blocked.');
+      }
+    } catch (error) {
+      setSessionMessage('Could not end this session.');
+    } finally {
+      setWorking(false);
+    }
   }
 
   if (loading) {
@@ -93,15 +145,26 @@ function App() {
                 <span>Remaining</span>
                 <span>{session.mode === 'metered' ? 'Metered' : formatMinutes(remaining)}</span>
               </div>
-              <button className="secondary" onClick={togglePause}>
-                {paused ? 'Resume spending' : 'Pause spending'}
-              </button>
+              <small className="note">
+                {session.mode === 'metered'
+                  ? 'Ending stops spend immediately and re-blocks this tab.'
+                  : `Ending early refunds unused time${refundEstimate ? ` (~${refundEstimate} coins)` : ''}.`}
+              </small>
+              <div className="button-stack">
+                <button className="danger" disabled={working} onClick={endSession}>
+                  End session
+                </button>
+                <button className="secondary" disabled={working} onClick={togglePause}>
+                  {paused ? 'Resume spending' : 'Pause spending'}
+                </button>
+              </div>
             </>
           ) : (
             <div className="row">
               <span>No session for this tab.</span>
             </div>
           )}
+          {sessionMessage && <div className="session-note">{sessionMessage}</div>}
         </div>
       )}
     </div>

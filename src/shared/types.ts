@@ -111,6 +111,8 @@ export type PaywallSession = {
   ratePerMin: number;
   remainingSeconds: number;
   paused?: boolean;
+  purchasePrice?: number;
+  purchasedSeconds?: number;
 };
 
 export type RendererApi = {
@@ -152,6 +154,7 @@ export type RendererApi = {
     buyPack(domain: string, minutes: number): Promise<unknown>;
     decline(domain: string): Promise<void>;
     cancelPack(domain: string): Promise<void>;
+    end(domain: string, options?: { refundUnused?: boolean }): Promise<void>;
     sessions(): Promise<PaywallSession[]>;
     pause(domain: string): Promise<void>;
     resume(domain: string): Promise<void>;

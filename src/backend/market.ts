@@ -1,38 +1,7 @@
 import type { Statement } from 'better-sqlite3';
 import type { MarketRate } from '@shared/types';
 import type { Database } from './storage';
-
-const DEFAULT_MODIFIERS = Array(24).fill(1);
-
-const DEFAULT_RATES: MarketRate[] = [
-  {
-    domain: 'twitter.com',
-    ratePerMin: 3,
-    packs: [
-      { minutes: 10, price: 28 },
-      { minutes: 30, price: 75 }
-    ],
-    hourlyModifiers: [...DEFAULT_MODIFIERS]
-  },
-  {
-    domain: 'youtube.com',
-    ratePerMin: 2.5,
-    packs: [
-      { minutes: 10, price: 23 },
-      { minutes: 30, price: 65 }
-    ],
-    hourlyModifiers: [...DEFAULT_MODIFIERS]
-  },
-  {
-    domain: 'reddit.com',
-    ratePerMin: 2,
-    packs: [
-      { minutes: 10, price: 18 },
-      { minutes: 30, price: 50 }
-    ],
-    hourlyModifiers: [...DEFAULT_MODIFIERS]
-  }
-];
+import { DEFAULT_MARKET_RATES } from './defaults';
 
 export class MarketService {
   private db = this.database.connection;
@@ -58,7 +27,7 @@ export class MarketService {
         this.upsertStmt.run(rate.domain, rate.ratePerMin, JSON.stringify(rate.packs), JSON.stringify(rate.hourlyModifiers));
       }
     });
-    tx(DEFAULT_RATES);
+    tx(DEFAULT_MARKET_RATES);
   }
 
   listRates(): MarketRate[] {

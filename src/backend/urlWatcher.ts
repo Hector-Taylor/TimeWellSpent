@@ -465,13 +465,14 @@ export function createUrlWatcher(options: UrlWatcherOptions) {
     try {
       let win: { appName: string; windowTitle: string; idleSeconds: number; bundleId?: string; url?: string | null } | null = null;
       let url: string | null = null;
+      const platform = options.macOverride ? 'darwin' : process.platform;
 
-      if (process.platform === 'darwin') {
+      if (platform === 'darwin') {
         win = await getMacActiveWindow();
         if (win) {
           url = await readMacBrowserUrl(win.appName);
         }
-      } else if (process.platform === 'win32') {
+      } else if (platform === 'win32') {
         win = await getWindowsActiveWindow();
         if (win) {
           url = win.url ?? await readWindowsBrowserUrl(win.appName, win.windowTitle);

@@ -4,13 +4,15 @@ type CurveEditorProps = {
     values: number[]; // Array of 24 numbers
     onChange: (values: number[]) => void;
     color: string;
+    disabled?: boolean;
 };
 
-export default function CurveEditor({ values, onChange, color }: CurveEditorProps) {
+export default function CurveEditor({ values, onChange, color, disabled = false }: CurveEditorProps) {
     const [isDragging, setIsDragging] = useState(false);
     const svgRef = useRef<SVGSVGElement>(null);
 
     const handleInteraction = (event: React.MouseEvent | React.TouchEvent) => {
+        if (disabled) return;
         if (!svgRef.current) return;
         const rect = svgRef.current.getBoundingClientRect();
         const clientX = 'touches' in event ? event.touches[0].clientX : (event as React.MouseEvent).clientX;
@@ -40,7 +42,7 @@ export default function CurveEditor({ values, onChange, color }: CurveEditorProp
     };
 
     return (
-        <div className="curve-editor" style={{ userSelect: 'none' }}>
+        <div className="curve-editor" style={{ userSelect: 'none', opacity: disabled ? 0.5 : 1 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '12px', color: 'var(--text-subtle)' }}>
                 <span>00:00</span>
                 <span>06:00</span>
@@ -52,13 +54,13 @@ export default function CurveEditor({ values, onChange, color }: CurveEditorProp
                 ref={svgRef}
                 width="100%"
                 height="200"
-                style={{ background: 'rgba(0,0,0,0.05)', borderRadius: '8px', cursor: 'crosshair' }}
-                onMouseDown={(e) => { setIsDragging(true); handleInteraction(e); }}
-                onMouseMove={(e) => { if (isDragging) handleInteraction(e); }}
+                style={{ background: 'rgba(0,0,0,0.05)', borderRadius: '8px', cursor: disabled ? 'not-allowed' : 'crosshair' }}
+                onMouseDown={(e) => { if (disabled) return; setIsDragging(true); handleInteraction(e); }}
+                onMouseMove={(e) => { if (!disabled && isDragging) handleInteraction(e); }}
                 onMouseUp={() => setIsDragging(false)}
                 onMouseLeave={() => setIsDragging(false)}
-                onTouchStart={(e) => { setIsDragging(true); handleInteraction(e); }}
-                onTouchMove={(e) => { if (isDragging) handleInteraction(e); }}
+                onTouchStart={(e) => { if (disabled) return; setIsDragging(true); handleInteraction(e); }}
+                onTouchMove={(e) => { if (!disabled && isDragging) handleInteraction(e); }}
                 onTouchEnd={() => setIsDragging(false)}
             >
                 {/* Grid lines */}
@@ -93,7 +95,7 @@ export default function CurveEditor({ values, onChange, color }: CurveEditorProp
                 })}
             </svg>
             <div style={{ textAlign: 'center', marginTop: '8px', fontSize: '12px' }}>
-                Click and drag to adjust hourly multipliers (0x - 3x)
+                {disabled ? 'Active session detected — edits locked until it ends.' : 'Click and drag to adjust hourly multipliers (0x - 3x)'}
             </div>
         </div>
     );

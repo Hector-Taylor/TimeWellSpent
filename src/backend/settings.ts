@@ -1,12 +1,7 @@
 import type { Statement } from 'better-sqlite3';
 import type { Database } from './storage';
 import type { CategorisationConfig } from '@shared/types';
-
-const DEFAULT_CATEGORISATION: CategorisationConfig = {
-  productive: ['Code', 'Notes', 'Documentation', 'vscode', 'obsidian', 'notion', 'linear.app'],
-  neutral: ['Mail', 'Calendar', 'Slack', 'Figma'],
-  frivolity: ['twitter.com', 'youtube.com', 'reddit.com']
-};
+import { DEFAULT_CATEGORISATION, DEFAULT_IDLE_THRESHOLD_SECONDS } from './defaults';
 
 export class SettingsService {
   private db = this.database.connection;
@@ -47,7 +42,7 @@ export class SettingsService {
 
   getIdleThreshold(): number {
     const val = this.getJson<number>('idleThreshold');
-    return typeof val === 'number' ? val : 15;
+    return typeof val === 'number' ? val : DEFAULT_IDLE_THRESHOLD_SECONDS;
   }
 
   setIdleThreshold(value: number) {

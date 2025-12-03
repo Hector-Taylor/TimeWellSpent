@@ -13,6 +13,14 @@ let idleState: IdleState = 'active';
 let lastIdleChange = Date.now();
 const activityBuffer: Array<Record<string, unknown>> = [];
 
+function estimatePackRefund(session: { mode: 'metered' | 'pack'; purchasePrice?: number; purchasedSeconds?: number; remainingSeconds: number }) {
+    if (session.mode !== 'pack') return 0;
+    if (!session.purchasePrice || !session.purchasedSeconds) return 0;
+    const unusedSeconds = Math.max(0, Math.min(session.purchasedSeconds, session.remainingSeconds));
+    const unusedFraction = unusedSeconds / session.purchasedSeconds;
+    return Math.round(session.purchasePrice * unusedFraction);
+}
+
 // Initialize storage on startup
 storage.init().then(() => {
     console.log('TimeWellSpent: Storage initialized');
@@ -101,12 +109,27 @@ function handleDesktopMessage(data: any) {
                 ratePerMin: session.ratePerMin,
                 remainingSeconds: session.remainingSeconds ?? Infinity,
                 startedAt: Date.now(),
-                paused: session.paused ?? false
+                paused: session.paused ?? false,
+                purchasePrice: session.purchasePrice,
+                purchasedSeconds: session.purchasedSeconds
             });
         }
     } else if (data.type === 'paywall-session-ended') {
         if (data.payload?.domain) {
-            storage.clearSession(data.payload.domain);
+            const { domain, reason } = data.payload;
+            storage.clearSession(domain);
+            console.log(`🛑 Session ended for ${domain} (${reason})`);
+
+            // Immediately check if we need to block the current tab
+            getActiveHttpTab().then(async (tab) => {
+                if (tab && tab.url && tab.id) {
+                    const tabDomain = new URL(tab.url).hostname.replace(/^www\./, '');
+                    if (tabDomain === domain) {
+                        console.log(`🚫 Immediately blocking ${domain} due to session end`);
+                        await showBlockScreen(tab.id, domain, reason);
+                    }
+                }
+            });
         }
     } else if (data.type === 'paywall-session-paused') {
         if (data.payload?.domain) {
@@ -114,6 +137,17 @@ function handleDesktopMessage(data: any) {
             storage.getSession(domain).then((session) => {
                 if (session) {
                     storage.setSession(domain, { ...session, paused: true });
+                }
+            });
+
+            // Also block if currently viewing this domain (since it's paused)
+            getActiveHttpTab().then(async (tab) => {
+                if (tab && tab.url && tab.id) {
+                    const tabDomain = new URL(tab.url).hostname.replace(/^www\./, '');
+                    if (tabDomain === domain) {
+                        console.log(`🚫 Immediately blocking ${domain} due to pause`);
+                        await showBlockScreen(tab.id, domain, 'paused');
+                    }
                 }
             });
         }
@@ -135,27 +169,38 @@ function handleDesktopMessage(data: any) {
 
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
     const tab = await chrome.tabs.get(activeInfo.tabId);
-    await checkAndBlockIfNeeded(tab);
+    if (tab.url) {
+        await checkAndBlockUrl(tab.id!, tab.url, 'onActivated');
+    }
     await pushActivitySample('tab-activated');
 });
 
-chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    if ((changeInfo.status === 'loading' || changeInfo.status === 'complete') && tab.url) {
+        await checkAndBlockUrl(tabId, tab.url, `onUpdated:${changeInfo.status}`);
+    }
     if (changeInfo.status === 'complete' && tab.active) {
-        await checkAndBlockIfNeeded(tab);
         await pushActivitySample('tab-updated');
     }
+});
+
+chrome.webNavigation.onCommitted.addListener(async (details) => {
+    if (details.frameId !== 0) return; // Only main frame
+    await checkAndBlockUrl(details.tabId, details.url, 'webNavigation:onCommitted');
 });
 
 chrome.windows.onFocusChanged.addListener(async () => {
     await pushActivitySample('window-focus');
 });
 
-async function checkAndBlockIfNeeded(tab: chrome.tabs.Tab) {
-    if (!tab.url || !tab.url.startsWith('http')) return;
+async function checkAndBlockUrl(tabId: number, urlString: string, source: string) {
+    if (!urlString || !urlString.startsWith('http')) return;
 
     try {
-        const url = new URL(tab.url);
+        const url = new URL(urlString);
         const domain = url.hostname.replace(/^www\./, '');
+
+        console.log(`🔍 Checking ${domain} (source: ${source})`);
 
         const isFrivolous = await storage.isFrivolous(domain);
 
@@ -164,21 +209,18 @@ async function checkAndBlockIfNeeded(tab: chrome.tabs.Tab) {
 
             if (session && (session.mode === 'metered' || session.remainingSeconds > 0)) {
                 // Has valid session - allow
-                console.log(`✅ ${domain} - has valid session`);
+                console.log(`✅ ${domain} - allowed (active session)`);
                 return;
             }
 
             // No session - BLOCK!
-            console.log(`🚫 Blocking ${domain}`);
-            if (tab.id) {
-                chrome.tabs.sendMessage(tab.id, {
-                    type: 'BLOCK_SCREEN',
-                    payload: { domain }
-                });
-            }
+            console.log(`🚫 Blocking ${domain} (source: ${source})`);
+            await showBlockScreen(tabId, domain);
+        } else {
+            // console.log(`✨ ${domain} - allowed (not frivolous)`);
         }
     } catch (e) {
-        // Invalid URL
+        console.error('Error checking URL:', e);
     }
 }
 
@@ -196,6 +238,12 @@ function startSessionTicker() {
 }
 
 async function tickSessions() {
+    // If connected to desktop, let it handle the economy/spending.
+    // We just sync the state via events.
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        return;
+    }
+
     const sessions = await storage.getAllSessions();
     const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
 
@@ -229,20 +277,22 @@ async function tickSessions() {
     if (!session) return;
 
     if (session.mode === 'metered') {
-        // Pay-as-you-go: deduct coins
-        const cost = Math.ceil((session.ratePerMin / 60) * 15); // Cost for 15 seconds
+        // Pay-as-you-go: deduct coins using the latest rate
+        const currentRate = (await storage.getMarketRate(activeDomain))?.ratePerMin ?? session.ratePerMin;
+        const cost = Math.ceil((currentRate / 60) * 15); // Cost for 15 seconds
         try {
             await storage.spendCoins(cost);
             console.log(`💰 Spent ${cost} coins on ${activeDomain}`);
+            if (session.ratePerMin !== currentRate) {
+                session.ratePerMin = currentRate;
+                await storage.setSession(activeDomain, session);
+            }
         } catch (e) {
             // Insufficient funds - clear session and block
             console.log(`❌ Insufficient funds for ${activeDomain}`);
             await storage.clearSession(activeDomain);
             if (activeTab.id) {
-                chrome.tabs.sendMessage(activeTab.id, {
-                    type: 'BLOCK_SCREEN',
-                    payload: { domain: activeDomain, reason: 'insufficient-funds' }
-                });
+                await showBlockScreen(activeTab.id, activeDomain, 'insufficient-funds');
             }
         }
     } else {
@@ -252,10 +302,7 @@ async function tickSessions() {
             console.log(`⏰ Time's up for ${activeDomain}`);
             await storage.clearSession(activeDomain);
             if (activeTab.id) {
-                chrome.tabs.sendMessage(activeTab.id, {
-                    type: 'BLOCK_SCREEN',
-                    payload: { domain: activeDomain, reason: 'time-expired' }
-                });
+                await showBlockScreen(activeTab.id, activeDomain, 'time-expired');
             }
         } else {
             await storage.setSession(activeDomain, session);
@@ -372,23 +419,72 @@ function getBrowserLabel() {
     return 'Chrome';
 }
 
-async function preferDesktopPurchase(path: '/paywall/packs' | '/paywall/metered', payload: Record<string, unknown>) {
+async function ensureContentScript(tabId: number) {
     try {
-        const response = await fetch(`${DESKTOP_API_URL}${path}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-            cache: 'no-store',
+        await chrome.scripting.executeScript({
+            target: { tabId },
+            files: ['content-loader.js']
         });
-        if (!response.ok) throw new Error('desktop unreachable');
-        const session = await response.json();
-        await storage.updateFromDesktop({ sessions: { [session.domain]: { ...session, startedAt: Date.now(), paused: false } } as any });
-        await syncFromDesktop(); // refresh wallet + rates
-        return { ok: true, session };
     } catch (error) {
-        console.log('Desktop purchase failed, falling back to local', error);
-        return { ok: false, error: (error as Error).message };
+        // Ignore injection errors (already injected or not permitted)
     }
+}
+
+async function showBlockScreen(tabId: number, domain: string, reason?: string) {
+    await ensureContentScript(tabId);
+
+    // Ping to give the content script a chance to attach
+    try {
+        await chrome.tabs.sendMessage(tabId, { type: 'TWS_PING' });
+    } catch {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+
+    try {
+        await chrome.tabs.sendMessage(tabId, {
+            type: 'BLOCK_SCREEN',
+            payload: { domain, reason }
+        });
+        console.log(`🔒 Block screen message sent to tab ${tabId} for ${domain}`);
+    } catch (error) {
+        console.warn('Failed to send block message', error);
+    }
+}
+
+async function preferDesktopPurchase(path: '/paywall/packs' | '/paywall/metered', payload: Record<string, unknown>) {
+  try {
+    const response = await fetch(`${DESKTOP_API_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error('desktop unreachable');
+    const session = await response.json();
+    await storage.updateFromDesktop({ sessions: { [session.domain]: { ...session, startedAt: Date.now(), paused: false } } as any });
+    await syncFromDesktop(); // refresh wallet + rates
+    return { ok: true, session };
+  } catch (error) {
+    console.log('Desktop purchase failed, falling back to local', error);
+    return { ok: false, error: (error as Error).message };
+  }
+}
+
+async function preferDesktopEnd(domain: string) {
+  try {
+    const response = await fetch(`${DESKTOP_API_URL}/paywall/end`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain }),
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error('desktop unreachable');
+    await syncFromDesktop();
+    return { ok: true };
+  } catch (error) {
+    console.log('Desktop end-session failed, falling back to local', error);
+    return { ok: false, error: (error as Error).message };
+  }
 }
 
 // ============================================================================
@@ -413,6 +509,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return true;
     } else if (message.type === 'RESUME_SESSION') {
         handleResumeSession(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'END_SESSION') {
+        handleEndSession(message.payload).then(sendResponse);
         return true;
     }
 });
@@ -459,7 +558,9 @@ async function handleBuyPack(payload: { domain: string; minutes: number }) {
             mode: 'pack' as const,
             ratePerMin: rate.ratePerMin,
             remainingSeconds: pack.minutes * 60,
-            startedAt: Date.now()
+            startedAt: Date.now(),
+            purchasePrice: pack.price,
+            purchasedSeconds: pack.minutes * 60
         };
         await storage.setSession(payload.domain, session);
         console.log(`✅ Purchased ${pack.minutes} minutes for ${payload.domain} (offline mode)`);
@@ -514,6 +615,39 @@ async function handleResumeSession(payload: { domain: string }) {
         return { success: true };
     }
     return { success: false, error: 'No session found' };
+}
+
+async function handleEndSession(payload: { domain: string }) {
+    const session = await storage.getSession(payload.domain);
+    if (!session) {
+        return { success: false, error: 'No session found' };
+    }
+
+    const refund = estimatePackRefund(session);
+
+    const canSignalDesktop = ws && ws.readyState === WebSocket.OPEN;
+    if (canSignalDesktop) {
+        ws.send(JSON.stringify({ type: 'paywall:end', payload: { domain: payload.domain } }));
+    }
+
+    const desktopResult = canSignalDesktop ? { ok: true } : await preferDesktopEnd(payload.domain);
+    if (!desktopResult.ok) {
+        if (refund > 0) {
+            await storage.earnCoins(refund);
+        }
+    }
+
+    await storage.clearSession(payload.domain);
+
+    const activeTab = await getActiveHttpTab();
+    if (activeTab && activeTab.url && activeTab.id) {
+        const tabDomain = new URL(activeTab.url).hostname.replace(/^www\./, '');
+        if (tabDomain === payload.domain) {
+            await showBlockScreen(activeTab.id, payload.domain, 'ended');
+        }
+    }
+
+    return { success: true, refund };
 }
 
 // Keep alive

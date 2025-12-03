@@ -38,7 +38,16 @@ export function createIpc(context: IpcContext) {
   });
 
   ipcMain.handle('market:list', async () => backend.market.listRates());
-  ipcMain.handle('market:update', async (_event, payload) => backend.market.upsertRate(payload));
+  ipcMain.handle('market:update', async (_event, payload) => {
+    const domain = (payload as { domain?: string })?.domain;
+    if (domain) {
+      const session = backend.paywall.getSession(domain);
+      if (session) {
+        throw new Error(`Cannot change exchange rate for ${domain} while a session is active.`);
+      }
+    }
+    return backend.market.upsertRate(payload);
+  });
 
   ipcMain.handle('intentions:list', async (_event, payload: { date: string }) => backend.intentions.list(payload.date));
   ipcMain.handle('intentions:add', async (_event, payload: { date: string; text: string }) => backend.intentions.add(payload));
@@ -72,10 +81,19 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('paywall:cancel-pack', (_event, payload: { domain: string }) => {
     return backend.paywall.cancelPack(payload.domain);
   });
+  ipcMain.handle('paywall:end', (_event, payload: { domain: string; refundUnused?: boolean }) => {
+    const session = backend.paywall.endSession(payload.domain, 'manual-end', { refundUnused: payload.refundUnused ?? true });
+    if (!session) {
+      throw new Error('No active session for that domain');
+    }
+    return session;
+  });
   ipcMain.handle('paywall:sessions', () => backend.paywall.listSessions());
   ipcMain.handle('paywall:pause', (_event, payload: { domain: string }) => backend.paywall.pause(payload.domain));
   ipcMain.handle('paywall:resume', (_event, payload: { domain: string }) => backend.paywall.resume(payload.domain));
 
   ipcMain.handle('settings:categorisation', () => backend.settings.getCategorisation());
   ipcMain.handle('settings:update-categorisation', (_event, payload) => backend.settings.setCategorisation(payload));
+  ipcMain.handle('settings:idle-threshold', () => backend.settings.getIdleThreshold());
+  ipcMain.handle('settings:update-idle-threshold', (_event, value: number) => backend.settings.setIdleThreshold(value));
 }

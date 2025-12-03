@@ -119,7 +119,6 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
                 : 'Stay intentional: spend f-coins to access this site.'}
             </p>
           </div>
-          <button className="modal-close" aria-label="Close paywall" onClick={onClose}>×</button>
         </header>
         <div className="wallet-inline">
           <span>Balance</span>
@@ -243,19 +242,6 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
         {typeof state.remainingSeconds === 'number' && state.remainingSeconds > 0 && (
           <p className="subtle">Remaining: {Math.round(state.remainingSeconds / 60)} min</p>
         )}
-        <footer>
-          <button
-            className="ghost"
-            onClick={async () => {
-              if (state) {
-                await api.paywall.decline(state.domain);
-              }
-              onClose();
-            }}
-          >
-            Close for now
-          </button>
-        </footer>
       </div>
     </div>
   );

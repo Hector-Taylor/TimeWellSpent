@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import type { RendererApi, MarketRate, CategorisationConfig } from '@shared/types';
+import type { RendererApi, MarketRate, CategorisationConfig, PaywallSession } from '@shared/types';
 import CurveEditor from './CurveEditor';
 
 type EconomyTunerProps = {
@@ -17,6 +17,8 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState<'productive' | 'frivolity'>('productive');
     const [saving, setSaving] = useState(false);
+    const [activeSessions, setActiveSessions] = useState<Record<string, PaywallSession>>({});
+    const [error, setError] = useState<string | null>(null);
 
     const [isAdding, setIsAdding] = useState(false);
     const [newDomain, setNewDomain] = useState('');
@@ -25,10 +27,32 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
         loadData();
     }, []);
 
+    useEffect(() => {
+        const refreshSessions = () => api.paywall.sessions().then((list) => {
+            const map: Record<string, PaywallSession> = {};
+            list.forEach((session) => { map[session.domain] = session; });
+            setActiveSessions(map);
+        }).catch(() => { /* ignore */ });
+
+        refreshSessions();
+        const unsubStart = api.events.on('paywall:session-started', refreshSessions);
+        const unsubEnd = api.events.on('paywall:session-ended', refreshSessions);
+        const unsubPause = api.events.on('paywall:session-paused', refreshSessions);
+        const unsubResume = api.events.on('paywall:session-resumed', refreshSessions);
+
+        return () => {
+            unsubStart();
+            unsubEnd();
+            unsubPause();
+            unsubResume();
+        };
+    }, [api]);
+
     async function loadData() {
-        const [rates, config] = await Promise.all([
+        const [rates, config, sessionsList] = await Promise.all([
             api.market.list(),
-            api.settings.categorisation()
+            api.settings.categorisation(),
+            api.paywall.sessions()
         ]);
 
         const merged: TunerItem[] = [];
@@ -60,6 +84,11 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
         });
 
         setItems(merged);
+        const sessionMap: Record<string, PaywallSession> = {};
+        sessionsList.forEach((session) => {
+            sessionMap[session.domain] = session;
+        });
+        setActiveSessions(sessionMap);
     }
 
     const filteredItems = items.filter(item => {
@@ -76,15 +105,21 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
         }
     }, [activeTab, items, isAdding]);
 
+    useEffect(() => {
+        setError(null);
+    }, [selectedId]);
+
     const selectedItem = items.find(i => i.id === selectedId);
+    const lockedSession = selectedItem ? activeSessions[selectedItem.id] : undefined;
+    const locked = !!lockedSession;
 
     const handleRateChange = (newRate: number) => {
-        if (!selectedItem) return;
+        if (!selectedItem || locked) return;
         updateItemRate(selectedItem.id, { ...selectedItem.rate, ratePerMin: newRate });
     };
 
     const handleCurveChange = (newModifiers: number[]) => {
-        if (!selectedItem) return;
+        if (!selectedItem || locked) return;
         updateItemRate(selectedItem.id, { ...selectedItem.rate, hourlyModifiers: newModifiers });
     };
 
@@ -94,9 +129,19 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
 
     const save = async () => {
         if (!selectedItem) return;
+        if (locked) {
+            setError('Active session detected — end it before changing this rate.');
+            return;
+        }
         setSaving(true);
-        await api.market.upsert(selectedItem.rate);
-        setSaving(false);
+        setError(null);
+        try {
+            await api.market.upsert(selectedItem.rate);
+        } catch (err) {
+            setError((err as Error).message);
+        } finally {
+            setSaving(false);
+        }
     };
 
     const handleAddProfile = async (e: React.FormEvent) => {
@@ -142,6 +187,7 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
         ];
     }, [selectedItem]);
 
+    const isEarnProfile = selectedItem?.type === 'productive';
     return (
         <section className="panel tuner-panel">
             <header className="panel-header tuner-header-row">
@@ -201,7 +247,7 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
                     )}
                 </aside>
 
-                <main className="tuner-editor">
+                <div className="tuner-editor">
                     {selectedItem ? (
                         <div className={`tuner-grid ${selectedItem.type === 'productive' ? 'single' : ''}`}>
                             <div className="card tuner-primary">
@@ -210,10 +256,20 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
                                         <h2>{selectedItem.id}</h2>
                                         <p className="subtle">{selectedItem.type === 'productive' ? 'Earn profile' : 'Spend profile'}</p>
                                     </div>
-                                    <button className="primary" onClick={save} disabled={saving}>
-                                        {saving ? 'Saving...' : 'Save changes'}
+                                    <button className="primary" onClick={save} disabled={saving || locked}>
+                                        {locked ? 'Locked by active session' : saving ? 'Saving...' : 'Save changes'}
                                     </button>
                                 </div>
+                                {locked && (
+                                    <div className="inline-note danger" style={{ marginBottom: '8px' }}>
+                                        Active session running for this domain — end it to adjust the exchange rate.
+                                    </div>
+                                )}
+                                {error && (
+                                    <div className="inline-note warning" style={{ marginBottom: '8px' }}>
+                                        {error}
+                                    </div>
+                                )}
 
                                 {metrics.length > 0 && (
                                     <div className="tuner-metrics">
@@ -233,6 +289,7 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
                                         value={selectedItem.rate.ratePerMin}
                                         onChange={(e) => handleRateChange(Number(e.target.value))}
                                         step="0.1"
+                                        disabled={locked}
                                     />
                                     <p className="subtle">
                                         {selectedItem.type === 'productive' ? 'Income earned per minute.' : 'Cost per minute if metered.'}
@@ -248,39 +305,46 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
                                         values={selectedItem.rate.hourlyModifiers}
                                         onChange={handleCurveChange}
                                         color={selectedItem.type === 'productive' ? 'var(--cat-productive)' : 'var(--cat-frivolity)'}
+                                        disabled={locked}
                                     />
                                 </div>
                             </div>
 
-                            {selectedItem.type !== 'productive' && (
-                                <div className="card tuner-secondary">
-                                    <div className="tuner-header">
-                                        <div>
-                                            <h3>Packs preview</h3>
-                                            <p className="subtle">Show what users see when buying time.</p>
-                                        </div>
-                                    </div>
-                                    <div className="packs-preview">
-                                        {selectedItem.rate.packs.length === 0 && (
-                                            <p className="subtle">No packs defined — consider adding 10/30/60 minute options.</p>
-                                        )}
-                                        {selectedItem.rate.packs.map((pack) => (
-                                            <div key={pack.minutes} className="pack-card">
-                                                <div>
-                                                    <strong>{pack.minutes} minute burst</strong>
-                                                    <p className="subtle">{pack.price} coins • {((pack.price / pack.minutes) * 60).toFixed(1)} c/hour</p>
-                                                </div>
-                                                <button className="ghost">Preview</button>
-                                            </div>
-                                        ))}
+                            <div className="card tuner-secondary">
+                                <div className="tuner-header">
+                                    <div>
+                                        <h3>{isEarnProfile ? 'Earnings preview' : 'Packs preview'}</h3>
+                                        <p className="subtle">
+                                            {isEarnProfile
+                                                ? 'How this profile’s rate and curve would surface in payout views.'
+                                                : 'Show what users see when buying time.'}
+                                        </p>
                                     </div>
                                 </div>
-                            )}
+                                <div className="packs-preview">
+                                    {selectedItem.rate.packs.length === 0 && (
+                                        <p className="subtle">
+                                            {isEarnProfile
+                                                ? 'No packs defined — optional for earn profiles.'
+                                                : 'No packs defined — consider adding 10/30/60 minute options.'}
+                                        </p>
+                                    )}
+                                    {selectedItem.rate.packs.map((pack) => (
+                                        <div key={pack.minutes} className="pack-card">
+                                            <div>
+                                                <strong>{pack.minutes} minute burst</strong>
+                                                <p className="subtle">{pack.price} coins • {((pack.price / pack.minutes) * 60).toFixed(1)} c/hour</p>
+                                            </div>
+                                            <button className="ghost">Preview</button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
                         </div>
                     ) : (
                         <div className="empty-state">Select an item to tune</div>
                     )}
-                </main>
+                </div>
             </div>
         </section>
     );

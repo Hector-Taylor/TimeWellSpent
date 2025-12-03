@@ -21,6 +21,7 @@ export default function App() {
   const [marketRates, setMarketRates] = useState<MarketRate[]>([]);
   const [economyState, setEconomyState] = useState<EconomyState | null>(null);
   const [categorisation, setCategorisation] = useState<CategorisationConfig | null>(null);
+  const [extensionStatus, setExtensionStatus] = useState<{ connected: boolean; lastSeen: number | null }>({ connected: true, lastSeen: null });
   const [paywallBlock, setPaywallBlock] = useState<{
     domain: string;
     appName: string;
@@ -46,6 +47,9 @@ export default function App() {
     const unsubPaywallStart = api.events.on('paywall:session-started', () => {
       setPaywallBlock(null);
     });
+    const unsubExtStatus = api.events.on<{ connected: boolean; lastSeen: number | null }>('extension:status', (payload) => {
+      setExtensionStatus(payload);
+    });
 
     const unsubPaywallEnd = api.events.on<{ domain: string; reason: string }>('paywall:session-ended', (payload) => {
       if (payload.reason === 'insufficient-funds') {
@@ -59,11 +63,26 @@ export default function App() {
       unsubPaywallReq();
       unsubPaywallStart();
       unsubPaywallEnd();
+      unsubExtStatus();
     };
   }, []);
 
   return (
     <div className="app-shell">
+      {!extensionStatus.connected && (
+        <div className="extension-banner">
+          <div>
+            <strong>Browser extension offline</strong>
+            <span className="subtle"> Install or enable the TimeWellSpent extension to enforce in-browser paywalls.</span>
+          </div>
+          <button
+            className="primary"
+            onClick={() => window.open('https://chromewebstore.google.com', '_blank', 'noopener')}
+          >
+            Get extension
+          </button>
+        </div>
+      )}
       <div className="window-chrome">
         <div className="window-chrome-title" aria-hidden>
           <div className="title-dot" />

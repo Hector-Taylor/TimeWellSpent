@@ -49,6 +49,7 @@ const api: RendererApi = {
     buyPack: (domain, minutes) => ipcRenderer.invoke('paywall:buy-pack', { domain, minutes }),
     decline: (domain) => ipcRenderer.invoke('paywall:decline', { domain }),
     cancelPack: (domain) => ipcRenderer.invoke('paywall:cancel-pack', { domain }),
+    end: (domain, options) => ipcRenderer.invoke('paywall:end', { domain, refundUnused: options?.refundUnused }),
     sessions: () => ipcRenderer.invoke('paywall:sessions'),
     pause: (domain) => ipcRenderer.invoke('paywall:pause', { domain }),
     resume: (domain) => ipcRenderer.invoke('paywall:resume', { domain })

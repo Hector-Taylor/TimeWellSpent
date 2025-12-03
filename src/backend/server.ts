@@ -2,6 +2,7 @@ import express from 'express';
 import expressWs from 'express-ws';
 import type { Server } from 'node:http';
 import type WebSocket from 'ws';
+import { EventEmitter } from 'node:events';
 import { WalletManager } from './wallet';
 import { MarketService } from './market';
 import { SettingsService } from './settings';
@@ -11,7 +12,8 @@ import { EconomyEngine } from './economy';
 import { FocusService } from './focus';
 import { IntentionService } from './intentions';
 import { BudgetService } from './budgets';
-import { closeActiveBrowserTab } from './urlWatcher';
+import { ActivityClassifier } from './activityClassifier';
+import { ActivityPipeline, type ActivityOrigin } from './activityPipeline';
 import type { Database } from './storage';
 import type { MarketRate } from '@shared/types';
 import { logger } from '@shared/logger';
@@ -26,7 +28,11 @@ export type BackendServices = {
   focus: FocusService;
   intentions: IntentionService;
   budgets: BudgetService;
-  handleActivity: (event: ActivityEvent & { idleSeconds?: number }) => void;
+  handleActivity: (event: ActivityEvent & { idleSeconds?: number }, origin?: ActivityOrigin) => void;
+  extension: {
+    status: () => { connected: boolean; lastSeen: number | null };
+    onStatus: (cb: (status: { connected: boolean; lastSeen: number | null }) => void) => void;
+  };
   declineDomain: (domain: string) => Promise<void>;
   stop: () => Promise<void>;
   port: number;
@@ -39,8 +45,13 @@ export async function createBackend(database: Database): Promise<BackendServices
   const market = new MarketService(database);
   const settings = new SettingsService(database);
   const paywall = new PaywallManager(wallet, market);
-  const economy = new EconomyEngine(wallet, market, paywall, settings);
+  const economy = new EconomyEngine(wallet, market, paywall);
   const activityTracker = new ActivityTracker(database);
+  const classifier = new ActivityClassifier(
+    () => settings.getCategorisation(),
+    () => settings.getIdleThreshold()
+  );
+  const activityPipeline = new ActivityPipeline(activityTracker, economy, classifier);
   const focus = new FocusService(database, wallet);
   const intentions = new IntentionService(database);
   const budgets = new BudgetService(database);
@@ -48,6 +59,8 @@ export async function createBackend(database: Database): Promise<BackendServices
   const app = express();
   const ws = expressWs(app);
   const clients = new Set<WebSocket>();
+  const extensionEvents = new EventEmitter();
+  let lastExtensionSeen: number | null = null;
 
   app.use(express.json());
 
@@ -86,6 +99,10 @@ export async function createBackend(database: Database): Promise<BackendServices
   app.post('/market', (req, res) => {
     try {
       const rate = req.body as MarketRate;
+      const session = paywall.getSession(rate.domain);
+      if (session) {
+        return res.status(409).json({ error: `Cannot change exchange rate for ${rate.domain} while a session is active.` });
+      }
       market.upsertRate(rate);
       res.json({ ok: true });
     } catch (error) {
@@ -183,6 +200,19 @@ export async function createBackend(database: Database): Promise<BackendServices
     }
   });
 
+  app.post('/paywall/end', (req, res) => {
+    try {
+      const { domain } = req.body as { domain: string };
+      const session = paywall.endSession(domain, 'manual-end', { refundUnused: true });
+      if (!session) {
+        return res.status(404).json({ error: 'No active session for that domain' });
+      }
+      res.json({ session });
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
   app.get('/settings/idle-threshold', (_req, res) => {
     res.json({ threshold: settings.getIdleThreshold() });
   });
@@ -203,13 +233,15 @@ export async function createBackend(database: Database): Promise<BackendServices
         marketRates[rate.domain] = rate;
       }
 
-      const sessionsRecord = paywall.listSessions().reduce<Record<string, { domain: string; mode: 'metered' | 'pack'; ratePerMin: number; remainingSeconds: number; paused?: boolean }>>((acc, session) => {
+      const sessionsRecord = paywall.listSessions().reduce<Record<string, { domain: string; mode: 'metered' | 'pack'; ratePerMin: number; remainingSeconds: number; paused?: boolean; purchasePrice?: number; purchasedSeconds?: number }>>((acc, session) => {
         acc[session.domain] = {
           domain: session.domain,
           mode: session.mode,
           ratePerMin: session.ratePerMin,
           remainingSeconds: session.remainingSeconds,
-          paused: session.paused
+          paused: session.paused,
+          purchasePrice: session.purchasePrice,
+          purchasedSeconds: session.purchasedSeconds
         };
         return acc;
       }, {});
@@ -235,6 +267,8 @@ export async function createBackend(database: Database): Promise<BackendServices
 
   ws.app.ws('/events', (socket) => {
     clients.add(socket);
+    lastExtensionSeen = Date.now();
+    extensionEvents.emit('status', { connected: true, lastSeen: lastExtensionSeen });
     logger.info('WS client connected', clients.size);
 
     socket.on('message', (msg: string) => {
@@ -252,7 +286,7 @@ export async function createBackend(database: Database): Promise<BackendServices
             url: data.payload.url,
             domain: data.payload.domain,
             idleSeconds: data.payload.idleSeconds || 0
-          });
+          }, 'extension');
         } else if (data.type === 'paywall:start-metered' && data.payload?.domain) {
           try {
             const session = economy.startPayAsYouGo(String(data.payload.domain));
@@ -275,6 +309,11 @@ export async function createBackend(database: Database): Promise<BackendServices
         } else if (data.type === 'paywall:resume' && data.payload?.domain) {
           paywall.resume(String(data.payload.domain));
           broadcast({ type: 'paywall-session-resumed', payload: { domain: data.payload.domain } });
+        } else if (data.type === 'paywall:end' && data.payload?.domain) {
+          const session = paywall.endSession(String(data.payload.domain), 'manual-end', { refundUnused: true });
+          if (!session) {
+            socket.send(JSON.stringify({ type: 'error', payload: { message: 'No active session to end' } }));
+          }
         }
       } catch (e) {
         logger.error('Failed to parse WS message', e);
@@ -283,6 +322,7 @@ export async function createBackend(database: Database): Promise<BackendServices
 
     socket.on('close', () => {
       clients.delete(socket);
+      extensionEvents.emit('status', { connected: clients.size > 0, lastSeen: lastExtensionSeen });
     });
   });
 
@@ -302,18 +342,12 @@ export async function createBackend(database: Database): Promise<BackendServices
   economy.on('paywall-session-resumed', (payload) => broadcast({ type: 'paywall-session-resumed', payload }));
   economy.on('paywall-session-ended', (payload) => broadcast({ type: 'paywall-session-ended', payload }));
   economy.on('activity', (payload) => broadcast({ type: 'activity', payload }));
-  economy.on('paywall-block', (payload: { domain: string; appName?: string | null }) => {
-    if (payload?.appName) {
-      void closeActiveBrowserTab(payload.appName);
-    }
-  });
   focus.on('tick', (payload) => broadcast({ type: 'focus-tick', payload }));
   focus.on('start', (payload) => broadcast({ type: 'focus-start', payload }));
   focus.on('stop', (payload) => broadcast({ type: 'focus-stop', payload }));
 
-  const handleActivity = (event: ActivityEvent & { idleSeconds?: number }) => {
-    activityTracker.recordActivity(event);
-    economy.handleActivity(event);
+  const handleActivity = (event: ActivityEvent & { idleSeconds?: number }, origin: ActivityOrigin = 'system') => {
+    activityPipeline.handle(event, origin);
   };
 
   const server: Server = await new Promise((resolve) => {
@@ -349,6 +383,12 @@ export async function createBackend(database: Database): Promise<BackendServices
     intentions,
     budgets,
     handleActivity,
+    extension: {
+      status: () => ({ connected: clients.size > 0, lastSeen: lastExtensionSeen }),
+      onStatus: (cb) => {
+        extensionEvents.on('status', cb);
+      }
+    },
     declineDomain,
     stop,
     port: PORT
