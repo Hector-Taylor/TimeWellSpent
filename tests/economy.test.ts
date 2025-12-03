@@ -128,6 +128,30 @@ describe('EconomyEngine', () => {
     economy.destroy();
   });
 
+  it('never earns while in frivolity', () => {
+    const wallet = new FakeWallet();
+    const market = new FakeMarket({});
+    const paywall = new PaywallManager(wallet as any, market as any);
+    const economy = new EconomyEngine(wallet as any, market as any, paywall);
+    const classifier = new ActivityClassifier(
+      () => ({ productive: [], neutral: [], frivolity: ['twitter.com', 'x.com'] }),
+      () => 10
+    );
+
+    const activity = classifier.classify({
+      timestamp: new Date(),
+      source: 'url',
+      appName: 'Chrome',
+      domain: 'x.com',
+      idleSeconds: 0
+    } as any);
+
+    economy.handleActivity(activity);
+    (economy as any).tickEarn();
+    expect(wallet.getSnapshot().balance).toBe(100);
+    economy.destroy();
+  });
+
   it('pauses paywall spending when idle', () => {
     const wallet = new FakeWallet();
     const market = new FakeMarket({

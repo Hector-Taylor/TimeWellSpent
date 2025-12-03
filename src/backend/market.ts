@@ -50,7 +50,9 @@ export class MarketService {
   }
 
   getRate(domain: string): MarketRate | null {
-    const row = this.getStmt.get(domain) as { rate_per_min: number; packs_json: string; hourly_modifiers_json: string; domain: string } | undefined;
+    const aliasMap: Record<string, string> = { 'x.com': 'twitter.com' };
+    const lookup = domain in aliasMap ? aliasMap[domain] : domain;
+    const row = this.getStmt.get(lookup) as { rate_per_min: number; packs_json: string; hourly_modifiers_json: string; domain: string } | undefined;
     if (!row) return null;
     return {
       domain: row.domain,

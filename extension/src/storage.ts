@@ -50,6 +50,14 @@ const DEFAULT_STATE: ExtensionState = {
                 { minutes: 30, price: 60 }
             ]
         },
+        'x.com': {
+            domain: 'x.com',
+            ratePerMin: 3,
+            packs: [
+                { minutes: 10, price: 25 },
+                { minutes: 30, price: 60 }
+            ]
+        },
         'reddit.com': {
             domain: 'reddit.com',
             ratePerMin: 2,
@@ -68,7 +76,7 @@ const DEFAULT_STATE: ExtensionState = {
         }
     },
     settings: {
-        frivolityDomains: ['twitter.com', 'reddit.com', 'youtube.com', 'facebook.com', 'instagram.com', 'tiktok.com'],
+        frivolityDomains: ['twitter.com', 'x.com', 'reddit.com', 'youtube.com', 'facebook.com', 'instagram.com', 'tiktok.com'],
         productiveDomains: ['github.com', 'stackoverflow.com'],
         neutralDomains: ['gmail.com', 'calendar.google.com'],
         idleThreshold: 15
@@ -128,7 +136,12 @@ class ExtensionStorage {
 
     async getMarketRate(domain: string): Promise<MarketRate | null> {
         if (!this.state) await this.init();
-        return this.state!.marketRates[domain] || null;
+        const rate = this.state!.marketRates[domain];
+        if (rate) return rate;
+        if (domain === 'x.com') {
+            return this.state!.marketRates['twitter.com'] ?? null;
+        }
+        return null;
     }
 
     async setMarketRate(rate: MarketRate): Promise<void> {
@@ -139,8 +152,10 @@ class ExtensionStorage {
 
     async isFrivolous(domain: string): Promise<boolean> {
         if (!this.state) await this.init();
+        const aliases = [domain];
+        if (domain === 'x.com') aliases.push('twitter.com');
         return this.state!.settings.frivolityDomains.some(d =>
-            domain.includes(d) || d.includes(domain)
+            aliases.some(alias => alias.includes(d) || d.includes(alias))
         );
     }
 

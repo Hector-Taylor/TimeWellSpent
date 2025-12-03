@@ -4,13 +4,22 @@ import type { CategorisationConfig, MarketRate } from '@shared/types';
 export const DEFAULT_CATEGORISATION: CategorisationConfig = {
   productive: ['Code', 'Notes', 'Documentation', 'vscode', 'obsidian', 'notion', 'linear.app'],
   neutral: ['Mail', 'Calendar', 'Slack', 'Figma'],
-  frivolity: ['twitter.com', 'youtube.com', 'reddit.com']
+  frivolity: ['twitter.com', 'x.com', 'youtube.com', 'reddit.com']
 };
 
 // Reasonable starting rates for common time sinks.
 export const DEFAULT_MARKET_RATES: MarketRate[] = [
   {
     domain: 'twitter.com',
+    ratePerMin: 3,
+    packs: [
+      { minutes: 10, price: 28 },
+      { minutes: 30, price: 75 }
+    ],
+    hourlyModifiers: Array(24).fill(1)
+  },
+  {
+    domain: 'x.com',
     ratePerMin: 3,
     packs: [
       { minutes: 10, price: 28 },

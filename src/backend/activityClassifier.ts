@@ -34,19 +34,24 @@ export class ActivityClassifier {
   }
 
   private resolveCategory(domain: string | null, appName: string, config: CategorisationConfig): ActivityCategory {
+    const aliasMap: Record<string, string> = {
+      'x.com': 'twitter.com'
+    };
     const normalizedDomain = domain ?? '';
+    const expandedDomain = aliasMap[normalizedDomain] ?? normalizedDomain;
+    const domainCandidates = Array.from(new Set([normalizedDomain, expandedDomain])).filter(Boolean);
     const normalizedApp = appName.toLowerCase();
 
-    if (this.matches(normalizedDomain, normalizedApp, config.productive)) return 'productive';
-    if (this.matches(normalizedDomain, normalizedApp, config.neutral)) return 'neutral';
-    if (this.matches(normalizedDomain, normalizedApp, config.frivolity)) return 'frivolity';
+    if (this.matches(domainCandidates, normalizedApp, config.productive)) return 'productive';
+    if (this.matches(domainCandidates, normalizedApp, config.neutral)) return 'neutral';
+    if (this.matches(domainCandidates, normalizedApp, config.frivolity)) return 'frivolity';
     return 'neutral';
   }
 
-  private matches(domain: string, appName: string, patterns: string[]) {
+  private matches(domains: string[], appName: string, patterns: string[]) {
     return patterns.some((pattern) => {
       const needle = pattern.toLowerCase();
-      return (domain && domain.includes(needle)) || appName.includes(needle);
+      return domains.some((domain) => domain && domain.includes(needle)) || appName.includes(needle);
     });
   }
 }

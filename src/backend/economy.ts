@@ -104,6 +104,7 @@ export class EconomyEngine extends EventEmitter {
 
   private tickEarn() {
     if (!this.state.activeCategory || this.state.activeCategory === 'idle') return;
+    if (this.state.activeCategory === 'frivolity') return; // never earn while on a spendy domain
     if (this.state.activeCategory === 'neutral' && !this.state.neutralClockedIn) return;
     if (!this.state.lastUpdated || Date.now() - this.state.lastUpdated > 60_000 * 5) {
       return; // stale
