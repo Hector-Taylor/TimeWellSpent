@@ -57,6 +57,7 @@ export default function DayCompass({ summary, economy }: DayCompassProps) {
   const timeline = useMemo(() => {
     if (!summary || summary.timeline.length === 0) return { arcs: [] as SliceMeta[], centerSeconds: 0 };
     const step = 360 / summary.timeline.length;
+    const windowSeconds = (summary.windowHours ?? 24) * 3600;
     const arcs = summary.timeline.map((slot, idx) => {
       const startAngle = idx * step - 90;
       const endAngle = startAngle + step;
@@ -70,7 +71,10 @@ export default function DayCompass({ summary, economy }: DayCompassProps) {
         seconds: slot.productive + slot.neutral + slot.frivolity + slot.idle
       };
     });
-    const centerSeconds = (summary.totalSeconds ?? 0) + (summary.totalsByCategory.idle ?? 0);
+    const centerSeconds = Math.min(
+      windowSeconds,
+      (summary.totalSeconds ?? 0) + (summary.totalsByCategory.idle ?? 0)
+    );
     return { arcs, centerSeconds };
   }, [summary]);
 
@@ -97,8 +101,9 @@ export default function DayCompass({ summary, economy }: DayCompassProps) {
       { label: 'Idle', seconds: activeTimelineSlot.idle, color: categoryColors.idle }
     ] : [];
 
+  const windowSeconds = (summary?.windowHours ?? 24) * 3600;
   const centerSeconds = view === 'aggregate'
-    ? aggregate?.totalSeconds ?? 0
+    ? Math.min(windowSeconds, aggregate?.totalSeconds ?? 0)
     : timeline.centerSeconds;
 
   const arcs = view === 'aggregate' ? (aggregate?.arcs ?? []) : timeline.arcs;

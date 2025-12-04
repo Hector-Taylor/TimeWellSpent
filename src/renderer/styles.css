@@ -244,6 +244,38 @@ main {
   align-items: stretch;
 }
 
+.panel-body.dashboard-grid {
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  grid-template-areas:
+    "time now"
+    "orbit paywall"
+    "timeline streams"
+    "recent market";
+}
+
+.dashboard-time { grid-area: time; }
+.dashboard-now { grid-area: now; }
+.dashboard-orbit { grid-area: orbit; }
+.dashboard-paywall { grid-area: paywall; }
+.dashboard-timeline { grid-area: timeline; }
+.dashboard-streams { grid-area: streams; }
+.dashboard-recent { grid-area: recent; }
+.dashboard-market { grid-area: market; }
+
+@media (max-width: 900px) {
+  .panel-body.dashboard-grid {
+    grid-template-areas:
+      "time"
+      "now"
+      "orbit"
+      "paywall"
+      "timeline"
+      "streams"
+      "recent"
+      "market";
+  }
+}
+
 .tuner-panel {
   gap: 18px;
   min-height: 0;
@@ -691,6 +723,11 @@ main {
 
 .compass-card {
   grid-column: span 2;
+}
+
+.dashboard-grid .activity-card,
+.dashboard-grid .compass-card {
+  grid-column: auto;
 }
 
 @media (max-width: 850px) {

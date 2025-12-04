@@ -116,9 +116,15 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
       </header>
 
       <div className="panel-body dashboard-grid">
-        <DayCompass summary={summary} economy={economy} />
+        <div className="dashboard-time">
+          <ActivityChart activities={activities} summary={summary} />
+        </div>
 
-        <div className="card now-card">
+        <div className="dashboard-orbit">
+          <DayCompass summary={summary} economy={economy} />
+        </div>
+
+        <div className="card now-card dashboard-now">
           <div className="card-header-row">
             <h2>Live context</h2>
             <span className="pill inline">{economy?.neutralClockedIn ? 'Neutral clocked in' : 'Neutral paused'}</span>
@@ -147,13 +153,13 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
           </div>
         </div>
 
-          <div className="card paywall-state">
-            <div className="card-header-row">
-              <h2>Paywall sessions</h2>
-              <span className="subtle">Paused when window/tab is not active</span>
-            </div>
+        <div className="card paywall-state dashboard-paywall">
+          <div className="card-header-row">
+            <h2>Paywall sessions</h2>
+            <span className="subtle">Paused when window/tab is not active</span>
+          </div>
           {paywallNote && <div className={`inline-note ${paywallNote.startsWith('Could not') ? 'danger' : ''}`}>{paywallNote}</div>}
-            <ul className="context-list">
+          <ul className="context-list">
             {paywallSessions.length === 0 && <li className="subtle">No active sessions.</li>}
             {paywallSessions.map((session) => (
               <li key={session.domain}>
@@ -184,9 +190,7 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
           </ul>
         </div>
 
-        <ActivityChart activities={activities} summary={summary} />
-
-        <div className="card timeline-card">
+        <div className="card timeline-card dashboard-timeline">
           <div className="card-header-row">
             <h2>Pulse over the last {summary?.windowHours ?? 24}h</h2>
             <span className="subtle">{loadingSummary ? 'Refreshing…' : 'Synthesized from raw activity logs'}</span>
@@ -221,7 +225,7 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
           </div>
         </div>
 
-        <div className="card top-contexts">
+        <div className="card top-contexts dashboard-streams">
           <div className="card-header-row">
             <h2>Top streams</h2>
             <span className="subtle">Where the minutes actually land</span>
@@ -243,7 +247,7 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
           </ul>
         </div>
 
-        <div className="card activity-scroll">
+        <div className="card activity-scroll dashboard-recent">
           <h2>Recent activity</h2>
           <ul className="activity-list">
             {activities.map((activity) => (
@@ -263,7 +267,7 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
           </ul>
         </div>
 
-        <div className="card market-card">
+        <div className="card market-card dashboard-market">
           <div className="card-header-row">
             <h2>Frivolity market</h2>
             <span className="subtle">Make the expensive domains earn their keep</span>
