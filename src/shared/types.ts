@@ -113,6 +113,7 @@ export type PaywallSession = {
   paused?: boolean;
   purchasePrice?: number;
   purchasedSeconds?: number;
+  spendRemainder?: number;
 };
 
 export type RendererApi = {

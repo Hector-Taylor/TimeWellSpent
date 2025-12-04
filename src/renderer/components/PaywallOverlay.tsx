@@ -119,6 +119,9 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
                 : 'Stay intentional: spend f-coins to access this site.'}
             </p>
           </div>
+          <button className="close-button" onClick={onClose} aria-label="Close paywall">
+            ✕
+          </button>
         </header>
         <div className="wallet-inline">
           <span>Balance</span>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import Dashboard from './components/Dashboard';
 import Settings from './components/Settings';
 import EconomyTuner from './components/EconomyTuner';
@@ -36,6 +36,11 @@ export default function App() {
     api.settings.categorisation().then(setCategorisation);
   }, []);
 
+  const extensionStatusRef = useRef(extensionStatus);
+  useEffect(() => {
+    extensionStatusRef.current = extensionStatus;
+  }, [extensionStatus]);
+
   useEffect(() => {
     const unsubWallet = api.events.on<WalletSnapshot>('wallet:update', setWallet);
     const unsubEconomy = api.events.on<EconomyState>('economy:activity', setEconomyState);
@@ -44,6 +49,15 @@ export default function App() {
     });
 
     const unsubPaywallReq = api.events.on<{ domain: string; appName: string }>('paywall:required', (payload) => {
+      // If extension is connected, ignore paywall requests for browsers
+      // (The extension handles its own blocking/paywall UI)
+      if (extensionStatusRef.current.connected) {
+        const browsers = ['Google Chrome', 'Chrome', 'Brave Browser', 'Brave', 'Microsoft Edge', 'Edge', 'Arc', 'Firefox', 'Safari'];
+        if (browsers.some(b => payload.appName.includes(b))) {
+          console.log('Ignoring desktop paywall for browser activity (extension active):', payload);
+          return;
+        }
+      }
       setPaywallBlock({ ...payload, reason: 'blocked' });
     });
 

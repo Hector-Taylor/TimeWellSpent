@@ -12,6 +12,7 @@ export type PaywallSession = {
   paused?: boolean;
   purchasePrice?: number;
   purchasedSeconds?: number;
+  spendRemainder?: number;
 };
 
 export class PaywallManager extends EventEmitter {
@@ -53,7 +54,8 @@ export class PaywallManager extends EventEmitter {
       ratePerMin: rate.ratePerMin,
       remainingSeconds: Infinity,
       lastTick: Date.now(),
-      paused: false
+      paused: false,
+      spendRemainder: 0
     };
     this.sessions.set(domain, session);
     this.emit('session-started', session);
@@ -72,6 +74,7 @@ export class PaywallManager extends EventEmitter {
       remainingSeconds: minutes * 60,
       lastTick: Date.now(),
       paused: false,
+      spendRemainder: 0,
       purchasePrice: price,
       purchasedSeconds: minutes * 60
     };
@@ -148,10 +151,16 @@ export class PaywallManager extends EventEmitter {
           session.ratePerMin = currentRate;
         }
 
-        const due = Math.ceil((currentRate / 60) * intervalSeconds);
+        // Carry forward fractional coins so we don't over-charge per tick
+        const accrued = (currentRate / 60) * intervalSeconds + (session.spendRemainder ?? 0);
+        const due = Math.floor(accrued);
+        const remainder = accrued - due;
         try {
-          this.wallet.spend(due, { type: 'frivolity-metered', domain: session.domain, intervalSeconds });
-          this.emit('wallet-update', this.wallet.getSnapshot());
+          if (due > 0) {
+            this.wallet.spend(due, { type: 'frivolity-metered', domain: session.domain, intervalSeconds });
+            this.emit('wallet-update', this.wallet.getSnapshot());
+          }
+          session.spendRemainder = remainder;
           session.lastTick = now;
         } catch (error) {
           logger.warn('Metered session ended due to insufficient funds', session.domain);

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 type StatusResponse = {
   balance: number;
@@ -31,12 +31,42 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
 
   // Fallback rate if none is provided (e.g. 1 coin/min)
   const ratePerMin = status.rate?.ratePerMin ?? status.session?.ratePerMin ?? 1;
+  const sortedPacks = useMemo(() => {
+    return [...(status.rate?.packs ?? [])].sort((a, b) => a.minutes - b.minutes);
+  }, [status.rate?.packs]);
 
   const sliderBounds = useMemo(() => {
+    if (sortedPacks.length) {
+      return {
+        min: sortedPacks[0].minutes,
+        max: sortedPacks[sortedPacks.length - 1].minutes,
+        step: 1
+      };
+    }
     return { min: 5, max: 120, step: 5 };
-  }, []);
+  }, [sortedPacks]);
 
-  const sliderPrice = Math.max(1, Math.ceil(selectedMinutes * ratePerMin));
+  useEffect(() => {
+    if (sortedPacks.length) {
+      setSelectedMinutes(sortedPacks[0].minutes);
+    } else {
+      setSelectedMinutes(15);
+    }
+  }, [domain, sortedPacks]);
+
+  const snapMinutes = (value: number) => {
+    if (!sortedPacks.length) return value;
+    return sortedPacks.reduce((closest, pack) => {
+      const distance = Math.abs(pack.minutes - value);
+      const closestDistance = Math.abs(closest - value);
+      return distance < closestDistance ? pack.minutes : closest;
+    }, sortedPacks[0].minutes);
+  };
+
+  const matchedPack = sortedPacks.find((pack) => pack.minutes === selectedMinutes);
+  const sliderPrice = matchedPack
+    ? matchedPack.price
+    : Math.max(1, Math.round(selectedMinutes * ratePerMin));
   const sliderAffordable = status.balance >= sliderPrice;
 
   // Handlers
@@ -120,7 +150,7 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
             </div>
             <div className="tws-option-action">
               <div className="tws-price-tag">
-                <strong>{ratePerMin}</strong>
+                <strong>{formatCoins(ratePerMin)}</strong>
                 <small>coins / min</small>
               </div>
               <button
@@ -147,6 +177,9 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
             <div className="tws-slider-container">
               <div className="tws-slider-labels">
                 <span>{selectedMinutes} minutes</span>
+                <span className="tws-subtle-info">
+                  {Math.round((selectedMinutes / (16 * 60)) * 100)}% of your day
+                </span>
                 <strong>{sliderPrice} coins</strong>
               </div>
               <input
@@ -155,7 +188,7 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
                 max={sliderBounds.max}
                 step={sliderBounds.step}
                 value={selectedMinutes}
-                onChange={(e) => setSelectedMinutes(Number(e.target.value))}
+                onChange={(e) => setSelectedMinutes(snapMinutes(Number(e.target.value)))}
               />
               <div className="tws-slider-scale">
                 <small>{sliderBounds.min}m</small>
@@ -180,6 +213,10 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
       </div>
     </div>
   );
+}
+
+function formatCoins(value: number) {
+  return Number.isInteger(value) ? value.toString() : value.toFixed(2).replace(/\.?0+$/, '');
 }
 
 function cleanup() {

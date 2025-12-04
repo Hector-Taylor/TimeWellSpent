@@ -266,7 +266,7 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
 
                 <div className="tuner-editor">
                     {selectedItem ? (
-                        <div className={`tuner-grid ${selectedItem.type === 'productive' ? 'single' : ''}`}>
+                        <div className="tuner-grid">
                             <div className="card tuner-primary">
                                 <div className="tuner-header">
                                     <div>

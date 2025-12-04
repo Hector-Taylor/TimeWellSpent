@@ -168,6 +168,12 @@
   font-size: 14px;
 }
 
+.tws-subtle-info {
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .tws-slider-labels strong {
   color: var(--accent);
 }

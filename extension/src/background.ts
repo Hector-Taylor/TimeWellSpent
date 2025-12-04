@@ -110,6 +110,7 @@ function handleDesktopMessage(data: any) {
                 remainingSeconds: session.remainingSeconds ?? Infinity,
                 startedAt: Date.now(),
                 paused: session.paused ?? false,
+                spendRemainder: session.spendRemainder ?? 0,
                 purchasePrice: session.purchasePrice,
                 purchasedSeconds: session.purchasedSeconds
             });
@@ -279,14 +280,18 @@ async function tickSessions() {
     if (session.mode === 'metered') {
         // Pay-as-you-go: deduct coins using the latest rate
         const currentRate = (await storage.getMarketRate(activeDomain))?.ratePerMin ?? session.ratePerMin;
-        const cost = Math.ceil((currentRate / 60) * 15); // Cost for 15 seconds
+        // Carry forward fractional coins so we don't over-charge on each 15s tick
+        const accrued = (currentRate / 60) * 15 + (session.spendRemainder ?? 0);
+        const cost = Math.floor(accrued); // whole coins to spend this tick
+        const remainder = accrued - cost;
         try {
-            await storage.spendCoins(cost);
-            console.log(`💰 Spent ${cost} coins on ${activeDomain}`);
-            if (session.ratePerMin !== currentRate) {
-                session.ratePerMin = currentRate;
-                await storage.setSession(activeDomain, session);
+            if (cost > 0) {
+                await storage.spendCoins(cost);
+                console.log(`💰 Spent ${cost} coins on ${activeDomain}`);
             }
+            session.ratePerMin = currentRate;
+            session.spendRemainder = remainder;
+            await storage.setSession(activeDomain, session);
         } catch (e) {
             // Insufficient funds - clear session and block
             console.log(`❌ Insufficient funds for ${activeDomain}`);
@@ -461,7 +466,16 @@ async function preferDesktopPurchase(path: '/paywall/packs' | '/paywall/metered'
     });
     if (!response.ok) throw new Error('desktop unreachable');
     const session = await response.json();
-    await storage.updateFromDesktop({ sessions: { [session.domain]: { ...session, startedAt: Date.now(), paused: false } } as any });
+    await storage.updateFromDesktop({
+      sessions: {
+        [session.domain]: {
+          ...session,
+          startedAt: Date.now(),
+          paused: false,
+          spendRemainder: session.spendRemainder ?? 0
+        }
+      } as any
+    });
     await syncFromDesktop(); // refresh wallet + rates
     return { ok: true, session };
   } catch (error) {
@@ -559,6 +573,7 @@ async function handleBuyPack(payload: { domain: string; minutes: number }) {
             ratePerMin: rate.ratePerMin,
             remainingSeconds: pack.minutes * 60,
             startedAt: Date.now(),
+            spendRemainder: 0,
             purchasePrice: pack.price,
             purchasedSeconds: pack.minutes * 60
         };
@@ -583,7 +598,8 @@ async function handleStartMetered(payload: { domain: string }) {
         mode: 'metered' as const,
         ratePerMin: rate.ratePerMin,
         remainingSeconds: Infinity,
-        startedAt: Date.now()
+        startedAt: Date.now(),
+        spendRemainder: 0
     };
 
     await storage.setSession(payload.domain, session);

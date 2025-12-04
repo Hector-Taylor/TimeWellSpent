@@ -18,6 +18,7 @@ export interface PaywallSession {
     paused?: boolean;
     purchasePrice?: number;
     purchasedSeconds?: number;
+    spendRemainder?: number;
 }
 
 export interface ExtensionState {
