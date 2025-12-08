@@ -163,6 +163,14 @@ function handleDesktopMessage(data: any) {
                 }
             });
         }
+    } else if (data.type === 'paywall-reminder' && data.payload?.domain) {
+        const { domain, justification } = data.payload as { domain: string; justification?: string };
+        chrome.notifications?.create(`tws-reminder-${domain}-${Date.now()}`, {
+            type: 'basic',
+            iconUrl: 'icons/icon128.png',
+            title: 'Emergency access reminder',
+            message: `You are on borrowed time for ${domain}${justification ? ` — Reason: ${justification}` : ''}.`
+        });
     }
 }
 
@@ -279,7 +287,21 @@ async function tickSessions() {
     });
     if (!session) return;
 
-    if (session.mode === 'metered') {
+    if (session.mode === 'emergency') {
+        const reminderIntervalMs = 300 * 1000; // default 5m for offline mode
+        const lastReminder = session.lastReminder ?? session.startedAt;
+        if (Date.now() - lastReminder > reminderIntervalMs) {
+            session.lastReminder = Date.now();
+            await storage.setSession(activeDomain, session);
+            chrome.notifications?.create(`tws-reminder-${activeDomain}-${Date.now()}`, {
+                type: 'basic',
+                iconUrl: 'icons/icon128.png',
+                title: 'Emergency access reminder',
+                message: `You are on borrowed time for ${activeDomain}${session.justification ? ` — Reason: ${session.justification}` : ''}.`
+            });
+        }
+        return;
+    } else if (session.mode === 'metered') {
         // Pay-as-you-go: deduct coins using the latest rate
         const currentRate = (await storage.getMarketRate(activeDomain))?.ratePerMin ?? session.ratePerMin;
         // Carry forward fractional coins so we don't over-charge on each 15s tick
@@ -486,6 +508,34 @@ async function preferDesktopPurchase(path: '/paywall/packs' | '/paywall/metered'
     }
 }
 
+async function preferDesktopEmergency(payload: { domain: string; justification: string }) {
+    try {
+        const response = await fetch(`${DESKTOP_API_URL}/paywall/emergency`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            cache: 'no-store',
+        });
+        if (!response.ok) throw new Error('desktop unreachable');
+        const session = await response.json();
+        await storage.updateFromDesktop({
+            sessions: {
+                [session.domain]: {
+                    ...session,
+                    startedAt: Date.now(),
+                    paused: false,
+                    spendRemainder: session.spendRemainder ?? 0
+                }
+            } as any
+        });
+        await syncFromDesktop(); // refresh wallet + rates
+        return { ok: true, session };
+    } catch (error) {
+        console.log('Desktop emergency start failed, falling back to local', error);
+        return { ok: false, error: (error as Error).message };
+    }
+}
+
 async function preferDesktopEnd(domain: string) {
     try {
         const response = await fetch(`${DESKTOP_API_URL}/paywall/end`, {
@@ -678,8 +728,11 @@ async function handleStartEmergency(payload: { domain: string; justification: st
         return { success: true };
     }
 
-    // Fallback to local (if offline support is needed for emergency, though requirements imply "we store everything", so maybe online only? 
-    // But for robustness, let's allow it locally too)
+    // Try desktop over HTTP if WS is down
+    const desktopResult = await preferDesktopEmergency(payload);
+    if (desktopResult.ok) return { success: true, session: desktopResult.session };
+
+    // Fallback to local (offline)
     const session = {
         domain: payload.domain,
         mode: 'emergency' as const,

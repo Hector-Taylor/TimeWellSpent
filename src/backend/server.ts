@@ -45,7 +45,7 @@ export async function createBackend(database: Database): Promise<BackendServices
   const market = new MarketService(database);
   const settings = new SettingsService(database);
   const paywall = new PaywallManager(wallet, market);
-  const economy = new EconomyEngine(wallet, market, paywall);
+  const economy = new EconomyEngine(wallet, market, paywall, () => settings.getEmergencyReminderInterval());
   const activityTracker = new ActivityTracker(database);
   const classifier = new ActivityClassifier(
     () => settings.getCategorisation(),

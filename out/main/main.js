@@ -25175,7 +25175,7 @@ var arrayToObject = function arrayToObject2(source, options) {
   }
   return obj;
 };
-var merge$3 = function merge(target, source, options) {
+var merge$2 = function merge(target, source, options) {
   if (!source) {
     return target;
   }
@@ -25337,7 +25337,7 @@ var utils$3 = {
   isBuffer,
   isRegExp,
   maybeMap,
-  merge: merge$3
+  merge: merge$2
 };
 var getSideChannel2 = sideChannel;
 var utils$2 = utils$3;
@@ -26105,9 +26105,9 @@ var bodyParserExports = bodyParser.exports;
  * Copyright(c) 2015 Douglas Christopher Wilson
  * MIT Licensed
  */
-var mergeDescriptors = merge$2;
+var mergeDescriptors = merge$1;
 var hasOwnProperty$1 = Object.prototype.hasOwnProperty;
-function merge$2(dest, src2, redefine) {
+function merge$1(dest, src2, redefine) {
   if (!dest) {
     throw new TypeError("argument dest is required");
   }
@@ -26659,14 +26659,14 @@ function fastparse(str) {
     return parse$9(str);
   }
   var pathname = str;
-  var query3 = null;
+  var query2 = null;
   var search = null;
   for (var i = 1; i < str.length; i++) {
     switch (str.charCodeAt(i)) {
       case 63:
         if (search === null) {
           pathname = str.substring(0, i);
-          query3 = str.substring(i + 1);
+          query2 = str.substring(i + 1);
           search = str.substring(i);
         }
         break;
@@ -26686,7 +26686,7 @@ function fastparse(str) {
   url2.href = str;
   url2.pathname = pathname;
   if (search !== null) {
-    url2.query = query3;
+    url2.query = query2;
     url2.search = search;
   }
   return url2;
@@ -26704,7 +26704,7 @@ var debug$7 = srcExports$2("finalhandler");
 var encodeUrl$3 = encodeurl$1;
 var escapeHtml$2 = escapeHtml_1;
 var onFinished$2 = onFinishedExports;
-var parseUrl$2 = parseurlExports;
+var parseUrl$1 = parseurlExports;
 var statuses$2 = statuses$3;
 var unpipe = unpipe_1;
 var DOUBLE_SPACE_REGEXP = /\x20{2}/g;
@@ -26789,7 +26789,7 @@ function getErrorStatusCode(err) {
 }
 function getResourceName(req2) {
   try {
-    return parseUrl$2.original(req2).pathname;
+    return parseUrl$1.original(req2).pathname;
   } catch (e) {
     return "resource";
   }
@@ -27680,7 +27680,7 @@ var mixin = utilsMergeExports;
 var debug$3 = srcExports$1("express:router");
 var deprecate$3 = depd_1("express");
 var flatten = arrayFlatten_1;
-var parseUrl$1 = parseurlExports;
+var parseUrl = parseurlExports;
 var setPrototypeOf$1 = setprototypeof;
 var objectRegExp = /^\[object (\S+)\]$/;
 var slice = Array.prototype.slice;
@@ -27964,7 +27964,7 @@ function appendMethods(list, addition) {
 }
 function getPathname(req2) {
   try {
-    return parseUrl$1(req2).pathname;
+    return parseUrl(req2).pathname;
   } catch (err) {
     return void 0;
   }
@@ -28078,27 +28078,34 @@ init.init = function(app) {
  * Copyright(c) 2014-2015 Douglas Christopher Wilson
  * MIT Licensed
  */
-var merge$1 = utilsMergeExports;
-var parseUrl = parseurlExports;
-var qs = lib$1;
-var query = function query2(options) {
-  var opts = merge$1({}, options);
-  var queryparse = qs.parse;
-  if (typeof options === "function") {
-    queryparse = options;
-    opts = void 0;
-  }
-  if (opts !== void 0 && opts.allowPrototypes === void 0) {
-    opts.allowPrototypes = true;
-  }
-  return function query3(req2, res2, next) {
-    if (!req2.query) {
-      var val = parseUrl(req2).query;
-      req2.query = queryparse(val, opts);
+var query;
+var hasRequiredQuery;
+function requireQuery() {
+  if (hasRequiredQuery) return query;
+  hasRequiredQuery = 1;
+  var merge3 = utilsMergeExports;
+  var parseUrl2 = parseurlExports;
+  var qs = lib$1;
+  query = function query2(options) {
+    var opts = merge3({}, options);
+    var queryparse = qs.parse;
+    if (typeof options === "function") {
+      queryparse = options;
+      opts = void 0;
     }
-    next();
+    if (opts !== void 0 && opts.allowPrototypes === void 0) {
+      opts.allowPrototypes = true;
+    }
+    return function query3(req2, res2, next) {
+      if (!req2.query) {
+        var val = parseUrl2(req2).query;
+        req2.query = queryparse(val, opts);
+      }
+      next();
+    };
   };
-};
+  return query;
+}
 function commonjsRequire(path3) {
   throw new Error('Could not dynamically require "' + path3 + '". Please configure the dynamicRequireTargets or/and ignoreDynamicRequires option of @rollup/plugin-commonjs appropriately for this require call to work.');
 }
@@ -33312,7 +33319,7 @@ var proxyAddrExports = proxyAddr.exports;
   var mime2 = sendExports.mime;
   var etag3 = etag_1;
   var proxyaddr2 = proxyAddrExports;
-  var qs2 = lib$1;
+  var qs = lib$1;
   var querystring = require$$8;
   exports.etag = createETagGenerator({ weak: false });
   exports.wetag = createETagGenerator({ weak: true });
@@ -33427,7 +33434,7 @@ var proxyAddrExports = proxyAddr.exports;
     };
   }
   function parseExtendedQueryString(str) {
-    return qs2.parse(str, {
+    return qs.parse(str, {
       allowPrototypes: true
     });
   }
@@ -33447,7 +33454,7 @@ var proxyAddrExports = proxyAddr.exports;
   var Router = routerExports;
   var methods2 = methods$2;
   var middleware = init;
-  var query$1 = query;
+  var query2 = requireQuery();
   var debug2 = srcExports$1("express:application");
   var View2 = view;
   var http2 = require$$0$8;
@@ -33513,7 +33520,7 @@ var proxyAddrExports = proxyAddr.exports;
         caseSensitive: this.enabled("case sensitive routing"),
         strict: this.enabled("strict routing")
       });
-      this._router.use(query$1(this.get("query parser fn")));
+      this._router.use(query2(this.get("query parser fn")));
       this._router.use(middleware.init(this));
     }
   };
@@ -34343,12 +34350,12 @@ req.range = function range2(size, options) {
 req.param = function param2(name, defaultValue) {
   var params = this.params || {};
   var body = this.body || {};
-  var query3 = this.query || {};
+  var query2 = this.query || {};
   var args = arguments.length === 1 ? "name" : "name, default";
   deprecate$1("req.param(" + args + "): Use req.params, req.body, or req.query instead");
   if (null != params[name] && params.hasOwnProperty(name)) return params[name];
   if (null != body[name]) return body[name];
-  if (null != query3[name]) return query3[name];
+  if (null != query2[name]) return query2[name];
   return defaultValue;
 };
 req.is = function is(types) {
@@ -35382,7 +35389,7 @@ function requireServeStatic() {
   exports.Route = Route2;
   exports.Router = Router;
   exports.json = bodyParser2.json;
-  exports.query = query;
+  exports.query = requireQuery();
   exports.raw = bodyParser2.raw;
   exports.static = requireServeStatic();
   exports.text = bodyParser2.text;
@@ -38468,8 +38475,8 @@ function _interopRequireDefault$2(obj) {
 }
 function websocketUrl(url2) {
   if (url2.indexOf("?") !== -1) {
-    var _url$split = url2.split("?"), _url$split2 = _slicedToArray(_url$split, 2), baseUrl = _url$split2[0], query3 = _url$split2[1];
-    return (0, _trailingSlash2.default)(baseUrl) + ".websocket?" + query3;
+    var _url$split = url2.split("?"), _url$split2 = _slicedToArray(_url$split, 2), baseUrl = _url$split2[0], query2 = _url$split2[1];
+    return (0, _trailingSlash2.default)(baseUrl) + ".websocket?" + query2;
   }
   return (0, _trailingSlash2.default)(url2) + ".websocket";
 }
@@ -39160,11 +39167,12 @@ const PRODUCTIVE_RATE_PER_MIN = 5;
 const NEUTRAL_RATE_PER_MIN = 3;
 const SPEND_INTERVAL_SECONDS = 15;
 class EconomyEngine extends node_events.EventEmitter {
-  constructor(wallet, market, paywall) {
+  constructor(wallet, market, paywall, getReminderInterval = () => 300) {
     super();
     this.wallet = wallet;
     this.market = market;
     this.paywall = paywall;
+    this.getReminderInterval = getReminderInterval;
     this.state = {
       activeCategory: null,
       activeDomain: null,
@@ -39256,7 +39264,7 @@ class EconomyEngine extends node_events.EventEmitter {
   }
   tickSpend() {
     const activeDomain = this.state.activeCategory === "idle" ? null : this.state.activeDomain;
-    this.paywall.tick(SPEND_INTERVAL_SECONDS, activeDomain);
+    this.paywall.tick(SPEND_INTERVAL_SECONDS, activeDomain, this.getReminderInterval());
   }
   ensureRate(domain) {
     let rate = this.market.getRate(domain);
@@ -39542,7 +39550,7 @@ async function createBackend(database) {
   const market = new MarketService(database);
   const settings = new SettingsService(database);
   const paywall = new PaywallManager(wallet, market);
-  const economy = new EconomyEngine(wallet, market, paywall);
+  const economy = new EconomyEngine(wallet, market, paywall, () => settings.getEmergencyReminderInterval());
   const activityTracker = new ActivityTracker(database);
   const classifier = new ActivityClassifier(
     () => settings.getCategorisation(),

@@ -32,7 +32,8 @@ export class EconomyEngine extends EventEmitter {
   constructor(
     private wallet: WalletManager,
     private market: MarketService,
-    private paywall: PaywallManager
+    private paywall: PaywallManager,
+    private getReminderInterval: () => number = () => 300
   ) {
     super();
     this.earnTimer = setInterval(() => this.tickEarn(), 60_000);
@@ -139,7 +140,7 @@ export class EconomyEngine extends EventEmitter {
 
   private tickSpend() {
     const activeDomain = this.state.activeCategory === 'idle' ? null : this.state.activeDomain;
-    this.paywall.tick(SPEND_INTERVAL_SECONDS, activeDomain);
+    this.paywall.tick(SPEND_INTERVAL_SECONDS, activeDomain, this.getReminderInterval());
   }
 
   private ensureRate(domain: string): MarketRate {
