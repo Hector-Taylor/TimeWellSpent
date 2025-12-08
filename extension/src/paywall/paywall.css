@@ -1,13 +1,16 @@
-:root {
+:host {
+  all: initial;
+  font-family: 'Space Grotesk', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.tws-paywall-overlay {
   --bg: #05070f;
   --fg: #f9fbff;
   --fg-muted: #96a9d1;
   --accent: #89f3d2;
   --accent-soft: rgba(137, 243, 210, 0.2);
   --danger: #ff8c8c;
-}
 
-.tws-paywall-overlay {
   position: fixed;
   inset: 0;
   background: radial-gradient(circle at 20% 20%, rgba(44, 125, 255, 0.18), transparent 28%), rgba(5, 7, 16, 0.95);
@@ -18,6 +21,27 @@
   z-index: 2147483647;
   font-family: 'Space Grotesk', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   color: var(--fg);
+  line-height: 1.5;
+}
+
+.tws-paywall-overlay * {
+  box-sizing: border-box;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+span,
+div,
+a,
+button,
+input {
+  color: inherit;
+  font-family: inherit;
 }
 
 .tws-paywall-modal {
@@ -29,6 +53,8 @@
   display: flex;
   flex-direction: column;
   gap: 24px;
+  position: relative;
+  overflow: hidden;
 }
 
 .tws-paywall-header {
@@ -45,6 +71,13 @@
   font-size: 12px;
   margin: 0 0 6px 0;
   font-weight: 600;
+}
+
+.tws-paywall-header h2 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--fg);
 }
 
 .tws-subtle {
@@ -103,6 +136,7 @@
   margin: 0 0 4px 0;
   font-size: 18px;
   font-weight: 600;
+  color: var(--fg);
 }
 
 .tws-option-action {
@@ -253,4 +287,58 @@ button:disabled {
   font-size: 12px;
   margin-top: 8px;
   text-align: center;
+}
+
+/* "I Need It" Feature */
+.tws-emergency-link {
+  margin-top: 16px;
+  text-align: center;
+}
+
+.tws-emergency-link button {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 4px;
+  opacity: 0.6;
+}
+
+.tws-emergency-link button:hover {
+  opacity: 1;
+  color: var(--fg);
+}
+
+.tws-emergency-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.tws-emergency-form textarea {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 12px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 14px;
+  resize: vertical;
+  min-height: 80px;
+}
+
+.tws-emergency-form textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.tws-emergency-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.tws-emergency-actions button {
+  flex: 1;
 }

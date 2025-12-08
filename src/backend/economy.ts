@@ -53,6 +53,9 @@ export class EconomyEngine extends EventEmitter {
     this.paywall.on('wallet-update', (snapshot) => {
       this.emit('wallet-updated', snapshot);
     });
+    this.paywall.on('session-reminder', (payload) => {
+      this.emit('session-reminder', payload);
+    });
   }
 
   destroy() {
@@ -74,13 +77,9 @@ export class EconomyEngine extends EventEmitter {
     // Check if we've navigated away from a domain with an active paywall session
     const previousDomain = this.state.activeDomain;
     if (previousDomain && domain && previousDomain !== domain) {
-      // User navigated away - clear the previous domain's session if it exists
-      const previousSession = this.paywall.getSession(previousDomain);
-      if (previousSession) {
-        logger.info(`User navigated away from ${previousDomain}, clearing paywall session`);
-        this.paywall.clearSession(previousDomain);
-        this.emit('paywall-session-ended', { domain: previousDomain, reason: 'navigated-away' });
-      }
+      // User navigated away - we don't clear the session here anymore.
+      // The PaywallManager tick loop will handle pausing it if it's no longer active.
+      // This prevents the "paywall loop" where brief navigation kills the session.
     }
 
     this.state = {
@@ -169,6 +168,12 @@ export class EconomyEngine extends EventEmitter {
   startPayAsYouGo(domain: string) {
     this.ensureRate(domain);
     const session = this.paywall.startMetered(domain);
+    return session;
+  }
+
+  startEmergency(domain: string, justification: string) {
+    this.ensureRate(domain);
+    const session = this.paywall.startEmergency(domain, justification);
     return session;
   }
 

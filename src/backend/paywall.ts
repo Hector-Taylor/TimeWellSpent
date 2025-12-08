@@ -5,7 +5,7 @@ import { logger } from '@shared/logger';
 
 export type PaywallSession = {
   domain: string;
-  mode: 'metered' | 'pack';
+  mode: 'metered' | 'pack' | 'emergency';
   ratePerMin: number;
   remainingSeconds: number;
   lastTick: number;
@@ -13,6 +13,8 @@ export type PaywallSession = {
   purchasePrice?: number;
   purchasedSeconds?: number;
   spendRemainder?: number;
+  justification?: string;
+  lastReminder?: number;
 };
 
 export class PaywallManager extends EventEmitter {
@@ -56,6 +58,23 @@ export class PaywallManager extends EventEmitter {
       lastTick: Date.now(),
       paused: false,
       spendRemainder: 0
+    };
+    this.sessions.set(domain, session);
+    this.emit('session-started', session);
+    return session;
+  }
+
+  startEmergency(domain: string, justification: string) {
+    const session: PaywallSession = {
+      domain,
+      mode: 'emergency',
+      ratePerMin: 0,
+      remainingSeconds: Infinity,
+      lastTick: Date.now(),
+      paused: false,
+      spendRemainder: 0,
+      justification,
+      lastReminder: Date.now()
     };
     this.sessions.set(domain, session);
     this.emit('session-started', session);
@@ -123,7 +142,7 @@ export class PaywallManager extends EventEmitter {
     return session;
   }
 
-  tick(intervalSeconds: number, activeDomain?: string | null) {
+  tick(intervalSeconds: number, activeDomain?: string | null, reminderIntervalSeconds: number = 300) {
     const now = Date.now();
     const currentHour = new Date().getHours();
 
@@ -140,7 +159,18 @@ export class PaywallManager extends EventEmitter {
         this.emit('session-resumed', { domain: session.domain });
       }
 
-      if (session.mode === 'metered') {
+      if (session.mode === 'emergency') {
+        // Check for reminder
+        const lastReminder = session.lastReminder ?? session.lastTick;
+        if (now - lastReminder > reminderIntervalSeconds * 1000) {
+          session.lastReminder = now;
+          this.emit('session-reminder', {
+            domain: session.domain,
+            justification: session.justification
+          });
+        }
+        session.lastTick = now;
+      } else if (session.mode === 'metered') {
         let currentRate = session.ratePerMin;
         const marketRate = this.market.getRate(session.domain);
         if (marketRate) {

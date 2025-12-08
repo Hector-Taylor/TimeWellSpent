@@ -10,7 +10,7 @@ type BlockMessage = {
   };
 };
 
-console.info('TimeWellSpent content script booted');
+// console.info('TimeWellSpent content script booted');
 
 chrome.runtime.onMessage.addListener((message: BlockMessage | { type: 'TWS_PING' }, _sender, sendResponse) => {
   if (message.type === 'TWS_PING') {

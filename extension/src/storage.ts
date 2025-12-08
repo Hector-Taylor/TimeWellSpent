@@ -11,7 +11,7 @@ export interface MarketRate {
 
 export interface PaywallSession {
     domain: string;
-    mode: 'metered' | 'pack';
+    mode: 'metered' | 'pack' | 'emergency';
     ratePerMin: number;
     remainingSeconds: number;
     startedAt: number;
@@ -19,6 +19,8 @@ export interface PaywallSession {
     purchasePrice?: number;
     purchasedSeconds?: number;
     spendRemainder?: number;
+    justification?: string;
+    lastReminder?: number;
 }
 
 export interface ExtensionState {

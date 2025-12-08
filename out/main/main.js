@@ -38790,6 +38790,13 @@ class SettingsService {
   setIdleThreshold(value) {
     this.setJson("idleThreshold", value);
   }
+  getEmergencyReminderInterval() {
+    const val = this.getJson("emergencyReminderInterval");
+    return typeof val === "number" ? val : 300;
+  }
+  setEmergencyReminderInterval(value) {
+    this.setJson("emergencyReminderInterval", value);
+  }
 }
 class ActivityTracker {
   constructor(database) {
@@ -39016,6 +39023,22 @@ class PaywallManager extends node_events.EventEmitter {
     this.emit("session-started", session);
     return session;
   }
+  startEmergency(domain, justification) {
+    const session = {
+      domain,
+      mode: "emergency",
+      ratePerMin: 0,
+      remainingSeconds: Infinity,
+      lastTick: Date.now(),
+      paused: false,
+      spendRemainder: 0,
+      justification,
+      lastReminder: Date.now()
+    };
+    this.sessions.set(domain, session);
+    this.emit("session-started", session);
+    return session;
+  }
   buyPack(domain, minutes, price) {
     const rate = this.market.getRate(domain);
     if (!rate) throw new Error(`No market rate configured for ${domain}`);
@@ -39070,7 +39093,7 @@ class PaywallManager extends node_events.EventEmitter {
     this.emit("session-ended", { domain, reason, refund });
     return session;
   }
-  tick(intervalSeconds, activeDomain) {
+  tick(intervalSeconds, activeDomain, reminderIntervalSeconds = 300) {
     var _a;
     const now = Date.now();
     const currentHour = (/* @__PURE__ */ new Date()).getHours();
@@ -39086,7 +39109,17 @@ class PaywallManager extends node_events.EventEmitter {
         session.paused = false;
         this.emit("session-resumed", { domain: session.domain });
       }
-      if (session.mode === "metered") {
+      if (session.mode === "emergency") {
+        const lastReminder = session.lastReminder ?? session.lastTick;
+        if (now - lastReminder > reminderIntervalSeconds * 1e3) {
+          session.lastReminder = now;
+          this.emit("session-reminder", {
+            domain: session.domain,
+            justification: session.justification
+          });
+        }
+        session.lastTick = now;
+      } else if (session.mode === "metered") {
         let currentRate = session.ratePerMin;
         const marketRate = this.market.getRate(session.domain);
         if (marketRate) {
@@ -39156,6 +39189,9 @@ class EconomyEngine extends node_events.EventEmitter {
     this.paywall.on("wallet-update", (snapshot) => {
       this.emit("wallet-updated", snapshot);
     });
+    this.paywall.on("session-reminder", (payload) => {
+      this.emit("session-reminder", payload);
+    });
   }
   destroy() {
     clearInterval(this.earnTimer);
@@ -39170,15 +39206,7 @@ class EconomyEngine extends node_events.EventEmitter {
     const domain = event.domain ?? null;
     const app = event.appName ?? null;
     const idle = event.isIdle;
-    const previousDomain = this.state.activeDomain;
-    if (previousDomain && domain && previousDomain !== domain) {
-      const previousSession = this.paywall.getSession(previousDomain);
-      if (previousSession) {
-        logger.info(`User navigated away from ${previousDomain}, clearing paywall session`);
-        this.paywall.clearSession(previousDomain);
-        this.emit("paywall-session-ended", { domain: previousDomain, reason: "navigated-away" });
-      }
-    }
+    this.state.activeDomain;
     this.state = {
       ...this.state,
       activeCategory: idle ? "idle" : category,
@@ -39254,6 +39282,11 @@ class EconomyEngine extends node_events.EventEmitter {
   startPayAsYouGo(domain) {
     this.ensureRate(domain);
     const session = this.paywall.startMetered(domain);
+    return session;
+  }
+  startEmergency(domain, justification) {
+    this.ensureRate(domain);
+    const session = this.paywall.startEmergency(domain, justification);
     return session;
   }
   buyPack(domain, minutes) {
@@ -39594,6 +39627,15 @@ async function createBackend(database) {
       res2.status(400).json({ error: error3.message });
     }
   });
+  app.post("/paywall/emergency", (req2, res2) => {
+    try {
+      const { domain, justification } = req2.body;
+      const session = economy.startEmergency(domain, justification);
+      res2.json(session);
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
+  });
   app.get("/paywall/status", (req2, res2) => {
     const domain = String(req2.query.domain ?? "");
     const session = paywall.getSession(domain);
@@ -39673,6 +39715,14 @@ async function createBackend(database) {
     settings.setIdleThreshold(Number(threshold));
     res2.json({ ok: true });
   });
+  app.get("/settings/emergency-reminder-interval", (_req, res2) => {
+    res2.json({ interval: settings.getEmergencyReminderInterval() });
+  });
+  app.post("/settings/emergency-reminder-interval", (req2, res2) => {
+    const { interval } = req2.body;
+    settings.setEmergencyReminderInterval(Number(interval));
+    res2.json({ ok: true });
+  });
   app.get("/extension/state", (_req, res2) => {
     try {
       const categorisation = settings.getCategorisation();
@@ -39688,7 +39738,9 @@ async function createBackend(database) {
           remainingSeconds: session.remainingSeconds,
           paused: session.paused,
           purchasePrice: session.purchasePrice,
-          purchasedSeconds: session.purchasedSeconds
+          purchasedSeconds: session.purchasedSeconds,
+          justification: session.justification,
+          lastReminder: session.lastReminder
         };
         return acc;
       }, {});
@@ -39716,7 +39768,7 @@ async function createBackend(database) {
     extensionEvents.emit("status", { connected: true, lastSeen: lastExtensionSeen });
     logger.info("WS client connected", clients.size);
     socket.on("message", (msg) => {
-      var _a, _b, _c, _d, _e, _f;
+      var _a, _b, _c, _d, _e, _f, _g, _h;
       try {
         const data = JSON.parse(msg);
         if (data.type === "activity" && data.payload) {
@@ -39758,6 +39810,14 @@ async function createBackend(database) {
           if (!session) {
             socket.send(JSON.stringify({ type: "error", payload: { message: "No active session to end" } }));
           }
+        } else if (data.type === "paywall:start-emergency" && ((_g = data.payload) == null ? void 0 : _g.domain) && ((_h = data.payload) == null ? void 0 : _h.justification)) {
+          try {
+            const session = economy.startEmergency(String(data.payload.domain), String(data.payload.justification));
+            broadcast({ type: "paywall-session-started", payload: session });
+          } catch (error3) {
+            logger.error("Failed to start emergency from extension", error3);
+            socket.send(JSON.stringify({ type: "error", payload: { message: error3.message } }));
+          }
         }
       } catch (e) {
         logger.error("Failed to parse WS message", e);
@@ -39782,6 +39842,7 @@ async function createBackend(database) {
   economy.on("paywall-session-paused", (payload) => broadcast({ type: "paywall-session-paused", payload }));
   economy.on("paywall-session-resumed", (payload) => broadcast({ type: "paywall-session-resumed", payload }));
   economy.on("paywall-session-ended", (payload) => broadcast({ type: "paywall-session-ended", payload }));
+  economy.on("session-reminder", (payload) => broadcast({ type: "paywall-reminder", payload }));
   economy.on("activity", (payload) => broadcast({ type: "activity", payload }));
   focus.on("tick", (payload) => broadcast({ type: "focus-tick", payload }));
   focus.on("start", (payload) => broadcast({ type: "focus-start", payload }));
@@ -39805,7 +39866,7 @@ async function createBackend(database) {
     paywall.clearSession(domain);
     const state = economy.getState();
     if (state.activeDomain === domain && state.activeApp) {
-      await closeActiveBrowserTab(state.activeApp);
+      logger.warn("Skipping closeActiveBrowserTab as it is not implemented");
     }
   };
   return {

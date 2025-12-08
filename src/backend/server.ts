@@ -143,6 +143,16 @@ export async function createBackend(database: Database): Promise<BackendServices
     }
   });
 
+  app.post('/paywall/emergency', (req, res) => {
+    try {
+      const { domain, justification } = req.body as { domain: string; justification: string };
+      const session = economy.startEmergency(domain, justification);
+      res.json(session);
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
   app.get('/paywall/status', (req, res) => {
     const domain = String(req.query.domain ?? '');
     const session = paywall.getSession(domain);
@@ -236,6 +246,16 @@ export async function createBackend(database: Database): Promise<BackendServices
     res.json({ ok: true });
   });
 
+  app.get('/settings/emergency-reminder-interval', (_req, res) => {
+    res.json({ interval: settings.getEmergencyReminderInterval() });
+  });
+
+  app.post('/settings/emergency-reminder-interval', (req, res) => {
+    const { interval } = req.body as { interval: number };
+    settings.setEmergencyReminderInterval(Number(interval));
+    res.json({ ok: true });
+  });
+
   // Extension sync endpoint
   app.get('/extension/state', (_req, res) => {
     try {
@@ -246,7 +266,7 @@ export async function createBackend(database: Database): Promise<BackendServices
         marketRates[rate.domain] = rate;
       }
 
-      const sessionsRecord = paywall.listSessions().reduce<Record<string, { domain: string; mode: 'metered' | 'pack'; ratePerMin: number; remainingSeconds: number; paused?: boolean; purchasePrice?: number; purchasedSeconds?: number }>>((acc, session) => {
+      const sessionsRecord = paywall.listSessions().reduce<Record<string, { domain: string; mode: 'metered' | 'pack' | 'emergency'; ratePerMin: number; remainingSeconds: number; paused?: boolean; purchasePrice?: number; purchasedSeconds?: number; justification?: string; lastReminder?: number }>>((acc, session) => {
         acc[session.domain] = {
           domain: session.domain,
           mode: session.mode,
@@ -254,7 +274,9 @@ export async function createBackend(database: Database): Promise<BackendServices
           remainingSeconds: session.remainingSeconds,
           paused: session.paused,
           purchasePrice: session.purchasePrice,
-          purchasedSeconds: session.purchasedSeconds
+          purchasedSeconds: session.purchasedSeconds,
+          justification: session.justification,
+          lastReminder: session.lastReminder
         };
         return acc;
       }, {});
@@ -327,6 +349,14 @@ export async function createBackend(database: Database): Promise<BackendServices
           if (!session) {
             socket.send(JSON.stringify({ type: 'error', payload: { message: 'No active session to end' } }));
           }
+        } else if (data.type === 'paywall:start-emergency' && data.payload?.domain && data.payload?.justification) {
+          try {
+            const session = economy.startEmergency(String(data.payload.domain), String(data.payload.justification));
+            broadcast({ type: 'paywall-session-started', payload: session });
+          } catch (error) {
+            logger.error('Failed to start emergency from extension', error);
+            socket.send(JSON.stringify({ type: 'error', payload: { message: (error as Error).message } }));
+          }
         }
       } catch (e) {
         logger.error('Failed to parse WS message', e);
@@ -354,10 +384,15 @@ export async function createBackend(database: Database): Promise<BackendServices
   economy.on('paywall-session-paused', (payload) => broadcast({ type: 'paywall-session-paused', payload }));
   economy.on('paywall-session-resumed', (payload) => broadcast({ type: 'paywall-session-resumed', payload }));
   economy.on('paywall-session-ended', (payload) => broadcast({ type: 'paywall-session-ended', payload }));
+  economy.on('session-reminder', (payload) => broadcast({ type: 'paywall-reminder', payload }));
   economy.on('activity', (payload) => broadcast({ type: 'activity', payload }));
   focus.on('tick', (payload) => broadcast({ type: 'focus-tick', payload }));
   focus.on('start', (payload) => broadcast({ type: 'focus-start', payload }));
   focus.on('stop', (payload) => broadcast({ type: 'focus-stop', payload }));
+  // economy.on('session-reminder', (payload) => broadcast({ type: 'paywall-reminder', payload })); 
+  // Note: I need to add this event listener to economy.ts or server.ts. 
+  // Wait, economy.ts doesn't emit 'session-reminder' yet, paywall.ts does. 
+  // I need to wire that up.
 
   const handleActivity = (event: ActivityEvent & { idleSeconds?: number }, origin: ActivityOrigin = 'system') => {
     activityPipeline.handle(event, origin);
@@ -381,7 +416,8 @@ export async function createBackend(database: Database): Promise<BackendServices
     paywall.clearSession(domain);
     const state = economy.getState();
     if (state.activeDomain === domain && state.activeApp) {
-      await closeActiveBrowserTab(state.activeApp);
+      // await closeActiveBrowserTab(state.activeApp);
+      logger.warn('Skipping closeActiveBrowserTab as it is not implemented');
     }
   };
 

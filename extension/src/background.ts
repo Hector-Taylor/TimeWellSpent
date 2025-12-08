@@ -13,7 +13,7 @@ let idleState: IdleState = 'active';
 let lastIdleChange = Date.now();
 const activityBuffer: Array<Record<string, unknown>> = [];
 
-function estimatePackRefund(session: { mode: 'metered' | 'pack'; purchasePrice?: number; purchasedSeconds?: number; remainingSeconds: number }) {
+function estimatePackRefund(session: { mode: 'metered' | 'pack' | 'emergency'; purchasePrice?: number; purchasedSeconds?: number; remainingSeconds: number }) {
     if (session.mode !== 'pack') return 0;
     if (!session.purchasePrice || !session.purchasedSeconds) return 0;
     const unusedSeconds = Math.max(0, Math.min(session.purchasedSeconds, session.remainingSeconds));
@@ -94,7 +94,7 @@ async function syncFromDesktop() {
 }
 
 function handleDesktopMessage(data: any) {
-    console.log('Received from desktop:', data.type);
+    // console.log('Received from desktop:', data.type);
 
     if (data.type === 'wallet') {
         storage.updateFromDesktop({ wallet: data.payload });
@@ -112,7 +112,9 @@ function handleDesktopMessage(data: any) {
                 paused: session.paused ?? false,
                 spendRemainder: session.spendRemainder ?? 0,
                 purchasePrice: session.purchasePrice,
-                purchasedSeconds: session.purchasedSeconds
+                purchasedSeconds: session.purchasedSeconds,
+                justification: session.justification,
+                lastReminder: session.lastReminder
             });
         }
     } else if (data.type === 'paywall-session-ended') {
@@ -201,7 +203,7 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
         const url = new URL(urlString);
         const domain = url.hostname.replace(/^www\./, '');
 
-        console.log(`🔍 Checking ${domain} (source: ${source})`);
+        // console.log(`🔍 Checking ${domain} (source: ${source})`);
 
         const isFrivolous = await storage.isFrivolous(domain);
 
@@ -210,7 +212,7 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
 
             if (session && (session.mode === 'metered' || session.remainingSeconds > 0)) {
                 // Has valid session - allow
-                console.log(`✅ ${domain} - allowed (active session)`);
+                // console.log(`✅ ${domain} - allowed (active session)`);
                 return;
             }
 
@@ -287,7 +289,7 @@ async function tickSessions() {
         try {
             if (cost > 0) {
                 await storage.spendCoins(cost);
-                console.log(`💰 Spent ${cost} coins on ${activeDomain}`);
+                // console.log(`💰 Spent ${cost} coins on ${activeDomain}`);
             }
             session.ratePerMin = currentRate;
             session.spendRemainder = remainder;
@@ -457,48 +459,48 @@ async function showBlockScreen(tabId: number, domain: string, reason?: string) {
 }
 
 async function preferDesktopPurchase(path: '/paywall/packs' | '/paywall/metered', payload: Record<string, unknown>) {
-  try {
-    const response = await fetch(`${DESKTOP_API_URL}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      cache: 'no-store',
-    });
-    if (!response.ok) throw new Error('desktop unreachable');
-    const session = await response.json();
-    await storage.updateFromDesktop({
-      sessions: {
-        [session.domain]: {
-          ...session,
-          startedAt: Date.now(),
-          paused: false,
-          spendRemainder: session.spendRemainder ?? 0
-        }
-      } as any
-    });
-    await syncFromDesktop(); // refresh wallet + rates
-    return { ok: true, session };
-  } catch (error) {
-    console.log('Desktop purchase failed, falling back to local', error);
-    return { ok: false, error: (error as Error).message };
-  }
+    try {
+        const response = await fetch(`${DESKTOP_API_URL}${path}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            cache: 'no-store',
+        });
+        if (!response.ok) throw new Error('desktop unreachable');
+        const session = await response.json();
+        await storage.updateFromDesktop({
+            sessions: {
+                [session.domain]: {
+                    ...session,
+                    startedAt: Date.now(),
+                    paused: false,
+                    spendRemainder: session.spendRemainder ?? 0
+                }
+            } as any
+        });
+        await syncFromDesktop(); // refresh wallet + rates
+        return { ok: true, session };
+    } catch (error) {
+        console.log('Desktop purchase failed, falling back to local', error);
+        return { ok: false, error: (error as Error).message };
+    }
 }
 
 async function preferDesktopEnd(domain: string) {
-  try {
-    const response = await fetch(`${DESKTOP_API_URL}/paywall/end`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ domain }),
-      cache: 'no-store',
-    });
-    if (!response.ok) throw new Error('desktop unreachable');
-    await syncFromDesktop();
-    return { ok: true };
-  } catch (error) {
-    console.log('Desktop end-session failed, falling back to local', error);
-    return { ok: false, error: (error as Error).message };
-  }
+    try {
+        const response = await fetch(`${DESKTOP_API_URL}/paywall/end`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ domain }),
+            cache: 'no-store',
+        });
+        if (!response.ok) throw new Error('desktop unreachable');
+        await syncFromDesktop();
+        return { ok: true };
+    } catch (error) {
+        console.log('Desktop end-session failed, falling back to local', error);
+        return { ok: false, error: (error as Error).message };
+    }
 }
 
 // ============================================================================
@@ -526,6 +528,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return true;
     } else if (message.type === 'END_SESSION') {
         handleEndSession(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'START_EMERGENCY') {
+        handleStartEmergency(message.payload).then(sendResponse);
         return true;
     }
 });
@@ -642,7 +647,7 @@ async function handleEndSession(payload: { domain: string }) {
     const refund = estimatePackRefund(session);
 
     const canSignalDesktop = ws && ws.readyState === WebSocket.OPEN;
-    if (canSignalDesktop) {
+    if (canSignalDesktop && ws) {
         ws.send(JSON.stringify({ type: 'paywall:end', payload: { domain: payload.domain } }));
     }
 
@@ -664,6 +669,31 @@ async function handleEndSession(payload: { domain: string }) {
     }
 
     return { success: true, refund };
+}
+
+async function handleStartEmergency(payload: { domain: string; justification: string }) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'paywall:start-emergency', payload }));
+        // We expect the desktop to broadcast the session start back to us
+        return { success: true };
+    }
+
+    // Fallback to local (if offline support is needed for emergency, though requirements imply "we store everything", so maybe online only? 
+    // But for robustness, let's allow it locally too)
+    const session = {
+        domain: payload.domain,
+        mode: 'emergency' as const,
+        ratePerMin: 0,
+        remainingSeconds: Infinity,
+        startedAt: Date.now(),
+        spendRemainder: 0,
+        justification: payload.justification,
+        lastReminder: Date.now()
+    };
+
+    await storage.setSession(payload.domain, session);
+    console.log(`✅ Started emergency session for ${payload.domain}`);
+    return { success: true, session };
 }
 
 // Keep alive

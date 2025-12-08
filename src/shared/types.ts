@@ -107,13 +107,15 @@ export type Budget = {
 
 export type PaywallSession = {
   domain: string;
-  mode: 'metered' | 'pack';
+  mode: 'metered' | 'pack' | 'emergency';
   ratePerMin: number;
   remainingSeconds: number;
   paused?: boolean;
   purchasePrice?: number;
   purchasedSeconds?: number;
   spendRemainder?: number;
+  justification?: string;
+  lastReminder?: number;
 };
 
 export type RendererApi = {

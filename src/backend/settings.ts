@@ -48,4 +48,13 @@ export class SettingsService {
   setIdleThreshold(value: number) {
     this.setJson('idleThreshold', value);
   }
+
+  getEmergencyReminderInterval(): number {
+    const val = this.getJson<number>('emergencyReminderInterval');
+    return typeof val === 'number' ? val : 300; // Default 5 minutes
+  }
+
+  setEmergencyReminderInterval(value: number) {
+    this.setJson('emergencyReminderInterval', value);
+  }
 }
