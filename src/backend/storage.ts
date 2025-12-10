@@ -85,9 +85,20 @@ export class Database {
         value TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS store_items (
+        id INTEGER PRIMARY KEY,
+        url TEXT NOT NULL UNIQUE,
+        domain TEXT NOT NULL,
+        title TEXT,
+        price INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT
+      );
+
       CREATE INDEX IF NOT EXISTS idx_activities_started_at ON activities(started_at);
       CREATE INDEX IF NOT EXISTS idx_activities_domain ON activities(domain);
       CREATE INDEX IF NOT EXISTS idx_transactions_ts ON transactions(ts);
+      CREATE INDEX IF NOT EXISTS idx_store_items_domain ON store_items(domain);
     `;
 
     this.driver.exec(ddl);

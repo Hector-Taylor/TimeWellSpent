@@ -109,4 +109,16 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('settings:update-categorisation', (_event, payload) => backend.settings.setCategorisation(payload));
   ipcMain.handle('settings:idle-threshold', () => backend.settings.getIdleThreshold());
   ipcMain.handle('settings:update-idle-threshold', (_event, value: number) => backend.settings.setIdleThreshold(value));
+
+  // Store handlers
+  ipcMain.handle('store:list', () => backend.store.list());
+  ipcMain.handle('store:add', (_event, payload: { url: string; price: number; title?: string }) => {
+    return backend.store.add(payload.url, payload.price, payload.title);
+  });
+  ipcMain.handle('store:remove', (_event, payload: { id: number }) => {
+    backend.store.remove(payload.id);
+  });
+  ipcMain.handle('store:find-by-url', (_event, payload: { url: string }) => {
+    return backend.store.findMatchingItem(payload.url);
+  });
 }

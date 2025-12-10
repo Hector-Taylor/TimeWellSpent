@@ -59,7 +59,7 @@ async function mountOverlay(domain: string, reason?: string) {
 
   const status = await chrome.runtime.sendMessage({
     type: 'GET_STATUS',
-    payload: { domain }
+    payload: { domain, url: window.location.href }
   });
 
   const root = createRoot(mountPoint);

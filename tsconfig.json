@@ -3,7 +3,11 @@
     "target": "ES2021",
     "module": "ESNext",
     "moduleResolution": "Node",
-    "lib": ["ES2021", "DOM"],
+    "lib": [
+      "ES2021",
+      "DOM"
+    ],
+    "jsx": "react-jsx",
     "allowJs": false,
     "resolveJsonModule": true,
     "esModuleInterop": true,
@@ -13,12 +17,28 @@
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
     "paths": {
-      "@shared/*": ["src/shared/*"],
-      "@main/*": ["src/main/*"],
-      "@renderer/*": ["src/renderer/*"],
-      "@backend/*": ["src/backend/*"]
+      "@shared/*": [
+        "src/shared/*"
+      ],
+      "@main/*": [
+        "src/main/*"
+      ],
+      "@renderer/*": [
+        "src/renderer/*"
+      ],
+      "@backend/*": [
+        "src/backend/*"
+      ]
     }
   },
-  "include": ["src", "tests", "forge.config.ts"],
-  "exclude": ["dist", "out", "node_modules"]
+  "include": [
+    "src",
+    "tests",
+    "forge.config.ts"
+  ],
+  "exclude": [
+    "dist",
+    "out",
+    "node_modules"
+  ]
 }

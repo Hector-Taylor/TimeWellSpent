@@ -592,22 +592,82 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message.type === 'START_EMERGENCY') {
         handleStartEmergency(message.payload).then(sendResponse);
         return true;
+    } else if (message.type === 'START_STORE_SESSION') {
+        handleStartStoreSession(message.payload).then(sendResponse);
+        return true;
     }
 });
 
-async function handleGetStatus(payload: { domain: string }) {
+async function handleGetStatus(payload: { domain: string; url?: string }) {
     const balance = await storage.getBalance();
     const rate = await storage.getMarketRate(payload.domain);
     const session = await storage.getSession(payload.domain);
     const lastSync = await storage.getLastSyncTime();
 
+    // Check for store item
+    let storeItem = null;
+    if (payload.url) {
+        const items = (await storage.getState()).storeItems || [];
+        // Exact match
+        storeItem = items.find(item => item.url === payload.url);
+        // If not exact, try without query params as fallback if not strict? 
+        // Plan said: "Supports exact URL match or URL prefix match" logic in backend. 
+        // Let's implement simple exact match first, or backend logic replication.
+        // Actually backend check is better if I can fetch it, but local cache is faster.
+        // Replicating backend logic:
+        if (!storeItem) {
+            try {
+                const parsed = new URL(payload.url);
+                const baseUrl = `${parsed.origin}${parsed.pathname}`;
+                storeItem = items.find(item => item.url === baseUrl);
+            } catch (e) { }
+        }
+    }
+
     return {
         balance,
         rate,
         session,
+        storeItem,
         lastSync,
         desktopConnected: ws?.readyState === WebSocket.OPEN
     };
+}
+
+async function handleStartStoreSession(payload: { domain: string; price: number; url?: string }) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'paywall:start-store', payload }));
+        return { success: true };
+    }
+
+    // Fallback? Store purchase requires wallet deduction. 
+    // Extension has local wallet state.
+    try {
+        await storage.spendCoins(payload.price);
+        const session = {
+            domain: payload.domain,
+            mode: 'store' as const,
+            ratePerMin: 0,
+            remainingSeconds: Infinity,
+            startedAt: Date.now(),
+            lastTick: Date.now(),
+            paused: false,
+            purchasePrice: payload.price,
+            spendRemainder: 0
+        };
+        await storage.setSession(payload.domain, session);
+
+        // Notify desktop if possible via HTTP even if WS is down?
+        fetch(`${DESKTOP_API_URL}/paywall/start-store-fallback`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        }).catch(() => { }); // Fire and forget
+
+        return { success: true, session };
+    } catch (err) {
+        return { success: false, error: (err as Error).message };
+    }
 }
 
 async function handleGetConnection() {
@@ -763,4 +823,75 @@ async function handleStartEmergency(payload: { domain: string; justification: st
 chrome.runtime.onStartup.addListener(() => {
     storage.init();
     tryConnectToDesktop();
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+    chrome.contextMenus.create({
+        id: 'add-to-store',
+        title: 'Add to TimeWellSpent Store',
+        contexts: ['page', 'link']
+    });
+});
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+    if (info.menuItemId === 'add-to-store' && tab?.id) {
+        const url = info.linkUrl || info.pageUrl;
+        if (!url) return;
+
+        // Inject script to ask for price
+        try {
+            const results = await chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                func: (urlToSave) => {
+                    const priceStr = prompt(`Add to TimeWellSpent Store\n\nEnter price (f-coins) for:\n${urlToSave}`, '10');
+                    if (!priceStr) return null;
+                    const price = parseInt(priceStr, 10);
+                    if (isNaN(price) || price < 1) return { error: 'Invalid price' };
+                    const title = document.title;
+                    return { url: urlToSave, price, title };
+                },
+                args: [url]
+            });
+
+            const result = results[0]?.result;
+            if (!result || result.error) {
+                if (result?.error) {
+                    await chrome.scripting.executeScript({
+                        target: { tabId: tab.id },
+                        func: (msg) => alert(msg),
+                        args: [result.error]
+                    });
+                }
+                return;
+            }
+
+            // Send to desktop
+            try {
+                const response = await fetch(`${DESKTOP_API_URL}/store`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(result)
+                });
+
+                if (response.ok) {
+                    await chrome.scripting.executeScript({
+                        target: { tabId: tab.id },
+                        func: () => alert('✅ Added to store!'),
+                    });
+                    // Force sync
+                    syncFromDesktop();
+                } else {
+                    throw new Error('Failed to save');
+                }
+            } catch (err) {
+                await chrome.scripting.executeScript({
+                    target: { tabId: tab.id },
+                    func: () => alert('❌ Failed to save to desktop app. Is it running?'),
+                });
+            }
+
+        } catch (err) {
+            console.error('Failed to handle context menu click', err);
+        }
+    }
 });

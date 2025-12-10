@@ -17,6 +17,7 @@ import { ActivityPipeline, type ActivityOrigin } from './activityPipeline';
 import type { Database } from './storage';
 import type { MarketRate } from '@shared/types';
 import { logger } from '@shared/logger';
+import { StoreService } from './store';
 
 export type BackendServices = {
   wallet: WalletManager;
@@ -28,6 +29,7 @@ export type BackendServices = {
   focus: FocusService;
   intentions: IntentionService;
   budgets: BudgetService;
+  store: StoreService;
   handleActivity: (event: ActivityEvent & { idleSeconds?: number }, origin?: ActivityOrigin) => void;
   extension: {
     status: () => { connected: boolean; lastSeen: number | null };
@@ -55,6 +57,7 @@ export async function createBackend(database: Database): Promise<BackendServices
   const focus = new FocusService(database, wallet);
   const intentions = new IntentionService(database);
   const budgets = new BudgetService(database);
+  const store = new StoreService(database);
 
   const app = express();
   const ws = expressWs(app);
@@ -213,6 +216,32 @@ export async function createBackend(database: Database): Promise<BackendServices
     res.json({ ok: true });
   });
 
+  // Store Enpoints
+  app.get('/store', (_req, res) => {
+    res.json(store.list());
+  });
+
+  app.post('/store', (req, res) => {
+    try {
+      const { url, price, title } = req.body as { url: string; price: number; title: string };
+      const item = store.add(url, price, title);
+      res.json(item);
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  app.delete('/store/:id', (req, res) => {
+    store.remove(Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  app.get('/store/check', (req, res) => {
+    const url = String(req.query.url ?? '');
+    const item = store.findMatchingItem(url);
+    res.json({ item });
+  });
+
   app.post('/paywall/cancel', (req, res) => {
     try {
       const { domain } = req.body as { domain: string };
@@ -266,7 +295,7 @@ export async function createBackend(database: Database): Promise<BackendServices
         marketRates[rate.domain] = rate;
       }
 
-      const sessionsRecord = paywall.listSessions().reduce<Record<string, { domain: string; mode: 'metered' | 'pack' | 'emergency'; ratePerMin: number; remainingSeconds: number; paused?: boolean; purchasePrice?: number; purchasedSeconds?: number; justification?: string; lastReminder?: number }>>((acc, session) => {
+      const sessionsRecord = paywall.listSessions().reduce<Record<string, { domain: string; mode: 'metered' | 'pack' | 'emergency' | 'store'; ratePerMin: number; remainingSeconds: number; paused?: boolean; purchasePrice?: number; purchasedSeconds?: number; justification?: string; lastReminder?: number }>>((acc, session) => {
         acc[session.domain] = {
           domain: session.domain,
           mode: session.mode,
@@ -287,6 +316,7 @@ export async function createBackend(database: Database): Promise<BackendServices
           lastSynced: Date.now()
         },
         marketRates,
+        storeItems: store.list(),
         settings: {
           frivolityDomains: categorisation.frivolity,
           productiveDomains: categorisation.productive,
@@ -355,6 +385,15 @@ export async function createBackend(database: Database): Promise<BackendServices
             broadcast({ type: 'paywall-session-started', payload: session });
           } catch (error) {
             logger.error('Failed to start emergency from extension', error);
+            socket.send(JSON.stringify({ type: 'error', payload: { message: (error as Error).message } }));
+          }
+        } else if (data.type === 'paywall:start-store' && data.payload?.domain && typeof data.payload?.price === 'number') {
+          try {
+            // We use startStore on economy which delegates to paywall
+            const session = economy.startStore(String(data.payload.domain), Number(data.payload.price));
+            broadcast({ type: 'paywall-session-started', payload: session });
+          } catch (error) {
+            logger.error('Failed to start store session from extension', error);
             socket.send(JSON.stringify({ type: 'error', payload: { message: (error as Error).message } }));
           }
         }
@@ -427,6 +466,7 @@ export async function createBackend(database: Database): Promise<BackendServices
     focus,
     intentions,
     budgets,
+    store,
     handleActivity,
     extension: {
       status: () => ({ connected: clients.size > 0, lastSeen: lastExtensionSeen }),

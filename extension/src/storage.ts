@@ -10,9 +10,19 @@ export interface MarketRate {
     hourlyModifiers?: number[];
 }
 
+export interface StoreItem {
+    id: number;
+    url: string;
+    domain: string;
+    title?: string;
+    price: number;
+    createdAt: string;
+    lastUsedAt?: string;
+}
+
 export interface PaywallSession {
     domain: string;
-    mode: 'metered' | 'pack' | 'emergency';
+    mode: 'metered' | 'pack' | 'emergency' | 'store';
     ratePerMin: number;
     remainingSeconds: number;
     startedAt: number;
@@ -23,6 +33,7 @@ export interface PaywallSession {
     spendRemainder?: number;
     justification?: string;
     lastReminder?: number;
+    allowedUrl?: string;
 }
 
 export interface ExtensionState {
@@ -38,6 +49,7 @@ export interface ExtensionState {
         idleThreshold: number;
     };
     sessions: Record<string, PaywallSession>;
+    storeItems: StoreItem[];
     lastDesktopSync: number; // timestamp of last successful sync with desktop
 }
 
@@ -91,6 +103,7 @@ const DEFAULT_STATE: ExtensionState = {
         idleThreshold: 15
     },
     sessions: {},
+    storeItems: [],
     lastDesktopSync: 0
 };
 
@@ -215,6 +228,9 @@ class ExtensionStorage {
         }
         if (desktopState.sessions) {
             this.state!.sessions = desktopState.sessions as Record<string, PaywallSession>;
+        }
+        if (desktopState.storeItems) {
+            this.state!.storeItems = desktopState.storeItems;
         }
 
         this.state!.lastDesktopSync = Date.now();

@@ -9,7 +9,8 @@
         "scripting",
         "storage",
         "idle",
-        "webNavigation"
+        "webNavigation",
+        "contextMenus"
     ],
     "host_permissions": [
         "http://localhost:17600/*",

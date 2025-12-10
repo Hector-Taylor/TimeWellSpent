@@ -280,6 +280,42 @@ async function bootstrap() {
   backend.economy.on('paywall-session-resumed', (payload) => emitToRenderers('paywall:session-resumed', payload));
   backend.economy.on('activity', (payload) => emitToRenderers('economy:activity', payload));
 
+  // Update tray with current rate when economy state changes
+  backend.economy.on('activity', (payload: { category: string; domain?: string; app?: string }) => {
+    // Skip if in focus mode
+    if (backend.focus.getCurrent()) return;
+
+    const state = backend.economy.getState();
+    const sessions = backend.paywall.listSessions();
+    const activeSession = sessions.find(s => !s.paused && s.domain === state.activeDomain);
+
+    if (activeSession) {
+      // Spending - show negative rate
+      const ratePerSec = activeSession.ratePerMin / 60;
+      updateTray(`-${ratePerSec.toFixed(2)}/s`);
+    } else if (state.activeCategory === 'productive') {
+      // Earning from productive work
+      let ratePerMin = 5; // default productive rate
+      const identifier = state.activeDomain || state.activeApp;
+      if (identifier) {
+        const marketRate = backend.market.getRate(identifier);
+        if (marketRate) {
+          const hour = new Date().getHours();
+          ratePerMin = marketRate.ratePerMin * (marketRate.hourlyModifiers[hour] ?? 1);
+        }
+      }
+      const ratePerSec = ratePerMin / 60;
+      updateTray(`+${ratePerSec.toFixed(2)}/s`);
+    } else if (state.activeCategory === 'neutral' && state.neutralClockedIn) {
+      // Earning from neutral work (clocked in)
+      const ratePerSec = 3 / 60;
+      updateTray(`+${ratePerSec.toFixed(2)}/s`);
+    } else {
+      // Idle or not earning - show balance
+      updateTray(`💰 ${backend.wallet.getSnapshot().balance}`);
+    }
+  });
+
   const watcher = createUrlWatcher({
     onActivity: (event) => backend.handleActivity(event, 'system')
   });

@@ -51,6 +51,17 @@ export class ActivityClassifier {
   private matches(domains: string[], appName: string, patterns: string[]) {
     return patterns.some((pattern) => {
       const needle = pattern.toLowerCase();
+
+      // If the pattern looks like a domain, enforce stricter matching
+      if (needle.includes('.')) {
+        return domains.some((domain) => {
+          if (!domain) return false;
+          // Exact match or subdomain (e.g. "maps.google.com" matches "google.com")
+          return domain === needle || domain.endsWith('.' + needle);
+        });
+      }
+
+      // Fallback to loose matching for app names or simple keywords
       return domains.some((domain) => domain && domain.includes(needle)) || appName.includes(needle);
     });
   }

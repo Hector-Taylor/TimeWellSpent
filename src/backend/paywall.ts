@@ -5,7 +5,7 @@ import { logger } from '@shared/logger';
 
 export type PaywallSession = {
   domain: string;
-  mode: 'metered' | 'pack' | 'emergency';
+  mode: 'metered' | 'pack' | 'emergency' | 'store';
   ratePerMin: number;
   remainingSeconds: number;
   lastTick: number;
@@ -15,6 +15,7 @@ export type PaywallSession = {
   spendRemainder?: number;
   justification?: string;
   lastReminder?: number;
+  allowedUrl?: string;
 };
 
 export class PaywallManager extends EventEmitter {
@@ -28,10 +29,21 @@ export class PaywallManager extends EventEmitter {
     return this.sessions.get(domain) ?? null;
   }
 
-  hasValidPass(domain: string) {
+  hasValidPass(domain: string, url?: string) {
     const session = this.sessions.get(domain);
     if (!session) return false;
-    if (session.mode === 'metered') return true;
+
+    // Check URL restriction for store mode (or others if applicable)
+    if (session.allowedUrl && url && session.allowedUrl !== url) {
+      // Simple exact match for now. Could be prefix match.
+      // If allowedUrl is set, and we are on a different URL, it's NOT a valid pass.
+      // Wait, if url is undefined, we assume valid? No, hasValidPass(domain) without url should probably fail if session requires URL?
+      // But internal checks might just pass domain.
+      // Let's assume if url is provided, we check it.
+      return false;
+    }
+
+    if (session.mode === 'metered' || session.mode === 'store') return true;
     return session.remainingSeconds > 0;
   }
 
@@ -45,6 +57,26 @@ export class PaywallManager extends EventEmitter {
 
   cancelPack(domain: string) {
     return this.endSession(domain, 'cancelled', { refundUnused: true });
+  }
+
+  startStore(domain: string, price: number, url?: string) {
+    this.wallet.spend(price, { type: 'store-purchase', domain, url });
+    this.emit('wallet-update', this.wallet.getSnapshot());
+
+    const session: PaywallSession = {
+      domain,
+      mode: 'store',
+      ratePerMin: 0,
+      remainingSeconds: Infinity,
+      lastTick: Date.now(),
+      paused: false,
+      spendRemainder: 0,
+      purchasePrice: price,
+      allowedUrl: url
+    };
+    this.sessions.set(domain, session);
+    this.emit('session-started', session);
+    return session;
   }
 
   startMetered(domain: string) {
@@ -142,12 +174,20 @@ export class PaywallManager extends EventEmitter {
     return session;
   }
 
-  tick(intervalSeconds: number, activeDomain?: string | null, reminderIntervalSeconds: number = 300) {
+  tick(intervalSeconds: number, activeDomain?: string | null, activeUrl?: string | null, reminderIntervalSeconds: number = 300) {
     const now = Date.now();
     const currentHour = new Date().getHours();
 
     for (const session of [...this.sessions.values()]) {
-      const isActive = activeDomain ? session.domain === activeDomain : false;
+      let isActive = activeDomain ? session.domain === activeDomain : false;
+
+      // If session is restricted to URL, check URL
+      if (isActive && session.allowedUrl && activeUrl) {
+        if (session.allowedUrl !== activeUrl) {
+          isActive = false;
+        }
+      }
+
       if (!isActive) {
         if (!session.paused) {
           session.paused = true;

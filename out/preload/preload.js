@@ -59,6 +59,12 @@ const api = {
     idleThreshold: () => electron.ipcRenderer.invoke("settings:idle-threshold"),
     updateIdleThreshold: (value) => electron.ipcRenderer.invoke("settings:update-idle-threshold", value)
   },
+  store: {
+    list: () => electron.ipcRenderer.invoke("store:list"),
+    add: (url, price, title) => electron.ipcRenderer.invoke("store:add", { url, price, title }),
+    remove: (id) => electron.ipcRenderer.invoke("store:remove", { id }),
+    findByUrl: (url) => electron.ipcRenderer.invoke("store:find-by-url", { url })
+  },
   events: {
     on: (channel, callback) => {
       const listener = (_event, payload) => callback(payload);

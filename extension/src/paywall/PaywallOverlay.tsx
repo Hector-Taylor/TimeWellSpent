@@ -9,10 +9,16 @@ type StatusResponse = {
   } | null;
   session: {
     domain: string;
-    mode: 'metered' | 'pack' | 'emergency';
+    mode: 'metered' | 'pack' | 'emergency' | 'store';
     ratePerMin: number;
     remainingSeconds: number;
     paused?: boolean;
+  } | null;
+  storeItem?: {
+    id: number;
+    url: string;
+    title?: string;
+    price: number;
   } | null;
   lastSync: number | null;
   desktopConnected: boolean;
@@ -119,6 +125,30 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
     }
   };
 
+  const handleStartStoreSession = async () => {
+    if (isProcessing || !status.storeItem) return;
+    setIsProcessing(true);
+    setError(null);
+    try {
+      const result = await chrome.runtime.sendMessage({
+        type: 'START_STORE_SESSION',
+        payload: { domain, price: status.storeItem.price, url: status.storeItem.url }
+      });
+      if (result.success) {
+        cleanup();
+        onClose();
+      } else {
+        setError(`Failed to purchase item: ${result.error}`);
+      }
+    } catch (e) {
+      console.error(e);
+      setError('Failed to communicate with extension');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+
   const handleStartEmergency = async () => {
     if (isProcessing || !justification.trim()) return;
     setIsProcessing(true);
@@ -144,17 +174,21 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
 
   const heading = status.session
     ? status.session.mode === 'pack' ? 'Session paused' : status.session.mode === 'emergency' ? 'Emergency session paused' : 'Metered session paused'
-    : 'Unlock this site';
+    : status.storeItem ? 'Unlock Store Item' : 'Unlock this site';
 
   const infoLine = status.session
     ? status.session.mode === 'pack'
       ? `${Math.round(status.session.remainingSeconds / 60)} minutes remaining`
       : status.session.mode === 'emergency'
         ? 'Emergency access active'
-        : 'Metered: paying as you scroll'
-    : reason === 'insufficient-funds'
-      ? 'Top up to keep browsing'
-      : 'Spend f-coins to continue';
+        : status.session.mode === 'store'
+          ? 'Store Purchase Active'
+          : 'Metered: paying as you scroll'
+    : status.storeItem
+      ? `Fixed price content`
+      : reason === 'insufficient-funds'
+        ? 'Top up to keep browsing'
+        : 'Spend f-coins to continue';
 
   if (showEmergencyForm) {
     return (
@@ -193,6 +227,66 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Store Item View
+  if (status.storeItem) {
+    return (
+      <div className="tws-paywall-overlay">
+        <div className="tws-paywall-modal">
+          <header className="tws-paywall-header">
+            <div>
+              <p className="tws-eyebrow">Store Item Found</p>
+              <h2>{status.storeItem.title || 'Unlock Content'}</h2>
+              <p className="tws-subtle">One-time purchase for this specific content.</p>
+            </div>
+            <div className="tws-wallet-badge">
+              <span>Balance</span>
+              <strong>{status.balance} f-coins</strong>
+            </div>
+          </header>
+
+          <div className="tws-paywall-body">
+            {error && <p className="tws-error-text" style={{ marginBottom: '12px' }}>{error}</p>}
+
+            <section className="tws-paywall-option">
+              <div className="tws-option-header">
+                <h3>One-time Access</h3>
+                <p className="tws-subtle">Purchase permament access to this URL (until session ends).</p>
+              </div>
+              <div className="tws-option-action">
+                <div className="tws-price-tag">
+                  <strong>{status.storeItem.price}</strong>
+                  <small>f-coins</small>
+                </div>
+                <button
+                  className="tws-primary"
+                  onClick={handleStartStoreSession}
+                  disabled={status.balance < status.storeItem.price || isProcessing}
+                >
+                  Purchase Now
+                </button>
+              </div>
+              {status.balance < status.storeItem.price && (
+                <p className="tws-error-text" style={{ marginTop: '8px' }}>Not enough f-coins</p>
+              )}
+            </section>
+
+            <div className="tws-divider" style={{ margin: '20px 0' }}>
+              <span>OR</span>
+            </div>
+
+            <div className="tws-emergency-link" style={{ textAlign: 'center' }}>
+              <button className="tws-secondary" onClick={() => setShowEmergencyForm(true)}>
+                I really need it (Emergency)
+              </button>
+            </div>
+
+            {/* Allow standard options as fallback? Maybe hide them to avoid confusion for Store items. The user specifically curated this item. */}
           </div>
         </div>
       </div>

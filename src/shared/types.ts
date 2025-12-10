@@ -98,6 +98,16 @@ export type Intention = {
   completed: boolean;
 };
 
+export type StoreItem = {
+  id: number;
+  url: string;
+  domain: string;
+  title?: string;
+  price: number;
+  createdAt: string;
+  lastUsedAt?: string;
+};
+
 export type Budget = {
   id: number;
   period: 'day' | 'week';
@@ -107,7 +117,7 @@ export type Budget = {
 
 export type PaywallSession = {
   domain: string;
-  mode: 'metered' | 'pack' | 'emergency';
+  mode: 'metered' | 'pack' | 'emergency' | 'store';
   ratePerMin: number;
   remainingSeconds: number;
   paused?: boolean;
@@ -116,6 +126,7 @@ export type PaywallSession = {
   spendRemainder?: number;
   justification?: string;
   lastReminder?: number;
+  allowedUrl?: string;
 };
 
 export type RendererApi = {
@@ -168,6 +179,12 @@ export type RendererApi = {
     updateCategorisation(value: CategorisationConfig): Promise<void>;
     idleThreshold(): Promise<number>;
     updateIdleThreshold(value: number): Promise<void>;
+  };
+  store: {
+    list(): Promise<StoreItem[]>;
+    add(url: string, price: number, title?: string): Promise<StoreItem>;
+    remove(id: number): Promise<void>;
+    findByUrl(url: string): Promise<StoreItem | null>;
   };
   events: {
     on<T = unknown>(channel: string, callback: (payload: T) => void): () => void;

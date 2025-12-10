@@ -14,6 +14,7 @@ export type EconomyState = {
   activeCategory: ActivityCategory | 'idle' | null;
   activeDomain: string | null;
   activeApp: string | null;
+  activeUrl: string | null;
   lastUpdated: number | null;
   neutralClockedIn: boolean;
 };
@@ -23,6 +24,7 @@ export class EconomyEngine extends EventEmitter {
     activeCategory: null,
     activeDomain: null,
     activeApp: null,
+    activeUrl: null,
     lastUpdated: null,
     neutralClockedIn: false
   };
@@ -73,6 +75,7 @@ export class EconomyEngine extends EventEmitter {
     const category = event.category;
     const domain = event.domain ?? null;
     const app = event.appName ?? null;
+    const url = event.url ?? null;
     const idle = event.isIdle;
 
     // Check if we've navigated away from a domain with an active paywall session
@@ -88,12 +91,14 @@ export class EconomyEngine extends EventEmitter {
       activeCategory: idle ? 'idle' : category,
       activeDomain: domain,
       activeApp: app,
+      activeUrl: url,
       lastUpdated: Date.now()
     };
 
     if (!idle && category === 'frivolity') {
       const identifier = domain || app;
-      if (identifier && !this.paywall.hasValidPass(identifier)) {
+      // Pass URL to hasValidPass check
+      if (identifier && !this.paywall.hasValidPass(identifier, url || undefined)) {
         logger.info(`Prompting paywall for ${identifier} on ${app}`);
         this.emit('paywall-required', { domain: identifier, appName: app });
       }
@@ -140,7 +145,8 @@ export class EconomyEngine extends EventEmitter {
 
   private tickSpend() {
     const activeDomain = this.state.activeCategory === 'idle' ? null : this.state.activeDomain;
-    this.paywall.tick(SPEND_INTERVAL_SECONDS, activeDomain, this.getReminderInterval());
+    const activeUrl = this.state.activeCategory === 'idle' ? null : this.state.activeUrl;
+    this.paywall.tick(SPEND_INTERVAL_SECONDS, activeDomain, activeUrl, this.getReminderInterval());
   }
 
   private ensureRate(domain: string): MarketRate {
@@ -186,5 +192,9 @@ export class EconomyEngine extends EventEmitter {
       logger.info(`Creating ad-hoc pack for ${domain} (${minutes} minutes @ ${price} coins)`);
     }
     return this.paywall.buyPack(domain, minutes, price);
+  }
+
+  startStore(domain: string, price: number) {
+    return this.paywall.startStore(domain, price);
   }
 }

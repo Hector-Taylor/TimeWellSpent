@@ -2,7 +2,9 @@ import { useEffect, useState, useRef } from 'react';
 import Dashboard from './components/Dashboard';
 import Settings from './components/Settings';
 import EconomyTuner from './components/EconomyTuner';
+
 import PaywallOverlay from './components/PaywallOverlay';
+import Store from './components/Store';
 import type {
   CategorisationConfig,
   EconomyState,
@@ -13,7 +15,7 @@ import type {
 
 const api: RendererApi = window.twsp;
 
-type View = 'dashboard' | 'settings' | 'economy';
+type View = 'dashboard' | 'settings' | 'economy' | 'store';
 
 export default function App() {
   const [view, setView] = useState<View>('dashboard');
@@ -135,6 +137,12 @@ export default function App() {
           >
             Settings
           </button>
+          <button
+            className={view === 'store' ? 'active' : ''}
+            onClick={() => setView('store')}
+          >
+            Store
+          </button>
         </nav>
 
         <div className="wallet-summary">
@@ -167,6 +175,9 @@ export default function App() {
             categorisation={categorisation}
             onCategorisation={setCategorisation}
           />
+        )}
+        {view === 'store' && (
+          <Store api={api} />
         )}
       </main>
 

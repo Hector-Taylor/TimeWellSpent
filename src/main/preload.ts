@@ -61,6 +61,12 @@ const api: RendererApi = {
     idleThreshold: () => ipcRenderer.invoke('settings:idle-threshold'),
     updateIdleThreshold: (value) => ipcRenderer.invoke('settings:update-idle-threshold', value)
   },
+  store: {
+    list: () => ipcRenderer.invoke('store:list'),
+    add: (url, price, title) => ipcRenderer.invoke('store:add', { url, price, title }),
+    remove: (id) => ipcRenderer.invoke('store:remove', { id }),
+    findByUrl: (url) => ipcRenderer.invoke('store:find-by-url', { url })
+  },
   events: {
     on: (channel, callback) => {
       const listener = (_event: IpcRendererEvent, payload: unknown) => callback(payload);
