@@ -6,19 +6,20 @@ type ConnectionState = {
   lastSync: number;
   sessions: Record<string, {
     domain: string;
-    mode: 'metered' | 'pack';
+    mode: 'metered' | 'pack' | 'emergency';
     ratePerMin: number;
     remainingSeconds: number;
     paused?: boolean;
     purchasePrice?: number;
     purchasedSeconds?: number;
+    justification?: string;
   }>;
 };
 
 type StatusResponse = {
   balance: number;
   rate: { ratePerMin: number; packs: Array<{ minutes: number; price: number }> } | null;
-  session: { mode: 'metered' | 'pack'; remainingSeconds: number; paused?: boolean; purchasePrice?: number; purchasedSeconds?: number } | null;
+  session: { mode: 'metered' | 'pack' | 'emergency'; remainingSeconds: number; paused?: boolean; purchasePrice?: number; purchasedSeconds?: number; justification?: string } | null;
   lastSync: number;
   desktopConnected: boolean;
 };
@@ -129,6 +130,11 @@ function App() {
         </div>
       </div>
 
+      <div className="wallet-row">
+        <span>💰 Balance</span>
+        <strong>{status?.balance ?? 0} f-coins</strong>
+      </div>
+
       {activeTabDomain && (
         <div className="session-card">
           <div className="row">
@@ -139,16 +145,18 @@ function App() {
             <>
               <div className="row">
                 <span>Status</span>
-                <span>{paused ? 'Paused' : 'Spending'}</span>
+                <span>{paused ? 'Paused' : session.mode === 'emergency' ? 'Emergency' : 'Spending'}</span>
               </div>
               <div className="row">
                 <span>Remaining</span>
-                <span>{session.mode === 'metered' ? 'Metered' : formatMinutes(remaining)}</span>
+                <span>{session.mode === 'metered' || session.mode === 'emergency' ? '∞' : formatMinutes(remaining)}</span>
               </div>
               <small className="note">
                 {session.mode === 'metered'
                   ? 'Ending stops spend immediately and re-blocks this tab.'
-                  : `Ending early refunds unused time${refundEstimate ? ` (~${refundEstimate} coins)` : ''}.`}
+                  : session.mode === 'emergency'
+                    ? `Free access — ${session.justification || 'emergency override'}`
+                    : `Ending early refunds unused time${refundEstimate ? ` (~${refundEstimate} coins)` : ''}.`}
               </small>
               <div className="button-stack">
                 <button className="danger" disabled={working} onClick={endSession}>

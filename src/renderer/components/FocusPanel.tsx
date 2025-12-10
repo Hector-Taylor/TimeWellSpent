@@ -145,7 +145,7 @@ export default function FocusPanel({ api, wallet, onWallet, economy, onEconomy }
             <h2>Neutral clock-in</h2>
             <p className="subtle">Earn on neutral tools when you intentionally clock in.</p>
             <button className={neutralClockedIn ? 'primary' : ''} onClick={toggleNeutralClock}>
-              {neutralClockedIn ? 'Clock out' : 'Clock in' }
+              {neutralClockedIn ? 'Clock out' : 'Clock in'}
             </button>
           </div>
           <div className="card">
@@ -157,7 +157,7 @@ export default function FocusPanel({ api, wallet, onWallet, economy, onEconomy }
               </li>
               <li>
                 <span>Reward per focus hour</span>
-                <span>~{Math.round((60 / selectedMinutes) * 50)} coins</span>
+                <span>~{Math.round((60 / selectedMinutes) * 50)} f-coins</span>
               </li>
               <li>
                 <span>Wallet balance</span>

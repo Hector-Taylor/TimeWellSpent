@@ -27,7 +27,8 @@ const api: RendererApi = {
   },
   market: {
     list: () => ipcRenderer.invoke('market:list'),
-    upsert: (rate) => ipcRenderer.invoke('market:update', rate)
+    upsert: (rate) => ipcRenderer.invoke('market:update', rate),
+    delete: (domain) => ipcRenderer.invoke('market:delete', { domain })
   },
   intentions: {
     list: (date) => ipcRenderer.invoke('intentions:list', { date }),

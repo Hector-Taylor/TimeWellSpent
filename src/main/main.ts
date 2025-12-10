@@ -148,16 +148,6 @@ async function bootstrap() {
     }
   });
 
-  // Listen for wallet updates to update tray (if no active session)
-  backend.wallet.on('balance-changed', (balance) => {
-    // Only show balance if we aren't showing a session timer
-    // We can check if there are active sessions, but for now let's prioritize session time
-    // If we just received a balance update, it might be from earning/spending.
-    // Let's rely on the fact that session-tick fires frequently.
-    // But if we are IDLE, we want to show balance.
-    // Ideally we track state.
-  });
-
   const updateTray = (label: string) => {
     if (tray) {
       if (isMac) {
@@ -167,6 +157,18 @@ async function bootstrap() {
       }
     }
   };
+
+  // Listen for wallet updates to update tray (if no active session)
+  backend.wallet.on('balance-changed', (balance) => {
+    // Only show balance if we aren't showing a session timer
+    const sessions = backend.paywall.listSessions();
+    const hasActiveSessions = sessions.some(s => !s.paused);
+    if (!backend.focus.getCurrent() && !hasActiveSessions) {
+      updateTray(`💰 ${balance}`);
+    }
+    buildTrayMenu();
+  });
+
 
   // Initialize Tray
   // On macOS, we use a template image (monochrome icon) + text
@@ -229,10 +231,10 @@ async function bootstrap() {
     const contextMenu = Menu.buildFromTemplate([
       { label: `Wallet: ${walletBalance} coins`, enabled: false },
       { label: focusLabel, enabled: false },
-      ...(sessionItems.length ? [{ type: 'separator' }, ...sessionItems] : []),
-      { type: 'separator' },
+      ...(sessionItems.length ? [{ type: 'separator' as const }, ...sessionItems] : []),
+      { type: 'separator' as const },
       { label: 'Show App', click: () => mainWindow?.show() },
-      { type: 'separator' },
+      { type: 'separator' as const },
       { label: 'Quit', click: () => app.quit() }
     ]);
     tray?.setContextMenu(contextMenu);

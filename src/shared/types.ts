@@ -136,6 +136,7 @@ export type RendererApi = {
   market: {
     list(): Promise<MarketRate[]>;
     upsert(rate: MarketRate): Promise<void>;
+    delete(domain: string): Promise<void>;
   };
   intentions: {
     list(date: string): Promise<Intention[]>;

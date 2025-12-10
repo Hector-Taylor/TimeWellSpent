@@ -25,7 +25,8 @@ const api = {
   },
   market: {
     list: () => electron.ipcRenderer.invoke("market:list"),
-    upsert: (rate) => electron.ipcRenderer.invoke("market:update", rate)
+    upsert: (rate) => electron.ipcRenderer.invoke("market:update", rate),
+    delete: (domain) => electron.ipcRenderer.invoke("market:delete", { domain })
   },
   intentions: {
     list: (date) => electron.ipcRenderer.invoke("intentions:list", { date }),

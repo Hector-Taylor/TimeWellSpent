@@ -115,8 +115,8 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
             <h2>{state.domain}</h2>
             <p className="subtle">
               {blocked
-                ? 'TimeWellSpent closed this tab — unlock access by paying for screen time.'
-                : 'Stay intentional: spend f-coins to access this site.'}
+                ? 'Access blocked — unlock by spending f-coins.'
+                : 'Spend f-coins to access this site.'}
             </p>
           </div>
           <button className="close-button" onClick={onClose} aria-label="Close paywall">
@@ -125,10 +125,9 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
         </header>
         <div className="wallet-inline">
           <span>Balance</span>
-          <strong>{wallet.balance} coins</strong>
+          <strong>{wallet.balance} f-coins</strong>
         </div>
-        {error && <p className="warning" style={{ color: 'var(--danger)' }}>{error}</p>}
-        {blocked && !error && <p className="warning">Pay-as-you-go or grab a pack to re-open the site.</p>}
+        {blocked && !error && <p className="warning">Start a metered session or buy a time pack to access this site.</p>}
         {insufficient && !error && (
           <p className="warning">Session paused — add more coins or choose a smaller pack.</p>
         )}
@@ -148,9 +147,9 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
                 />
               </svg>
               <div className="budget-figures">
-                <strong>{sliderPrice} coins</strong>
-                <span>{selectedMinutes} minute unlock</span>
-                <small className="subtle">{walletSharePct.toFixed(0)}% of spendable</small>
+                <strong>{sliderPrice} f-coins</strong>
+                <span>{selectedMinutes} minute session</span>
+                <small className="subtle">{walletSharePct.toFixed(0)}% of balance</small>
               </div>
             </div>
             <div className="impact-bars">
@@ -159,7 +158,7 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
                 <div className="impact-meter">
                   <span style={{ width: `${walletSharePct}%` }} />
                 </div>
-                <small className="subtle">Leaves {coinsLeft} coins</small>
+                <small className="subtle">Leaves {coinsLeft} f-coins</small>
               </div>
               <div>
                 <div className="impact-label">Day share</div>
@@ -171,8 +170,8 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
             </div>
           </div>
           <div className="budget-controls">
-            <div className="eyebrow">Shape your session</div>
-            <p className="subtle">Use the slider to choreograph how much time (and money) you want to burn on this domain.</p>
+            <div className="eyebrow">Session length</div>
+            <p className="subtle">Choose how long you want to access this site.</p>
             <input
               id="focus-budget"
               type="range"
@@ -200,10 +199,10 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
               ))}
             </div>
             <button className="primary" disabled={loading || !sliderAffordable} onClick={() => buyPack(selectedMinutes)}>
-              Unlock {selectedMinutes} min for {sliderPrice} coins
+              Unlock for {sliderPrice} f-coins
             </button>
             {!sliderAffordable && (
-              <p className="warning subtle">You need {sliderPrice - wallet.balance} more coins for this burst.</p>
+              <p className="warning subtle">Need {sliderPrice - wallet.balance} more f-coins.</p>
             )}
           </div>
         </section>
@@ -212,13 +211,13 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
           <div className="option-grid">
             <button className="option-card" disabled={loading} onClick={startMetered}>
               <div>
-                <strong>Fluid meter</strong>
-                <p className="subtle">Only pay while you scroll — perfect for quick peeks.</p>
+                <strong>Pay as you go</strong>
+                <p className="subtle">Only pay while the tab is active.</p>
               </div>
               <div className="option-meter">
                 <span style={{ width: `${meteredPreviewPercent * 100}%` }} />
               </div>
-              <small className="chip">{baseRate} coins / min</small>
+              <small className="chip">{baseRate} f-coins/min</small>
             </button>
             {rate?.packs.map((pack) => {
               const percent = wallet.balance > 0 ? Math.min(1, pack.price / wallet.balance) : 1;
@@ -230,13 +229,13 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
                   onClick={() => buyPack(pack.minutes)}
                 >
                   <div>
-                    <strong>{pack.minutes} minute ritual</strong>
-                    <p className="subtle">Set it and forget it — pause anytime.</p>
+                    <strong>{pack.minutes} minute session</strong>
+                    <p className="subtle">Fixed time — pause anytime.</p>
                   </div>
                   <div className="option-meter">
                     <span style={{ width: `${percent * 100}%` }} />
                   </div>
-                  <small className="chip">{pack.price} coins</small>
+                  <small className="chip">{pack.price} f-coins</small>
                 </button>
               );
             })}

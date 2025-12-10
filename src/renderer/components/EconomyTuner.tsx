@@ -23,6 +23,9 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
 
     const [isAdding, setIsAdding] = useState(false);
     const [newDomain, setNewDomain] = useState('');
+    const [newPackMinutes, setNewPackMinutes] = useState(10);
+    const [newPackPrice, setNewPackPrice] = useState(8);
+    const [isAddingPack, setIsAddingPack] = useState(false);
 
     useEffect(() => {
         loadData();
@@ -162,7 +165,7 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
         const domain = newDomain.trim();
         // Check if already exists
         if (items.find(i => i.id === domain)) {
-            alert('Profile already exists');
+            setError('Profile already exists');
             return;
         }
 
@@ -192,7 +195,7 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
         const maxMod = Math.max(...modifiers);
         const minMod = Math.min(...modifiers);
         return [
-            { label: 'Base rate', value: `${selectedItem.rate.ratePerMin} c/m` },
+            { label: 'Base rate', value: `${selectedItem.rate.ratePerMin} f-coins/min` },
             { label: 'Peak multiplier', value: `${maxMod.toFixed(1)}x` },
             { label: 'Off-peak', value: `${minMod.toFixed(1)}x` }
         ];
@@ -256,7 +259,7 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
                             onClick={() => setSelectedId(item.id)}
                         >
                             <div className="tuner-list-title">{item.id}</div>
-                            <div className="tuner-list-sub">{item.rate.ratePerMin} coins/min • {item.type}</div>
+                            <div className="tuner-list-sub">{item.rate.ratePerMin} f-coins/min • {item.type}</div>
                         </button>
                     ))}
                     {filteredItems.length === 0 && (
@@ -275,6 +278,19 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
                                     </div>
                                     <button className="primary" onClick={save} disabled={saving || locked}>
                                         {locked ? 'Locked by active session' : saving ? 'Saving...' : 'Save changes'}
+                                    </button>
+                                    <button
+                                        className="ghost danger"
+                                        disabled={locked}
+                                        onClick={async () => {
+                                            if (!selectedItem) return;
+                                            if (!confirm(`Delete profile for ${selectedItem.id}?`)) return;
+                                            await api.market.delete(selectedItem.id);
+                                            await loadData();
+                                            setSelectedId(null);
+                                        }}
+                                    >
+                                        Delete
                                     </button>
                                 </div>
                                 {locked && (
@@ -306,10 +322,12 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
                                         value={selectedItem.rate.ratePerMin}
                                         onChange={(e) => handleRateChange(Number(e.target.value))}
                                         step="0.1"
+                                        min="0.1"
+                                        max="100"
                                         disabled={locked}
                                     />
                                     <p className="subtle">
-                                        {selectedItem.type === 'productive' ? 'Income earned per minute.' : 'Cost per minute if metered.'}
+                                        {selectedItem.type === 'productive' ? 'f-coins earned per minute.' : 'f-coins spent per minute when metered.'}
                                     </p>
                                 </div>
 
@@ -346,15 +364,69 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
                                                 : 'No packs defined — consider adding 10/30/60 minute options.'}
                                         </p>
                                     )}
-                                    {selectedItem.rate.packs.map((pack) => (
+                                    {selectedItem.rate.packs.map((pack, idx) => (
                                         <div key={pack.minutes} className="pack-card">
                                             <div>
-                                                <strong>{pack.minutes} minute burst</strong>
-                                                <p className="subtle">{pack.price} coins • {((pack.price / pack.minutes) * 60).toFixed(1)} c/hour</p>
+                                                <strong>{pack.minutes} minute session</strong>
+                                                <p className="subtle">{pack.price} f-coins • {((pack.price / pack.minutes) * 60).toFixed(1)} f-coins/hour</p>
                                             </div>
-                                            <button className="ghost">Preview</button>
+                                            <button
+                                                className="ghost danger"
+                                                disabled={locked}
+                                                onClick={() => {
+                                                    const newPacks = [...selectedItem.rate.packs];
+                                                    newPacks.splice(idx, 1);
+                                                    updateItemRate(selectedItem.id, { ...selectedItem.rate, packs: newPacks });
+                                                }}
+                                            >
+                                                Remove
+                                            </button>
                                         </div>
                                     ))}
+                                    {!isEarnProfile && (
+                                        <div style={{ marginTop: '8px' }}>
+                                            {isAddingPack ? (
+                                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                                    <input
+                                                        type="number"
+                                                        placeholder="Minutes"
+                                                        value={newPackMinutes}
+                                                        onChange={(e) => setNewPackMinutes(Number(e.target.value))}
+                                                        min="5"
+                                                        max="120"
+                                                        style={{ width: '80px' }}
+                                                    />
+                                                    <input
+                                                        type="number"
+                                                        placeholder="Price"
+                                                        value={newPackPrice}
+                                                        onChange={(e) => setNewPackPrice(Number(e.target.value))}
+                                                        min="1"
+                                                        max="500"
+                                                        style={{ width: '80px' }}
+                                                    />
+                                                    <button
+                                                        className="primary"
+                                                        disabled={locked}
+                                                        onClick={() => {
+                                                            const newPacks = [...selectedItem.rate.packs, { minutes: newPackMinutes, price: newPackPrice }];
+                                                            updateItemRate(selectedItem.id, { ...selectedItem.rate, packs: newPacks });
+                                                            setIsAddingPack(false);
+                                                            setNewPackMinutes(10);
+                                                            setNewPackPrice(8);
+                                                        }}
+                                                    >
+                                                        Add
+                                                    </button>
+                                                    <button className="ghost" onClick={() => setIsAddingPack(false)}>Cancel</button>
+                                                </div>
+                                            ) : (
+                                                <button className="ghost" disabled={locked} onClick={() => setIsAddingPack(true)}>
+                                                    + Add pack
+                                                </button>
+                                            )}
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </div>

@@ -53,6 +53,15 @@ export function createIpc(context: IpcContext) {
     return result;
   });
 
+  ipcMain.handle('market:delete', async (_event, payload: { domain: string }) => {
+    const session = backend.paywall.getSession(payload.domain);
+    if (session) {
+      throw new Error(`Cannot delete profile for ${payload.domain} while a session is active.`);
+    }
+    backend.market.deleteRate(payload.domain);
+    BrowserWindow.getAllWindows().forEach((win) => win.webContents.send('market:update', {}));
+  });
+
   ipcMain.handle('intentions:list', async (_event, payload: { date: string }) => backend.intentions.list(payload.date));
   ipcMain.handle('intentions:add', async (_event, payload: { date: string; text: string }) => backend.intentions.add(payload));
   ipcMain.handle('intentions:toggle', async (_event, payload: { id: number; completed: boolean }) => {

@@ -107,7 +107,7 @@ export default function App() {
           <span>TimeWellSpent</span>
         </div>
         <div className="window-chrome-meta">
-          <span className="pill ghost big">Wallet {wallet?.balance ?? 0}c</span>
+          <span className="pill ghost big">{wallet?.balance ?? 0} f-coins</span>
         </div>
       </div>
       <aside className="sidebar">

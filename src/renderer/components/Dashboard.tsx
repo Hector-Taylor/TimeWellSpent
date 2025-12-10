@@ -35,7 +35,7 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
     setActivities(recent);
     setSummary(aggregate);
     setLoadingSummary(false);
-    api.paywall.sessions().then(setPaywallSessions).catch(() => {});
+    api.paywall.sessions().then(setPaywallSessions).catch(() => { });
   }, [api]);
 
   useEffect(() => {
@@ -65,7 +65,7 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
     try {
       await api.paywall.end(session.domain, { refundUnused: true });
       setPaywallNote(session.mode === 'pack' ? `Ended ${session.domain} • refund applied for unused time.` : `Ended ${session.domain}.`);
-      api.paywall.sessions().then(setPaywallSessions).catch(() => {});
+      api.paywall.sessions().then(setPaywallSessions).catch(() => { });
     } catch (error) {
       setPaywallNote(`Could not end ${session.domain}: ${(error as Error).message}`);
     } finally {
@@ -73,7 +73,7 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
     }
   };
 
-  const activeLabel = economy?.activeDomain ?? economy?.activeApp ?? 'Radar is idle';
+  const activeLabel = economy?.activeDomain ?? economy?.activeApp ?? 'Waiting...';
   const activeCategory = (economy?.activeCategory ?? 'idle') as string;
   const totalHours = useMemo(() => Math.max(0, Math.round(((summary?.totalSeconds ?? 0) / 3600) * 10) / 10), [summary]);
   const topContexts = summary?.topContexts ?? [];
@@ -91,7 +91,7 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
           <h1>Your day at a glance</h1>
           <div className="pill-row pill-row-tight">
             <span className="pill">Now: {activeLabel}</span>
-            <span className="pill ghost">Wallet {wallet.balance}c</span>
+            <span className="pill ghost">Wallet {wallet.balance} f-coins</span>
             <span className="pill soft">{summary ? `${summary.windowHours}h sweep` : 'loading window...'}</span>
           </div>
         </div>
@@ -134,12 +134,12 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
               <p className="subtle">Foreground</p>
               <strong className="big">{activeLabel}</strong>
               <span className={`category-chip category-${activeCategory}`}>{activeCategory}</span>
-              <p className="subtle">Streamed from desktop and the extension with idle detection.</p>
+              <p className="subtle">Tracking your focused time throughout the day.</p>
             </div>
             <div className="now-stats">
               <div>
                 <span className="label">Wallet</span>
-                <strong>{wallet.balance} coins</strong>
+                <strong>{wallet.balance} f-coins</strong>
               </div>
               <div>
                 <span className="label">Samples</span>
@@ -182,7 +182,7 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
                     {endingDomain === session.domain ? 'Ending…' : 'End session'}
                   </button>
                   {session.mode === 'pack' && estimateRefund(session) > 0 && (
-                    <span className="subtle">~{estimateRefund(session)} coin refund</span>
+                    <span className="subtle">~{estimateRefund(session)} f-coin refund</span>
                   )}
                 </div>
               </li>
@@ -277,7 +277,7 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
               <li key={rate.domain}>
                 <div>
                   <strong>{rate.domain}</strong>
-                  <span className="subtle">{rate.ratePerMin} coin/min</span>
+                  <span className="subtle">{rate.ratePerMin} f-coins/min</span>
                 </div>
                 <div className="subtle">
                   Packs: {rate.packs.map((pack) => `${pack.minutes}m/${pack.price}`).join(' • ')}

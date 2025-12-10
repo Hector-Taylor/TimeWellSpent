@@ -300,7 +300,7 @@ export async function createBackend(database: Database): Promise<BackendServices
     }
   });
 
-  ws.app.ws('/events', (socket) => {
+  ws.app.ws('/events', (socket: WebSocket) => {
     clients.add(socket);
     lastExtensionSeen = Date.now();
     extensionEvents.emit('status', { connected: true, lastSeen: lastExtensionSeen });
@@ -389,10 +389,6 @@ export async function createBackend(database: Database): Promise<BackendServices
   focus.on('tick', (payload) => broadcast({ type: 'focus-tick', payload }));
   focus.on('start', (payload) => broadcast({ type: 'focus-start', payload }));
   focus.on('stop', (payload) => broadcast({ type: 'focus-stop', payload }));
-  // economy.on('session-reminder', (payload) => broadcast({ type: 'paywall-reminder', payload })); 
-  // Note: I need to add this event listener to economy.ts or server.ts. 
-  // Wait, economy.ts doesn't emit 'session-reminder' yet, paywall.ts does. 
-  // I need to wire that up.
 
   const handleActivity = (event: ActivityEvent & { idleSeconds?: number }, origin: ActivityOrigin = 'system') => {
     activityPipeline.handle(event, origin);

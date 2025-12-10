@@ -116,3 +116,19 @@ small.note {
 small {
   color: #a7b6d8;
 }
+
+.wallet-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(124, 244, 212, 0.08);
+  border: 1px solid rgba(124, 244, 212, 0.15);
+  font-size: 14px;
+}
+
+.wallet-row strong {
+  color: #7cf4d4;
+  font-size: 16px;
+}

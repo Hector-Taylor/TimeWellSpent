@@ -7,6 +7,7 @@ export interface MarketRate {
     domain: string;
     ratePerMin: number;
     packs: Array<{ minutes: number; price: number }>;
+    hourlyModifiers?: number[];
 }
 
 export interface PaywallSession {
@@ -15,6 +16,7 @@ export interface PaywallSession {
     ratePerMin: number;
     remainingSeconds: number;
     startedAt: number;
+    lastTick?: number;
     paused?: boolean;
     purchasePrice?: number;
     purchasedSeconds?: number;
@@ -51,7 +53,8 @@ const DEFAULT_STATE: ExtensionState = {
             packs: [
                 { minutes: 10, price: 25 },
                 { minutes: 30, price: 60 }
-            ]
+            ],
+            hourlyModifiers: Array(24).fill(1)
         },
         'x.com': {
             domain: 'x.com',
@@ -59,7 +62,8 @@ const DEFAULT_STATE: ExtensionState = {
             packs: [
                 { minutes: 10, price: 25 },
                 { minutes: 30, price: 60 }
-            ]
+            ],
+            hourlyModifiers: Array(24).fill(1)
         },
         'reddit.com': {
             domain: 'reddit.com',
@@ -67,7 +71,8 @@ const DEFAULT_STATE: ExtensionState = {
             packs: [
                 { minutes: 10, price: 18 },
                 { minutes: 30, price: 50 }
-            ]
+            ],
+            hourlyModifiers: Array(24).fill(1)
         },
         'youtube.com': {
             domain: 'youtube.com',
@@ -75,7 +80,8 @@ const DEFAULT_STATE: ExtensionState = {
             packs: [
                 { minutes: 10, price: 23 },
                 { minutes: 30, price: 65 }
-            ]
+            ],
+            hourlyModifiers: Array(24).fill(1)
         }
     },
     settings: {

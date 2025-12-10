@@ -30,6 +30,7 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
   const [isProcessing, setIsProcessing] = useState(false);
   const [showEmergencyForm, setShowEmergencyForm] = useState(false);
   const [justification, setJustification] = useState('');
+  const [error, setError] = useState<string | null>(null);
 
   // Fallback rate if none is provided (e.g. 1 coin/min)
   const ratePerMin = status.rate?.ratePerMin ?? status.session?.ratePerMin ?? 1;
@@ -75,6 +76,7 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
   const handleBuyPack = async () => {
     if (isProcessing) return;
     setIsProcessing(true);
+    setError(null);
     try {
       const result = await chrome.runtime.sendMessage({
         type: 'BUY_PACK',
@@ -84,11 +86,11 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
         cleanup();
         onClose();
       } else {
-        alert(`Failed to purchase: ${result.error}`);
+        setError(`Failed to purchase: ${result.error}`);
       }
     } catch (e) {
       console.error(e);
-      alert('Failed to communicate with extension');
+      setError('Failed to communicate with extension');
     } finally {
       setIsProcessing(false);
     }
@@ -97,6 +99,7 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
   const handleStartMetered = async () => {
     if (isProcessing) return;
     setIsProcessing(true);
+    setError(null);
     try {
       const result = await chrome.runtime.sendMessage({
         type: 'START_METERED',
@@ -106,11 +109,11 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
         cleanup();
         onClose();
       } else {
-        alert(`Failed to start metered session: ${result.error}`);
+        setError(`Failed to start metered session: ${result.error}`);
       }
     } catch (e) {
       console.error(e);
-      alert('Failed to communicate with extension');
+      setError('Failed to communicate with extension');
     } finally {
       setIsProcessing(false);
     }
@@ -119,6 +122,7 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
   const handleStartEmergency = async () => {
     if (isProcessing || !justification.trim()) return;
     setIsProcessing(true);
+    setError(null);
     try {
       const result = await chrome.runtime.sendMessage({
         type: 'START_EMERGENCY',
@@ -128,11 +132,11 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
         cleanup();
         onClose();
       } else {
-        alert(`Failed: ${result.error}`);
+        setError(`Failed: ${result.error}`);
       }
     } catch (e) {
       console.error(e);
-      alert('Failed to communicate with extension');
+      setError('Failed to communicate with extension');
     } finally {
       setIsProcessing(false);
     }
@@ -150,7 +154,7 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
         : 'Metered: paying as you scroll'
     : reason === 'insufficient-funds'
       ? 'Top up to keep browsing'
-      : 'Pay with f-coins to continue';
+      : 'Spend f-coins to continue';
 
   if (showEmergencyForm) {
     return (
@@ -206,11 +210,12 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
           </div>
           <div className="tws-wallet-badge">
             <span>Balance</span>
-            <strong>{status.balance} coins</strong>
+            <strong>{status.balance} f-coins</strong>
           </div>
         </header>
 
         <div className="tws-paywall-body">
+          {error && <p className="tws-error-text" style={{ marginBottom: '12px' }}>{error}</p>}
           {/* Option 1: Pay As You Go */}
           <section className="tws-paywall-option">
             <div className="tws-option-header">
@@ -220,7 +225,7 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
             <div className="tws-option-action">
               <div className="tws-price-tag">
                 <strong>{formatCoins(ratePerMin)}</strong>
-                <small>coins / min</small>
+                <small>f-coins / min</small>
               </div>
               <button
                 className="tws-secondary"
@@ -249,7 +254,7 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
                 <span className="tws-subtle-info">
                   {Math.round((selectedMinutes / (16 * 60)) * 100)}% of your day
                 </span>
-                <strong>{sliderPrice} coins</strong>
+                <strong>{sliderPrice} f-coins</strong>
               </div>
               <input
                 type="range"
@@ -271,10 +276,10 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
                 onClick={handleBuyPack}
                 disabled={!sliderAffordable || isProcessing}
               >
-                Unlock for {sliderPrice} coins
+                Unlock for {sliderPrice} f-coins
               </button>
               {!sliderAffordable && (
-                <p className="tws-error-text">Need {sliderPrice - status.balance} more coins</p>
+                <p className="tws-error-text">Need {sliderPrice - status.balance} more f-coins</p>
               )}
             </div>
           </section>

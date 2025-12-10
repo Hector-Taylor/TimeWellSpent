@@ -52,6 +52,11 @@ export class MarketService extends EventEmitter {
     this.emit('update', rate);
   }
 
+  deleteRate(domain: string) {
+    this.db.prepare('DELETE FROM market_rates WHERE domain = ?').run(domain);
+    this.emit('update', { domain, deleted: true });
+  }
+
   getRate(domain: string): MarketRate | null {
     const aliasMap: Record<string, string> = { 'x.com': 'twitter.com' };
     const lookup = domain in aliasMap ? aliasMap[domain] : domain;

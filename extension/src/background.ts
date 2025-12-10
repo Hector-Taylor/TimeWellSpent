@@ -218,10 +218,12 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
         if (isFrivolous) {
             const session = await storage.getSession(domain);
 
-            if (session && (session.mode === 'metered' || session.remainingSeconds > 0)) {
-                // Has valid session - allow
-                // console.log(`✅ ${domain} - allowed (active session)`);
-                return;
+            if (session && !session.paused) {
+                // Has valid active session - allow
+                // Metered and emergency modes have infinite remaining time
+                if (session.mode === 'metered' || session.mode === 'emergency' || session.remainingSeconds > 0) {
+                    return;
+                }
             }
 
             // No session - BLOCK!
@@ -249,6 +251,8 @@ function startSessionTicker() {
 }
 
 async function tickSessions() {
+    const now = Date.now();
+
     // If connected to desktop, let it handle the economy/spending.
     // We just sync the state via events.
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -304,17 +308,20 @@ async function tickSessions() {
     } else if (session.mode === 'metered') {
         // Pay-as-you-go: deduct coins using the latest rate
         const currentRate = (await storage.getMarketRate(activeDomain))?.ratePerMin ?? session.ratePerMin;
-        // Carry forward fractional coins so we don't over-charge on each 15s tick
-        const accrued = (currentRate / 60) * 15 + (session.spendRemainder ?? 0);
+        // Calculate actual elapsed seconds since last tick
+        const lastTick = session.lastTick ?? session.startedAt;
+        const elapsedSeconds = Math.max(0, Math.round((now - lastTick) / 1000));
+        // Carry forward fractional coins so we don't over-charge
+        const accrued = (currentRate / 60) * elapsedSeconds + (session.spendRemainder ?? 0);
         const cost = Math.floor(accrued); // whole coins to spend this tick
         const remainder = accrued - cost;
         try {
             if (cost > 0) {
                 await storage.spendCoins(cost);
-                // console.log(`💰 Spent ${cost} coins on ${activeDomain}`);
             }
             session.ratePerMin = currentRate;
             session.spendRemainder = remainder;
+            session.lastTick = now;
             await storage.setSession(activeDomain, session);
         } catch (e) {
             // Insufficient funds - clear session and block
@@ -325,8 +332,11 @@ async function tickSessions() {
             }
         }
     } else {
-        // Pack mode: countdown time
-        session.remainingSeconds -= 15;
+        // Pack mode: countdown time using actual elapsed time
+        const lastTick = session.lastTick ?? session.startedAt;
+        const elapsedSeconds = Math.max(0, Math.round((now - lastTick) / 1000));
+        session.remainingSeconds -= elapsedSeconds;
+        session.lastTick = now;
         if (session.remainingSeconds <= 0) {
             console.log(`⏰ Time's up for ${activeDomain}`);
             await storage.clearSession(activeDomain);
