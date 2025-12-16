@@ -49,6 +49,15 @@ export class SettingsService {
     this.setJson('idleThreshold', value);
   }
 
+  getFrivolousIdleThreshold(): number {
+    const val = this.getJson<number>('frivolousIdleThreshold');
+    return typeof val === 'number' ? val : DEFAULT_IDLE_THRESHOLD_SECONDS;
+  }
+
+  setFrivolousIdleThreshold(value: number) {
+    this.setJson('frivolousIdleThreshold', value);
+  }
+
   getEmergencyReminderInterval(): number {
     const val = this.getJson<number>('emergencyReminderInterval');
     return typeof val === 'number' ? val : 300; // Default 5 minutes

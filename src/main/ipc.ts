@@ -109,6 +109,8 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('settings:update-categorisation', (_event, payload) => backend.settings.setCategorisation(payload));
   ipcMain.handle('settings:idle-threshold', () => backend.settings.getIdleThreshold());
   ipcMain.handle('settings:update-idle-threshold', (_event, value: number) => backend.settings.setIdleThreshold(value));
+  ipcMain.handle('settings:frivolous-idle-threshold', () => backend.settings.getFrivolousIdleThreshold());
+  ipcMain.handle('settings:update-frivolous-idle-threshold', (_event, value: number) => backend.settings.setFrivolousIdleThreshold(value));
 
   // Store handlers
   ipcMain.handle('store:list', () => backend.store.list());

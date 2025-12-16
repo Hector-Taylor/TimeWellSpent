@@ -179,6 +179,8 @@ export type RendererApi = {
     updateCategorisation(value: CategorisationConfig): Promise<void>;
     idleThreshold(): Promise<number>;
     updateIdleThreshold(value: number): Promise<void>;
+    frivolousIdleThreshold(): Promise<number>;
+    updateFrivolousIdleThreshold(value: number): Promise<void>;
   };
   store: {
     list(): Promise<StoreItem[]>;

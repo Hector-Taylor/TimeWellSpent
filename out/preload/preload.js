@@ -57,7 +57,9 @@ const api = {
     categorisation: () => electron.ipcRenderer.invoke("settings:categorisation"),
     updateCategorisation: (value) => electron.ipcRenderer.invoke("settings:update-categorisation", value),
     idleThreshold: () => electron.ipcRenderer.invoke("settings:idle-threshold"),
-    updateIdleThreshold: (value) => electron.ipcRenderer.invoke("settings:update-idle-threshold", value)
+    updateIdleThreshold: (value) => electron.ipcRenderer.invoke("settings:update-idle-threshold", value),
+    frivolousIdleThreshold: () => electron.ipcRenderer.invoke("settings:frivolous-idle-threshold"),
+    updateFrivolousIdleThreshold: (value) => electron.ipcRenderer.invoke("settings:update-frivolous-idle-threshold", value)
   },
   store: {
     list: () => electron.ipcRenderer.invoke("store:list"),

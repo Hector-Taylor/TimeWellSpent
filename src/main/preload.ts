@@ -59,7 +59,9 @@ const api: RendererApi = {
     categorisation: () => ipcRenderer.invoke('settings:categorisation'),
     updateCategorisation: (value) => ipcRenderer.invoke('settings:update-categorisation', value),
     idleThreshold: () => ipcRenderer.invoke('settings:idle-threshold'),
-    updateIdleThreshold: (value) => ipcRenderer.invoke('settings:update-idle-threshold', value)
+    updateIdleThreshold: (value) => ipcRenderer.invoke('settings:update-idle-threshold', value),
+    frivolousIdleThreshold: () => ipcRenderer.invoke('settings:frivolous-idle-threshold'),
+    updateFrivolousIdleThreshold: (value) => ipcRenderer.invoke('settings:update-frivolous-idle-threshold', value)
   },
   store: {
     list: () => ipcRenderer.invoke('store:list'),

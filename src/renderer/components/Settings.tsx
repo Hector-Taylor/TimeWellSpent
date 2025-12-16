@@ -17,6 +17,7 @@ export default function Settings({ api, categorisation, onCategorisation }: Sett
   const [frivolityText, setFrivolityText] = useState('');
 
   const [idleThreshold, setIdleThreshold] = useState(15);
+  const [frivolousIdleThreshold, setFrivolousIdleThreshold] = useState(15);
 
   useEffect(() => {
     if (categorisation) {
@@ -25,7 +26,8 @@ export default function Settings({ api, categorisation, onCategorisation }: Sett
       setFrivolityText(categorisation.frivolity.join('\n'));
     }
     api.settings.idleThreshold().then(setIdleThreshold);
-  }, [categorisation]);
+    api.settings.frivolousIdleThreshold().then(setFrivolousIdleThreshold);
+  }, [categorisation, api.settings]);
 
   if (!categorisation) {
     return (
@@ -52,6 +54,7 @@ export default function Settings({ api, categorisation, onCategorisation }: Sett
 
     await api.settings.updateCategorisation(newConfig);
     await api.settings.updateIdleThreshold(idleThreshold);
+    await api.settings.updateFrivolousIdleThreshold(frivolousIdleThreshold);
     onCategorisation(newConfig);
     setSaving(false);
     setSaved(true);
@@ -78,6 +81,17 @@ export default function Settings({ api, categorisation, onCategorisation }: Sett
             onChange={(e) => setIdleThreshold(Number(e.target.value))}
           />
           <p className="subtle">Time before activity is considered idle.</p>
+        </label>
+        <label>
+          Frivolous Idle Threshold (seconds)
+          <input
+            type="number"
+            min="5"
+            max="300"
+            value={frivolousIdleThreshold}
+            onChange={(e) => setFrivolousIdleThreshold(Number(e.target.value))}
+          />
+          <p className="subtle">Lower this to treat paused/buffering on frivolous apps (e.g. YouTube) as idle sooner.</p>
         </label>
         <label>
           Productive identifiers

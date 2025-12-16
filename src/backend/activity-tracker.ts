@@ -50,7 +50,7 @@ export class ActivityTracker {
       'SELECT id, started_at as startedAt, ended_at as endedAt, source, app_name as appName, bundle_id as bundleId, window_title as windowTitle, url, domain, category, seconds_active as secondsActive, idle_seconds as idleSeconds FROM activities ORDER BY started_at DESC LIMIT ?'
     );
     this.summaryStmt = this.db.prepare(
-      'SELECT started_at as startedAt, source, app_name as appName, domain, category, seconds_active as secondsActive, idle_seconds as idleSeconds FROM activities WHERE started_at >= datetime(\'now\', ?) ORDER BY started_at DESC'
+      'SELECT started_at as startedAt, source, app_name as appName, domain, category, seconds_active as secondsActive, idle_seconds as idleSeconds FROM activities WHERE started_at >= ? ORDER BY started_at DESC'
     );
   }
 
@@ -67,8 +67,20 @@ export class ActivityTracker {
       return;
     }
 
-    const idle = Math.max(0, Math.round(event.idleSeconds ?? 0));
-    const active = Math.max(0, Math.round(deltaMs / 1000) - idle);
+    const deltaSeconds = Math.max(0, Math.round(deltaMs / 1000));
+    const idle = Math.min(deltaSeconds, Math.max(0, Math.round(event.idleSeconds ?? 0)));
+
+    // Large gaps are usually sleep/lock transitions; treat them as idle and
+    // start a fresh record so we don't backfill huge "active" chunks.
+    const MAX_GAP_SECONDS = 120;
+    if (deltaSeconds > MAX_GAP_SECONDS) {
+      this.closeStmt.run(new Date(this.current.lastTimestamp).toISOString(), this.current.id);
+      this.current = null;
+      this.rotateCurrent(event, ts);
+      return;
+    }
+
+    const active = Math.max(0, deltaSeconds - idle);
     this.updateStmt.run(new Date(ts).toISOString(), active, idle, this.current.id);
     this.current.lastTimestamp = ts;
   }
@@ -118,7 +130,10 @@ export class ActivityTracker {
 
   getSummary(windowHours = 24): ActivitySummary {
     const rangeHours = Math.min(Math.max(windowHours, 1), 168); // clamp between 1h and 7d
-    const rows = this.summaryStmt.all(`-${rangeHours} hours`) as Array<{
+    const now = Date.now();
+    const hourMs = 1000 * 60 * 60;
+    const windowStartIso = new Date(now - rangeHours * hourMs).toISOString();
+    const rows = this.summaryStmt.all(windowStartIso) as Array<{
       startedAt: string;
       source: ActivitySource;
       appName: string | null;
@@ -145,8 +160,6 @@ export class ActivityTracker {
       appName: string | null;
     }>();
 
-    const now = Date.now();
-    const hourMs = 1000 * 60 * 60;
     const latestStart = rows.length ? new Date(rows[0].startedAt).getTime() : now;
     const earliestStart = rows.length ? new Date(rows[rows.length - 1].startedAt).getTime() : now - rangeHours * hourMs;
     const spanHours = rows.length ? Math.max(1, Math.ceil((latestStart - earliestStart) / hourMs) + 1) : rangeHours;

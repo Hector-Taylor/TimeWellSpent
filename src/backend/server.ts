@@ -51,7 +51,8 @@ export async function createBackend(database: Database): Promise<BackendServices
   const activityTracker = new ActivityTracker(database);
   const classifier = new ActivityClassifier(
     () => settings.getCategorisation(),
-    () => settings.getIdleThreshold()
+    () => settings.getIdleThreshold(),
+    () => settings.getFrivolousIdleThreshold()
   );
   const activityPipeline = new ActivityPipeline(activityTracker, economy, classifier);
   const focus = new FocusService(database, wallet);
@@ -272,6 +273,15 @@ export async function createBackend(database: Database): Promise<BackendServices
   app.post('/settings/idle-threshold', (req, res) => {
     const { threshold } = req.body as { threshold: number };
     settings.setIdleThreshold(Number(threshold));
+    res.json({ ok: true });
+  });
+  app.get('/settings/frivolous-idle-threshold', (_req, res) => {
+    res.json({ threshold: settings.getFrivolousIdleThreshold() });
+  });
+
+  app.post('/settings/frivolous-idle-threshold', (req, res) => {
+    const { threshold } = req.body as { threshold: number };
+    settings.setFrivolousIdleThreshold(Number(threshold));
     res.json({ ok: true });
   });
 
