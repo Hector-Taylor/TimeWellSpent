@@ -194,7 +194,7 @@ export class EconomyEngine extends EventEmitter {
     return this.paywall.buyPack(domain, minutes, price);
   }
 
-  startStore(domain: string, price: number) {
-    return this.paywall.startStore(domain, price);
+  startStore(domain: string, price: number, url?: string) {
+    return this.paywall.startStore(domain, price, url);
   }
 }

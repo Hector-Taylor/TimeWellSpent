@@ -2,11 +2,12 @@ import { useEffect, useState, useRef } from 'react';
 import Dashboard from './components/Dashboard';
 import Settings from './components/Settings';
 import EconomyTuner from './components/EconomyTuner';
-
+import Analytics from './components/Analytics';
 import PaywallOverlay from './components/PaywallOverlay';
-import Store from './components/Store';
+import Library from './components/Library';
+import Domains from './components/Domains';
+import Friends from './components/Friends';
 import type {
-  CategorisationConfig,
   EconomyState,
   MarketRate,
   RendererApi,
@@ -15,14 +16,13 @@ import type {
 
 const api: RendererApi = window.twsp;
 
-type View = 'dashboard' | 'settings' | 'economy' | 'store';
+type View = 'dashboard' | 'library' | 'domains' | 'analytics' | 'economy' | 'settings' | 'friends';
 
 export default function App() {
   const [view, setView] = useState<View>('dashboard');
   const [wallet, setWallet] = useState<WalletSnapshot>({ balance: 0 });
   const [marketRates, setMarketRates] = useState<MarketRate[]>([]);
   const [economyState, setEconomyState] = useState<EconomyState | null>(null);
-  const [categorisation, setCategorisation] = useState<CategorisationConfig | null>(null);
   const [extensionStatus, setExtensionStatus] = useState<{ connected: boolean; lastSeen: number | null }>({ connected: true, lastSeen: null });
   const [paywallBlock, setPaywallBlock] = useState<{
     domain: string;
@@ -35,7 +35,6 @@ export default function App() {
     api.wallet.get().then(setWallet);
     api.market.list().then(setMarketRates);
     api.economy.state().then(setEconomyState);
-    api.settings.categorisation().then(setCategorisation);
   }, []);
 
   const extensionStatusRef = useRef(extensionStatus);
@@ -126,10 +125,16 @@ export default function App() {
             Dashboard
           </button>
           <button
-            className={view === 'economy' ? 'active' : ''}
-            onClick={() => setView('economy')}
+            className={view === 'library' ? 'active' : ''}
+            onClick={() => setView('library')}
           >
-            Economy
+            Library
+          </button>
+          <button
+            className={view === 'domains' ? 'active' : ''}
+            onClick={() => setView('domains')}
+          >
+            Domains
           </button>
           <button
             className={view === 'settings' ? 'active' : ''}
@@ -138,10 +143,22 @@ export default function App() {
             Settings
           </button>
           <button
-            className={view === 'store' ? 'active' : ''}
-            onClick={() => setView('store')}
+            className={view === 'analytics' ? 'active' : ''}
+            onClick={() => setView('analytics')}
           >
-            Store
+            Analytics
+          </button>
+          <button
+            className={view === 'economy' ? 'active' : ''}
+            onClick={() => setView('economy')}
+          >
+            Economy
+          </button>
+          <button
+            className={view === 'friends' ? 'active' : ''}
+            onClick={() => setView('friends')}
+          >
+            Friends
           </button>
         </nav>
 
@@ -166,18 +183,25 @@ export default function App() {
             rates={marketRates}
           />
         )}
+        {view === 'analytics' && (
+          <Analytics api={api} />
+        )}
         {view === 'economy' && (
           <EconomyTuner api={api} />
         )}
         {view === 'settings' && (
           <Settings
             api={api}
-            categorisation={categorisation}
-            onCategorisation={setCategorisation}
           />
         )}
-        {view === 'store' && (
-          <Store api={api} />
+        {view === 'library' && (
+          <Library api={api} />
+        )}
+        {view === 'domains' && (
+          <Domains api={api} />
+        )}
+        {view === 'friends' && (
+          <Friends api={api} />
         )}
       </main>
 

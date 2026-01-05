@@ -44,12 +44,8 @@ export class ActivityPipeline {
 
     const browserNames = ['chrome', 'safari', 'edge', 'brave', 'arc', 'firefox'];
     const foregroundName = this.lastForeground.appName.toLowerCase();
-    const extensionApp = (event.appName ?? '').toLowerCase();
     const foregroundIsBrowser = browserNames.some((name) => foregroundName.includes(name));
     if (!foregroundIsBrowser) {
-      return false;
-    }
-    if (extensionApp && !foregroundName.includes(extensionApp) && !extensionApp.includes(foregroundName)) {
       return false;
     }
     return true;

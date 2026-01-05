@@ -1,0 +1,9 @@
+name = "tws-relay"
+main = "relay/src/index.ts"
+compatibility_date = "2025-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tws_relay"
+database_id = "REPLACE_ME"
+

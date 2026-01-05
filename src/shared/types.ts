@@ -98,14 +98,21 @@ export type Intention = {
   completed: boolean;
 };
 
-export type StoreItem = {
+export type LibraryPurpose = 'replace' | 'allow' | 'temptation';
+
+export type LibraryItem = {
   id: number;
-  url: string;
+  kind: 'url' | 'app';
+  url?: string;
+  app?: string;
   domain: string;
   title?: string;
-  price: number;
+  note?: string;
+  purpose: LibraryPurpose;
+  price?: number;
   createdAt: string;
   lastUsedAt?: string;
+  consumedAt?: string;
 };
 
 export type Budget = {
@@ -127,6 +134,41 @@ export type PaywallSession = {
   justification?: string;
   lastReminder?: number;
   allowedUrl?: string;
+};
+
+export type EmergencyPolicyId = 'off' | 'gentle' | 'balanced' | 'strict';
+
+export type FriendIdentity = {
+  userId: string;
+  publishKey: string;
+  readKey: string;
+  relayUrl: string;
+  createdAt: string;
+  lastPublishedAt?: string;
+};
+
+export type FriendEntry = {
+  id: string;
+  name: string;
+  userId: string;
+  readKey: string;
+  addedAt: string;
+};
+
+export type FriendFeedSummary = {
+  userId: string;
+  name?: string;
+  date: string;
+  updatedAt: string;
+  payload: {
+    periodDays: number;
+    totalActiveHours: number;
+    productivityScore: number;
+    categoryBreakdown: Record<ActivityCategory | 'idle', number>;
+    focusTrend?: string;
+    peakProductiveHour?: number;
+    riskHour?: number;
+  };
 };
 
 export type RendererApi = {
@@ -181,16 +223,175 @@ export type RendererApi = {
     updateIdleThreshold(value: number): Promise<void>;
     frivolousIdleThreshold(): Promise<number>;
     updateFrivolousIdleThreshold(value: number): Promise<void>;
+    emergencyPolicy(): Promise<EmergencyPolicyId>;
+    updateEmergencyPolicy(value: EmergencyPolicyId): Promise<void>;
+    emergencyReminderInterval(): Promise<number>;
+    updateEmergencyReminderInterval(value: number): Promise<void>;
+    economyExchangeRate(): Promise<number>;
+    updateEconomyExchangeRate(value: number): Promise<void>;
+    journalConfig(): Promise<JournalConfig>;
+    updateJournalConfig(value: JournalConfig): Promise<void>;
   };
-  store: {
-    list(): Promise<StoreItem[]>;
-    add(url: string, price: number, title?: string): Promise<StoreItem>;
+  integrations: {
+    zotero: {
+      config(): Promise<ZoteroIntegrationConfig>;
+      updateConfig(value: ZoteroIntegrationConfig): Promise<void>;
+      collections(): Promise<ZoteroCollection[]>;
+    };
+  };
+  library: {
+    list(): Promise<LibraryItem[]>;
+    add(payload: { kind: 'url' | 'app'; url?: string; app?: string; title?: string; note?: string; purpose: LibraryPurpose; price?: number | null }): Promise<LibraryItem>;
+    update(
+      id: number,
+      payload: { title?: string | null; note?: string | null; purpose?: LibraryPurpose; price?: number | null; consumedAt?: string | null }
+    ): Promise<LibraryItem>;
     remove(id: number): Promise<void>;
-    findByUrl(url: string): Promise<StoreItem | null>;
+    findByUrl(url: string): Promise<LibraryItem | null>;
+  };
+  analytics: {
+    overview(days?: number): Promise<AnalyticsOverview>;
+    timeOfDay(days?: number): Promise<TimeOfDayStats[]>;
+    patterns(days?: number): Promise<BehavioralPattern[]>;
+    engagement(domain: string, days?: number): Promise<EngagementMetrics>;
+    trends(granularity?: 'hour' | 'day' | 'week'): Promise<TrendPoint[]>;
+  };
+  friends: {
+    identity(): Promise<FriendIdentity | null>;
+    enable(payload: { relayUrl: string }): Promise<FriendIdentity>;
+    disable(): Promise<void>;
+    publishNow(): Promise<{ ok: true; publishedAt: string }>;
+    list(): Promise<FriendEntry[]>;
+    add(friend: { name: string; userId: string; readKey: string }): Promise<FriendEntry>;
+    remove(id: string): Promise<void>;
+    fetchAll(): Promise<Record<string, FriendFeedSummary | null>>;
   };
   events: {
     on<T = unknown>(channel: string, callback: (payload: T) => void): () => void;
   };
+};
+
+export type ZoteroIntegrationMode = 'recent' | 'collection';
+
+export type ZoteroIntegrationConfig = {
+  mode: ZoteroIntegrationMode;
+  collectionId: number | null;
+  includeSubcollections: boolean;
+};
+
+export type ZoteroCollection = {
+  id: number;
+  key?: string;
+  name: string;
+  path: string;
+};
+
+export type JournalConfig = {
+  url: string | null;
+  minutes: number;
+};
+
+// ============================================================================
+// Analytics Types
+// ============================================================================
+
+export type BehaviorEventType =
+  | 'scroll'
+  | 'click'
+  | 'keystroke'
+  | 'focus'
+  | 'blur'
+  | 'idle_start'
+  | 'idle_end'
+  | 'visibility';
+
+export type BehaviorEvent = {
+  id?: number;
+  timestamp: string;
+  sessionId?: number;
+  domain: string;
+  eventType: BehaviorEventType;
+  valueInt?: number;
+  valueFloat?: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type TimeOfDayStats = {
+  hour: number;
+  productive: number;
+  neutral: number;
+  frivolity: number;
+  idle: number;
+  avgEngagement: number;
+  dominantCategory: ActivityCategory | 'idle';
+  dominantDomain: string | null;
+  sampleCount: number;
+};
+
+export type BehavioralPattern = {
+  id?: number;
+  fromContext: { category: string | null; domain: string | null };
+  toContext: { category: string | null; domain: string | null };
+  frequency: number;
+  avgTimeBefore: number;
+  correlationStrength: number;
+  timeOfDayBucket?: number;
+};
+
+export type EngagementLevel = 'low' | 'passive' | 'moderate' | 'high' | 'intense';
+
+export type EngagementMetrics = {
+  domain: string;
+  totalSeconds: number;
+  avgScrollDepth: number;
+  avgScrollVelocity: number;
+  avgClicksPerMinute: number;
+  avgKeystrokesPerMinute: number;
+  fixationScore: number;
+  engagementLevel: EngagementLevel;
+  sessionCount: number;
+};
+
+export type FocusTrend = 'improving' | 'stable' | 'declining';
+
+export type AnalyticsOverview = {
+  periodDays: number;
+  totalActiveHours: number;
+  productivityScore: number;
+  topEngagementDomain: string | null;
+  focusTrend: FocusTrend;
+  peakProductiveHour: number;
+  riskHour: number;
+  avgSessionLength: number;
+  totalSessions: number;
+  categoryBreakdown: Record<ActivityCategory | 'idle', number>;
+  insights: string[];
+};
+
+export type TrendPoint = {
+  timestamp: string;
+  label: string;
+  productive: number;
+  neutral: number;
+  frivolity: number;
+  idle: number;
+  engagement: number;
+  qualityScore: number;
+};
+
+export type SessionAnalytics = {
+  id: number;
+  activityId: number;
+  domain: string;
+  date: string;
+  hourOfDay: number;
+  totalScrollDepth: number;
+  avgScrollVelocity: number;
+  totalClicks: number;
+  totalKeystrokes: number;
+  fixationSeconds: number;
+  qualityScore: number;
+  engagementLevel: EngagementLevel;
 };
 
 declare global {

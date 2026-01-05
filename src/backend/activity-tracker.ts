@@ -24,6 +24,14 @@ type CurrentActivity = {
   lastTimestamp: number;
 };
 
+function canonicalDomain(domain: string) {
+  const cleaned = domain.trim().toLowerCase().replace(/^www\./, '');
+  const aliasMap: Record<string, string> = {
+    'x.com': 'twitter.com'
+  };
+  return aliasMap[cleaned] ?? cleaned;
+}
+
 export class ActivityTracker {
   private db: BetterSqlite3Database;
   private insertStmt: Statement;
@@ -201,14 +209,15 @@ export class ActivityTracker {
       totalsByCategory.idle += idleSeconds;
       totalsBySource[row.source] += activeSeconds;
 
-      const key = row.domain ?? row.appName ?? 'Unknown';
+      const domain = row.domain ? canonicalDomain(row.domain) : null;
+      const key = domain ?? row.appName ?? 'Unknown';
       if (!contextTotals.has(key)) {
         contextTotals.set(key, {
           label: key,
           category: row.category,
           seconds: 0,
           source: row.source,
-          domain: row.domain ?? null,
+          domain,
           appName: row.appName ?? null
         });
       }
@@ -225,14 +234,14 @@ export class ActivityTracker {
         }
         timeline[bucketIndex].idle += idleSeconds;
 
-        const key = row.domain ?? row.appName ?? 'Unknown';
+        const key = domain ?? row.appName ?? 'Unknown';
         const contextMap = timelineContexts[bucketIndex];
         const ctx = contextMap.get(key) ?? {
           label: key,
           category: row.category ?? null,
           seconds: 0,
           source: row.source,
-          domain: row.domain ?? null,
+          domain,
           appName: row.appName ?? null
         };
         ctx.seconds += activeSeconds;

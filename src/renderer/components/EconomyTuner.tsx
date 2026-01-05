@@ -20,6 +20,9 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
     const [activeSessions, setActiveSessions] = useState<Record<string, PaywallSession>>({});
     const [error, setError] = useState<string | null>(null);
     const [saveMessage, setSaveMessage] = useState<string | null>(null);
+    const [exchangeTarget, setExchangeTarget] = useState<number | null>(null);
+    const [exchangeApplying, setExchangeApplying] = useState(false);
+    const [exchangeMessage, setExchangeMessage] = useState<string | null>(null);
 
     const [isAdding, setIsAdding] = useState(false);
     const [newDomain, setNewDomain] = useState('');
@@ -29,6 +32,9 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
 
     useEffect(() => {
         loadData();
+        api.settings.economyExchangeRate().then((value) => {
+            if (typeof value === 'number' && Number.isFinite(value)) setExchangeTarget(value);
+        }).catch(() => { });
     }, []);
 
     useEffect(() => {
@@ -112,6 +118,12 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
     useEffect(() => {
         setError(null);
     }, [selectedId]);
+
+    useEffect(() => {
+        if (!exchangeMessage) return;
+        const timer = setTimeout(() => setExchangeMessage(null), 2400);
+        return () => clearTimeout(timer);
+    }, [exchangeMessage]);
 
     const selectedItem = items.find(i => i.id === selectedId);
     const lockedSession = selectedItem ? activeSessions[selectedItem.id] : undefined;
@@ -202,6 +214,91 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
     }, [selectedItem]);
 
     const isEarnProfile = selectedItem?.type === 'productive';
+
+    function median(values: number[]) {
+        const nums = values.filter((n) => typeof n === 'number' && Number.isFinite(n));
+        if (!nums.length) return null;
+        const sorted = [...nums].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        if (sorted.length % 2 === 0) {
+            return (sorted[mid - 1] + sorted[mid]) / 2;
+        }
+        return sorted[mid];
+    }
+
+    function roundRate(value: number) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return 0;
+        return Math.round(n * 100) / 100;
+    }
+
+    const typicalEarn = useMemo(() => {
+        return median(items.filter((it) => it.type === 'productive').map((it) => it.rate.ratePerMin)) ?? 5;
+    }, [items]);
+
+    const typicalSpend = useMemo(() => {
+        return median(items.filter((it) => it.type === 'frivolity').map((it) => it.rate.ratePerMin)) ?? 3;
+    }, [items]);
+
+    const currentExchange = useMemo(() => {
+        if (!typicalSpend || typicalSpend <= 0) return 0;
+        return typicalEarn / typicalSpend;
+    }, [typicalEarn, typicalSpend]);
+
+    const effectiveTarget = exchangeTarget ?? currentExchange;
+    const spendMultiplier = useMemo(() => {
+        const target = typeof effectiveTarget === 'number' && Number.isFinite(effectiveTarget) ? effectiveTarget : 1;
+        if (!typicalSpend || typicalSpend <= 0) return 1;
+        if (!typicalEarn || typicalEarn <= 0) return 1;
+        if (target <= 0) return 1;
+        return typicalEarn / (typicalSpend * target);
+    }, [effectiveTarget, typicalEarn, typicalSpend]);
+
+    const applyExchangeToSpendProfiles = async () => {
+        if (exchangeApplying) return;
+        const target = typeof effectiveTarget === 'number' && Number.isFinite(effectiveTarget) ? effectiveTarget : null;
+        if (!target || target <= 0) return;
+
+        setExchangeApplying(true);
+        setError(null);
+        try {
+            const spendProfiles = items.filter((it) => it.type === 'frivolity');
+            const lockedDomains = spendProfiles.filter((it) => Boolean(activeSessions[it.id])).map((it) => it.id);
+            const editable = spendProfiles.filter((it) => !activeSessions[it.id]);
+
+            if (!editable.length) {
+                setExchangeMessage('All spend profiles are locked by active sessions.');
+                return;
+            }
+
+            await api.settings.updateEconomyExchangeRate(target);
+            let updated = 0;
+            for (const item of editable) {
+                const next: MarketRate = {
+                    ...item.rate,
+                    ratePerMin: roundRate(item.rate.ratePerMin * spendMultiplier),
+                    packs: item.rate.packs.map((pack) => ({
+                        ...pack,
+                        price: Math.max(1, Math.round(pack.price * spendMultiplier))
+                    }))
+                };
+                await api.market.upsert(next);
+                updated += 1;
+            }
+
+            await loadData();
+            setExchangeMessage(
+                lockedDomains.length
+                    ? `Scaled ${updated} spend profiles. Skipped ${lockedDomains.length} locked by active sessions.`
+                    : `Scaled ${updated} spend profiles.`
+            );
+        } catch (err) {
+            setError((err as Error).message);
+        } finally {
+            setExchangeApplying(false);
+        }
+    };
+
     return (
         <section className="panel tuner-panel">
             <header className="panel-header tuner-header-row">
@@ -230,7 +327,85 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
                 </div>
             )}
 
-            <div className="tuner-layout">
+            {exchangeMessage && (
+                <div className="inline-note" style={{ maxWidth: '520px' }}>
+                    {exchangeMessage}
+                </div>
+            )}
+
+            <section className="card economy-exchange-card">
+                <div className="economy-exchange-header">
+                    <div>
+                        <h2 style={{ margin: 0 }}>Exchange rate</h2>
+                        <p className="subtle" style={{ marginBottom: 0 }}>
+                            Make the system feel intuitive: how much “frivolity time” 1 minute of productive time buys.
+                        </p>
+                    </div>
+                    <button className="primary" onClick={applyExchangeToSpendProfiles} disabled={exchangeApplying || !effectiveTarget || effectiveTarget <= 0}>
+                        {exchangeApplying ? 'Applying…' : 'Apply to spend profiles'}
+                    </button>
+                </div>
+
+                <div className="economy-exchange-grid">
+                    <div className="economy-exchange-metric">
+                        <span className="subtle">Current (typical)</span>
+                        <strong>1 min work → {currentExchange ? currentExchange.toFixed(2) : '—'} min frivolity</strong>
+                    </div>
+                    <div className="economy-exchange-metric">
+                        <span className="subtle">Target</span>
+                        <strong>1 min work → {effectiveTarget ? effectiveTarget.toFixed(2) : '—'} min frivolity</strong>
+                    </div>
+                    <div className="economy-exchange-metric">
+                        <span className="subtle">Effect</span>
+                        <strong>{spendMultiplier ? `${spendMultiplier.toFixed(2)}×` : '—'} spend costs</strong>
+                    </div>
+                </div>
+
+                <div className="economy-exchange-controls">
+                    <div className="economy-exchange-presets">
+                        <button type="button" className="ghost" onClick={() => setExchangeTarget(0.5)} disabled={exchangeApplying}>
+                            0.5×
+                        </button>
+                        <button type="button" className="ghost" onClick={() => setExchangeTarget(1)} disabled={exchangeApplying}>
+                            1× (1:1)
+                        </button>
+                        <button type="button" className="ghost" onClick={() => setExchangeTarget(2)} disabled={exchangeApplying}>
+                            2×
+                        </button>
+                        <button type="button" className="ghost" onClick={() => setExchangeTarget(currentExchange)} disabled={exchangeApplying || !currentExchange}>
+                            Reset
+                        </button>
+                    </div>
+                    <label style={{ display: 'grid', gap: 8, margin: 0 }}>
+                        <span className="subtle">Minutes of frivolity per minute of work</span>
+                        <input
+                            type="range"
+                            min={0.25}
+                            max={4}
+                            step={0.05}
+                            value={effectiveTarget ? effectiveTarget : 1}
+                            onChange={(e) => setExchangeTarget(Number(e.target.value))}
+                            disabled={exchangeApplying}
+                        />
+                    </label>
+                </div>
+
+                <p className="subtle" style={{ marginBottom: 0 }}>
+                    This scales all <strong>spend</strong> profiles (frivolity domains) while keeping your individual profile shapes and pack options.
+                    Use “Advanced” below if you want domain-specific tuning.
+                </p>
+            </section>
+
+            <details className="card economy-advanced" open={false}>
+                <summary className="economy-advanced-summary">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <strong>Advanced: per-domain tuning</strong>
+                        <span className="subtle">Power-user controls for rates, curves, and packs.</span>
+                    </div>
+                    <span className="economy-advanced-toggle" aria-hidden="true" />
+                </summary>
+                <div className="economy-advanced-body">
+                    <div className="tuner-layout">
                 <aside className="tuner-list">
                     <div style={{ padding: '0 4px 8px 4px', borderBottom: '1px solid rgba(255,255,255,0.05)', marginBottom: '8px' }}>
                         {!isAdding ? (
@@ -435,6 +610,8 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
                     )}
                 </div>
             </div>
+                </div>
+            </details>
         </section>
     );
 }

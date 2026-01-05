@@ -12,6 +12,31 @@ type BlockMessage = {
 
 // console.info('TimeWellSpent content script booted');
 
+const HEARTBEAT_MS = 10_000;
+let heartbeatTimer: number | null = null;
+
+function sendHeartbeat() {
+  if (document.visibilityState !== 'visible') return;
+  if (!document.hasFocus()) return;
+  chrome.runtime
+    .sendMessage({
+      type: 'PAGE_HEARTBEAT',
+      payload: { url: window.location.href, title: document.title }
+    })
+    .catch(() => { });
+}
+
+function startHeartbeat() {
+  if (heartbeatTimer != null) return;
+  heartbeatTimer = window.setInterval(sendHeartbeat, HEARTBEAT_MS);
+  sendHeartbeat();
+}
+
+startHeartbeat();
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') sendHeartbeat();
+});
+
 chrome.runtime.onMessage.addListener((message: BlockMessage | { type: 'TWS_PING' }, _sender, sendResponse) => {
   if (message.type === 'TWS_PING') {
     sendResponse?.({ ok: true });
@@ -34,10 +59,9 @@ async function mountOverlay(domain: string, reason?: string) {
   // Ensure the host itself is on top of everything but doesn't block clicks if empty (though it won't be)
   host.style.position = 'fixed';
   host.style.zIndex = '2147483647';
-  host.style.top = '0';
-  host.style.left = '0';
-  host.style.width = '0';
-  host.style.height = '0';
+  host.style.inset = '0';
+  host.style.width = '100%';
+  host.style.height = '100%';
 
   document.body.appendChild(host);
 

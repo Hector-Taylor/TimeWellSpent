@@ -12,6 +12,7 @@ let tray: Tray | null = null;
 let db: Database | null = null;
 let stopBackend: (() => Promise<void>) | null = null;
 let stopWatcher: (() => void) | null = null;
+let lastTrayLabel = 'TimeWellSpent';
 
 async function createWindow() {
   mainWindow = new BrowserWindow({
@@ -112,11 +113,7 @@ async function bootstrap() {
     const minutes = Math.ceil(session.remainingSeconds / 60);
 
     // Update tray
-    if (process.platform === 'darwin') {
-      tray?.setTitle(`${session.domain}: ${minutes}m`);
-    } else {
-      tray?.setToolTip(`${session.domain}: ${minutes}m remaining`);
-    }
+    updateTray(`⏳ ${session.domain}: ${minutes}m`);
 
     // Notifications
     if (Math.abs(session.remainingSeconds - 120) < 5) { // ~2 minutes
@@ -139,22 +136,20 @@ async function bootstrap() {
         body: `Time's up for ${payload.domain}!`
       }).show();
 
-      // Reset tray
-      if (process.platform === 'darwin') {
-        tray?.setTitle('');
-      } else {
-        tray?.setToolTip('TimeWellSpent');
-      }
+      // Reset tray to wallet snapshot
+      updateTray(`💰 ${backend.wallet.getSnapshot().balance}`);
+      buildTrayMenu();
     }
   });
 
   const updateTray = (label: string) => {
-    if (tray) {
-      if (isMac) {
-        tray.setTitle(label);
-      } else {
-        tray.setToolTip(label);
-      }
+    lastTrayLabel = label;
+    if (!tray) return;
+    if (isMac) {
+      tray.setTitle(label);
+      tray.setToolTip(label);
+    } else {
+      tray.setToolTip(label);
     }
   };
 
@@ -203,12 +198,7 @@ async function bootstrap() {
   }
 
   tray = new Tray(trayIcon);
-
-  if (isMac) {
-    tray.setTitle('TimeWellSpent');
-  } else {
-    tray.setToolTip('Time Well Spent');
-  }
+  updateTray(lastTrayLabel || 'TimeWellSpent');
   console.log('Tray initialized');
 
   const buildTrayMenu = () => {
@@ -325,6 +315,12 @@ async function bootstrap() {
   // Extension status events to renderer
   backend.extension.onStatus((status) => emitToRenderers('extension:status', status));
   emitToRenderers('extension:status', backend.extension.status());
+
+  backend.library.on('added', (item) => emitToRenderers('library:changed', { action: 'added', item }));
+  backend.library.on('updated', (item) => emitToRenderers('library:changed', { action: 'updated', item }));
+  backend.library.on('removed', (payload) => emitToRenderers('library:changed', { action: 'removed', ...payload }));
+  backend.friends.on('published', () => emitToRenderers('friends:published', {}));
+  backend.friends.on('updated', (payload) => emitToRenderers('friends:updated', payload));
 
   createIpc({ backend, db });
 

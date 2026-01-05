@@ -18,6 +18,21 @@ export type PaywallSession = {
   allowedUrl?: string;
 };
 
+function normaliseBaseUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+function urlsMatch(expectedBaseUrl: string, actualUrl: string) {
+  const actualBase = normaliseBaseUrl(actualUrl);
+  if (!actualBase) return false;
+  return expectedBaseUrl === actualBase;
+}
+
 export class PaywallManager extends EventEmitter {
   private sessions = new Map<string, PaywallSession>();
 
@@ -33,14 +48,9 @@ export class PaywallManager extends EventEmitter {
     const session = this.sessions.get(domain);
     if (!session) return false;
 
-    // Check URL restriction for store mode (or others if applicable)
-    if (session.allowedUrl && url && session.allowedUrl !== url) {
-      // Simple exact match for now. Could be prefix match.
-      // If allowedUrl is set, and we are on a different URL, it's NOT a valid pass.
-      // Wait, if url is undefined, we assume valid? No, hasValidPass(domain) without url should probably fail if session requires URL?
-      // But internal checks might just pass domain.
-      // Let's assume if url is provided, we check it.
-      return false;
+    if (session.allowedUrl) {
+      if (!url) return false;
+      if (!urlsMatch(session.allowedUrl, url)) return false;
     }
 
     if (session.mode === 'metered' || session.mode === 'store') return true;
@@ -72,7 +82,7 @@ export class PaywallManager extends EventEmitter {
       paused: false,
       spendRemainder: 0,
       purchasePrice: price,
-      allowedUrl: url
+      allowedUrl: url ? normaliseBaseUrl(url) ?? undefined : undefined
     };
     this.sessions.set(domain, session);
     this.emit('session-started', session);
@@ -96,17 +106,24 @@ export class PaywallManager extends EventEmitter {
     return session;
   }
 
-  startEmergency(domain: string, justification: string) {
+  notifyWalletUpdated(snapshot: { balance: number }) {
+    this.emit('wallet-update', snapshot);
+  }
+
+  startEmergency(domain: string, justification: string): PaywallSession;
+  startEmergency(domain: string, justification: string, options: { durationSeconds?: number; allowedUrl?: string }): PaywallSession;
+  startEmergency(domain: string, justification: string, options: { durationSeconds?: number; allowedUrl?: string } = {}) {
     const session: PaywallSession = {
       domain,
       mode: 'emergency',
       ratePerMin: 0,
-      remainingSeconds: Infinity,
+      remainingSeconds: Number.isFinite(options.durationSeconds as number) ? Math.max(1, Math.round(options.durationSeconds as number)) : Infinity,
       lastTick: Date.now(),
       paused: false,
       spendRemainder: 0,
       justification,
-      lastReminder: Date.now()
+      lastReminder: Date.now(),
+      allowedUrl: options.allowedUrl
     };
     this.sessions.set(domain, session);
     this.emit('session-started', session);
@@ -181,11 +198,8 @@ export class PaywallManager extends EventEmitter {
     for (const session of [...this.sessions.values()]) {
       let isActive = activeDomain ? session.domain === activeDomain : false;
 
-      // If session is restricted to URL, check URL
-      if (isActive && session.allowedUrl && activeUrl) {
-        if (session.allowedUrl !== activeUrl) {
-          isActive = false;
-        }
+      if (isActive && session.allowedUrl) {
+        if (!activeUrl || !urlsMatch(session.allowedUrl, activeUrl)) isActive = false;
       }
 
       if (!isActive) {
@@ -209,7 +223,17 @@ export class PaywallManager extends EventEmitter {
             justification: session.justification
           });
         }
-        session.lastTick = now;
+        if (Number.isFinite(session.remainingSeconds)) {
+          session.remainingSeconds -= intervalSeconds;
+          session.lastTick = now;
+          this.emit('session-tick', session);
+          if (session.remainingSeconds <= 0) {
+            this.sessions.delete(session.domain);
+            this.emit('session-ended', { domain: session.domain, reason: 'emergency-expired' });
+          }
+        } else {
+          session.lastTick = now;
+        }
       } else if (session.mode === 'metered') {
         let currentRate = session.ratePerMin;
         const marketRate = this.market.getRate(session.domain);

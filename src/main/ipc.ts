@@ -1,6 +1,7 @@
 import { BrowserWindow, ipcMain } from 'electron';
 import type { BackendServices } from '@backend/server';
 import type { Database } from '@backend/storage';
+import type { EmergencyPolicyId, JournalConfig, LibraryPurpose, ZoteroIntegrationConfig } from '@shared/types';
 
 export type IpcContext = {
   backend: BackendServices;
@@ -111,16 +112,64 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('settings:update-idle-threshold', (_event, value: number) => backend.settings.setIdleThreshold(value));
   ipcMain.handle('settings:frivolous-idle-threshold', () => backend.settings.getFrivolousIdleThreshold());
   ipcMain.handle('settings:update-frivolous-idle-threshold', (_event, value: number) => backend.settings.setFrivolousIdleThreshold(value));
+  ipcMain.handle('settings:emergency-policy', () => backend.settings.getEmergencyPolicy());
+  ipcMain.handle('settings:update-emergency-policy', (_event, value: EmergencyPolicyId) => backend.settings.setEmergencyPolicy(value));
+  ipcMain.handle('settings:emergency-reminder-interval', () => backend.settings.getEmergencyReminderInterval());
+  ipcMain.handle('settings:update-emergency-reminder-interval', (_event, value: number) => backend.settings.setEmergencyReminderInterval(value));
+  ipcMain.handle('settings:economy-exchange-rate', () => backend.settings.getEconomyExchangeRate());
+  ipcMain.handle('settings:update-economy-exchange-rate', (_event, value: number) => backend.settings.setEconomyExchangeRate(value));
+  ipcMain.handle('settings:journal-config', () => backend.settings.getJournalConfig());
+  ipcMain.handle('settings:update-journal-config', (_event, value: JournalConfig) => backend.settings.setJournalConfig(value));
 
-  // Store handlers
-  ipcMain.handle('store:list', () => backend.store.list());
-  ipcMain.handle('store:add', (_event, payload: { url: string; price: number; title?: string }) => {
-    return backend.store.add(payload.url, payload.price, payload.title);
+  // Integrations
+  ipcMain.handle('integrations:zotero-config', () => backend.reading.getZoteroIntegrationConfig());
+  ipcMain.handle('integrations:update-zotero-config', (_event, value: ZoteroIntegrationConfig) => backend.reading.setZoteroIntegrationConfig(value));
+  ipcMain.handle('integrations:zotero-collections', async () => backend.reading.listZoteroCollections());
+
+  // Library handlers
+  ipcMain.handle('library:list', () => backend.library.list());
+  ipcMain.handle('library:add', (_event, payload: { kind: 'url' | 'app'; url?: string; app?: string; title?: string; note?: string; purpose: LibraryPurpose; price?: number | null }) => {
+    return backend.library.add(payload);
   });
-  ipcMain.handle('store:remove', (_event, payload: { id: number }) => {
-    backend.store.remove(payload.id);
+  ipcMain.handle(
+    'library:update',
+    (_event, payload: { id: number; title?: string | null; note?: string | null; purpose?: LibraryPurpose; price?: number | null; consumedAt?: string | null }) => {
+      return backend.library.update(payload.id, {
+        title: payload.title,
+        note: payload.note,
+        purpose: payload.purpose,
+        price: payload.price,
+        consumedAt: payload.consumedAt
+      });
+    }
+  );
+  ipcMain.handle('library:remove', (_event, payload: { id: number }) => backend.library.remove(payload.id));
+  ipcMain.handle('library:find-by-url', (_event, payload: { url: string }) => backend.library.getByUrl(payload.url));
+
+  // Friends (relay-backed feed)
+  ipcMain.handle('friends:identity', () => backend.friends.getIdentity());
+  ipcMain.handle('friends:enable', async (_event, payload: { relayUrl: string }) => backend.friends.enable({ relayUrl: payload.relayUrl }));
+  ipcMain.handle('friends:disable', () => backend.friends.disable());
+  ipcMain.handle('friends:publish', () => backend.friends.publishNow());
+  ipcMain.handle('friends:list', () => backend.friends.listFriends());
+  ipcMain.handle('friends:add', (_event, payload: { name: string; userId: string; readKey: string }) => backend.friends.addFriend(payload));
+  ipcMain.handle('friends:remove', (_event, payload: { id: string }) => backend.friends.removeFriend(payload.id));
+  ipcMain.handle('friends:fetch-all', () => backend.friends.fetchAll());
+
+  // Analytics handlers
+  ipcMain.handle('analytics:overview', (_event, payload: { days?: number }) => {
+    return backend.analytics.getOverview(payload.days ?? 7);
   });
-  ipcMain.handle('store:find-by-url', (_event, payload: { url: string }) => {
-    return backend.store.findMatchingItem(payload.url);
+  ipcMain.handle('analytics:time-of-day', (_event, payload: { days?: number }) => {
+    return backend.analytics.getTimeOfDayAnalysis(payload.days ?? 7);
+  });
+  ipcMain.handle('analytics:patterns', (_event, payload: { days?: number }) => {
+    return backend.analytics.getBehavioralPatterns(payload.days ?? 30);
+  });
+  ipcMain.handle('analytics:engagement', (_event, payload: { domain: string; days?: number }) => {
+    return backend.analytics.getEngagementMetrics(payload.domain, payload.days ?? 7);
+  });
+  ipcMain.handle('analytics:trends', (_event, payload: { granularity?: 'hour' | 'day' | 'week' }) => {
+    return backend.analytics.getTrends(payload.granularity ?? 'day');
   });
 }

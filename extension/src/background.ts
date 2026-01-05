@@ -1,19 +1,77 @@
-import { storage } from './storage';
+import { storage, type LibraryItem, type LibraryPurpose } from './storage';
 
 type IdleState = 'active' | 'idle' | 'locked';
+type EmergencyPolicyId = 'off' | 'gentle' | 'balanced' | 'strict';
 
 const DESKTOP_API_URL = 'http://127.0.0.1:17600';
 const DESKTOP_WS_URL = 'ws://127.0.0.1:17600/events';
+const DEFAULT_UNLOCK_PRICE = 12;
+const NOTIFICATION_ICON = chrome.runtime.getURL('assets/notification.png');
+const CONTEXT_MENU_IDS = {
+    rootSave: 'tws-save',
+    rootDomain: 'tws-domain',
+    saveReplace: 'save-to-library-replace',
+    saveAllow: 'save-to-library-allow',
+    saveTemptation: 'save-to-library-temptation',
+    savePriced: 'save-to-library-priced',
+    domainProductive: 'label-domain-productive',
+    domainNeutral: 'label-domain-neutral',
+    domainFrivolous: 'label-domain-frivolous'
+} as const;
 
 let ws: WebSocket | null = null;
 let reconnectTimer: number | null = null;
 let sessionTicker: number | null = null;
-let activityTicker: number | null = null;
 let idleState: IdleState = 'active';
 let lastIdleChange = Date.now();
+const ROULETTE_PROMPT_MIN_MS = 20_000;
+// Buffer when desktop app is offline (10s heartbeat ≈ 2400 → ~6h40m).
+const ACTIVITY_BUFFER_LIMIT = 2400;
 const activityBuffer: Array<Record<string, unknown>> = [];
 
-function estimatePackRefund(session: { mode: 'metered' | 'pack' | 'emergency'; purchasePrice?: number; purchasedSeconds?: number; remainingSeconds: number }) {
+type RouletteOpen = {
+    openedAt: number;
+    url: string;
+    title?: string;
+    libraryId?: number;
+    readingId?: string;
+};
+
+const rouletteByTabId = new Map<number, RouletteOpen>();
+const rouletteNotificationMap = new Map<string, RouletteOpen>();
+
+type EmergencyPolicyConfig = {
+    id: EmergencyPolicyId;
+    durationSeconds: number;
+    tokensPerDay: number | null;
+    cooldownSeconds: number;
+    urlLocked: boolean;
+};
+
+function getEmergencyPolicyConfig(id: EmergencyPolicyId): EmergencyPolicyConfig {
+    switch (id) {
+        case 'off':
+            return { id, durationSeconds: 0, tokensPerDay: 0, cooldownSeconds: 0, urlLocked: true };
+        case 'gentle':
+            return { id, durationSeconds: 5 * 60, tokensPerDay: null, cooldownSeconds: 0, urlLocked: true };
+        case 'strict':
+            return { id, durationSeconds: 2 * 60, tokensPerDay: 1, cooldownSeconds: 60 * 60, urlLocked: true };
+        case 'balanced':
+        default:
+            return { id: 'balanced', durationSeconds: 3 * 60, tokensPerDay: 2, cooldownSeconds: 30 * 60, urlLocked: true };
+    }
+}
+
+function baseUrl(urlString: string): string | null {
+    try {
+        const parsed = new URL(urlString);
+        return `${parsed.origin}${parsed.pathname}`;
+    } catch {
+        return null;
+    }
+}
+
+function estimatePackRefund(session: { mode: 'metered' | 'pack' | 'emergency' | 'store'; purchasePrice?: number; purchasedSeconds?: number; remainingSeconds: number }) {
     if (session.mode !== 'pack') return 0;
     if (!session.purchasePrice || !session.purchasedSeconds) return 0;
     const unusedSeconds = Math.max(0, Math.min(session.purchasedSeconds, session.remainingSeconds));
@@ -25,9 +83,45 @@ function estimatePackRefund(session: { mode: 'metered' | 'pack' | 'emergency'; p
 storage.init().then(() => {
     console.log('TimeWellSpent: Storage initialized');
     startSessionTicker();
-    startActivityTicker();
     hydrateIdleState();
     tryConnectToDesktop();
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+    const session = rouletteByTabId.get(tabId);
+    if (!session) return;
+    rouletteByTabId.delete(tabId);
+    const elapsed = Date.now() - session.openedAt;
+    if (elapsed < ROULETTE_PROMPT_MIN_MS) return;
+    promptRouletteCompletion(session).catch(() => { });
+});
+
+chrome.notifications?.onButtonClicked?.addListener((notificationId, buttonIndex) => {
+    const session = rouletteNotificationMap.get(notificationId);
+    if (!session) return;
+    rouletteNotificationMap.delete(notificationId);
+
+    if (buttonIndex === 0) {
+        if (typeof session.libraryId === 'number') {
+            handleMarkLibraryConsumed({ id: session.libraryId, consumed: true }).catch(() => { });
+        }
+        if (session.readingId) {
+            storage.markReadingConsumed(session.readingId, true).catch(() => { });
+        }
+        return;
+    }
+
+    if (buttonIndex === 1) {
+        chrome.tabs.create({ url: session.url, active: true }).then((tab) => {
+            if (tab?.id != null) {
+                rouletteByTabId.set(tab.id, { ...session, openedAt: Date.now() });
+            }
+        }).catch(() => { });
+    }
+});
+
+chrome.notifications?.onClosed?.addListener((notificationId) => {
+    rouletteNotificationMap.delete(notificationId);
 });
 
 // ============================================================================
@@ -48,6 +142,8 @@ function tryConnectToDesktop() {
         }
         // Sync data from desktop
         await syncFromDesktop();
+        await syncPendingLibraryItems();
+        await syncPendingCategorisation();
         flushBufferedActivity();
     };
 
@@ -100,6 +196,11 @@ function handleDesktopMessage(data: any) {
         storage.updateFromDesktop({ wallet: data.payload });
     } else if (data.type === 'market-update') {
         storage.updateFromDesktop({ marketRates: data.payload });
+    } else if (data.type === 'library-sync') {
+        const items = Array.isArray(data.payload?.items) ? data.payload.items : data.payload;
+        if (Array.isArray(items)) {
+            storage.updateFromDesktop({ libraryItems: items } as any);
+        }
     } else if (data.type === 'paywall-session-started') {
         const session = data.payload;
         if (session?.domain) {
@@ -114,13 +215,23 @@ function handleDesktopMessage(data: any) {
                 purchasePrice: session.purchasePrice,
                 purchasedSeconds: session.purchasedSeconds,
                 justification: session.justification,
-                lastReminder: session.lastReminder
+                lastReminder: session.lastReminder,
+                allowedUrl: session.allowedUrl
             });
         }
     } else if (data.type === 'paywall-session-ended') {
         if (data.payload?.domain) {
             const { domain, reason } = data.payload;
-            storage.clearSession(domain);
+            storage.getSession(domain).then((existing) => {
+                if (existing?.mode === 'emergency' && reason === 'emergency-expired') {
+                    storage.recordEmergencyEnded({
+                        domain,
+                        justification: existing.justification,
+                        endedAt: Date.now()
+                    });
+                }
+                storage.clearSession(domain);
+            });
             console.log(`🛑 Session ended for ${domain} (${reason})`);
 
             // Immediately check if we need to block the current tab
@@ -219,16 +330,26 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
             const session = await storage.getSession(domain);
 
             if (session && !session.paused) {
-                // Has valid active session - allow
-                // Metered and emergency modes have infinite remaining time
-                if (session.mode === 'metered' || session.mode === 'emergency' || session.remainingSeconds > 0) {
+                if (session.allowedUrl) {
+                    const current = baseUrl(urlString);
+                    if (!current || current !== session.allowedUrl) {
+                        // URL-locked session doesn't apply to this page.
+                    } else if (session.mode === 'metered') {
+                        return;
+                    } else if (session.remainingSeconds > 0) {
+                        return;
+                    }
+                } else if (session.mode === 'metered') {
+                    return;
+                } else if (session.remainingSeconds > 0) {
                     return;
                 }
             }
 
-            // No session - BLOCK!
+            // No session (or invalid URL-locked session) - BLOCK!
+            const reason = session?.allowedUrl ? 'url-locked' : undefined;
             console.log(`🚫 Blocking ${domain} (source: ${source})`);
-            await showBlockScreen(tabId, domain);
+            await showBlockScreen(tabId, domain, reason);
         } else {
             // console.log(`✨ ${domain} - allowed (not frivolous)`);
         }
@@ -246,7 +367,6 @@ function startSessionTicker() {
 
     sessionTicker = setInterval(async () => {
         await tickSessions();
-        await pushActivitySample('heartbeat');
     }, 15000);
 }
 
@@ -291,7 +411,33 @@ async function tickSessions() {
     });
     if (!session) return;
 
+    if (session.mode !== 'emergency' && session.allowedUrl) {
+        const current = baseUrl(activeTab.url);
+        if (!current || current !== session.allowedUrl) {
+            if (!session.paused) {
+                await storage.setSession(activeDomain, { ...session, paused: true });
+            }
+            if (activeTab.id) {
+                await showBlockScreen(activeTab.id, activeDomain, 'url-locked');
+            }
+            return;
+        }
+    }
+
     if (session.mode === 'emergency') {
+        if (session.allowedUrl) {
+            const current = baseUrl(activeTab.url);
+            if (!current || current !== session.allowedUrl) {
+                if (!session.paused) {
+                    await storage.setSession(activeDomain, { ...session, paused: true });
+                }
+                if (activeTab.id) {
+                    await showBlockScreen(activeTab.id, activeDomain, 'url-locked');
+                }
+                return;
+            }
+        }
+
         const reminderIntervalMs = 300 * 1000; // default 5m for offline mode
         const lastReminder = session.lastReminder ?? session.startedAt;
         if (Date.now() - lastReminder > reminderIntervalMs) {
@@ -303,6 +449,24 @@ async function tickSessions() {
                 title: 'Emergency access reminder',
                 message: `You are on borrowed time for ${activeDomain}${session.justification ? ` — Reason: ${session.justification}` : ''}.`
             });
+        }
+
+        const lastTick = session.lastTick ?? session.startedAt;
+        const elapsedSeconds = Math.max(0, Math.round((now - lastTick) / 1000));
+        session.remainingSeconds -= elapsedSeconds;
+        session.lastTick = now;
+        if (session.remainingSeconds <= 0) {
+            await storage.recordEmergencyEnded({
+                domain: activeDomain,
+                justification: session.justification,
+                endedAt: now
+            });
+            await storage.clearSession(activeDomain);
+            if (activeTab.id) {
+                await showBlockScreen(activeTab.id, activeDomain, 'emergency-expired');
+            }
+        } else {
+            await storage.setSession(activeDomain, session);
         }
         return;
     } else if (session.mode === 'metered') {
@@ -347,18 +511,6 @@ async function tickSessions() {
             await storage.setSession(activeDomain, session);
         }
     }
-}
-
-// ============================================================================
-// Activity logging (extension → desktop)
-// ============================================================================
-
-function startActivityTicker() {
-    if (activityTicker) return;
-
-    activityTicker = setInterval(async () => {
-        await pushActivitySample('background');
-    }, 10000);
 }
 
 async function hydrateIdleState() {
@@ -433,7 +585,7 @@ function emitActivity(event: Record<string, unknown>) {
         ws.send(JSON.stringify(event));
     } else {
         activityBuffer.push(event);
-        if (activityBuffer.length > 50) {
+        if (activityBuffer.length > ACTIVITY_BUFFER_LIMIT) {
             activityBuffer.shift();
         }
     }
@@ -518,7 +670,7 @@ async function preferDesktopPurchase(path: '/paywall/packs' | '/paywall/metered'
     }
 }
 
-async function preferDesktopEmergency(payload: { domain: string; justification: string }) {
+async function preferDesktopEmergency(payload: { domain: string; justification: string; url?: string }) {
     try {
         const response = await fetch(`${DESKTOP_API_URL}/paywall/emergency`, {
             method: 'POST',
@@ -526,7 +678,11 @@ async function preferDesktopEmergency(payload: { domain: string; justification: 
             body: JSON.stringify(payload),
             cache: 'no-store',
         });
-        if (!response.ok) throw new Error('desktop unreachable');
+        if (!response.ok) {
+            const body = await response.json().catch(() => null);
+            const message = body?.error ? String(body.error) : 'Desktop rejected request';
+            return { ok: false as const, error: message, canFallback: false as const };
+        }
         const session = await response.json();
         await storage.updateFromDesktop({
             sessions: {
@@ -539,10 +695,10 @@ async function preferDesktopEmergency(payload: { domain: string; justification: 
             } as any
         });
         await syncFromDesktop(); // refresh wallet + rates
-        return { ok: true, session };
+        return { ok: true as const, session };
     } catch (error) {
         console.log('Desktop emergency start failed, falling back to local', error);
-        return { ok: false, error: (error as Error).message };
+        return { ok: false as const, error: (error as Error).message, canFallback: true as const };
     }
 }
 
@@ -574,6 +730,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message.type === 'GET_CONNECTION') {
         handleGetConnection().then(sendResponse);
         return true;
+    } else if (message.type === 'PAGE_HEARTBEAT') {
+        handlePageHeartbeat(message.payload, _sender).then(sendResponse);
+        return true;
+    } else if (message.type === 'GET_LINK_PREVIEWS') {
+        handleGetLinkPreviews(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'OPEN_URL') {
+        handleOpenUrl(message.payload, _sender).then(sendResponse);
+        return true;
+    } else if (message.type === 'OPEN_APP') {
+        handleOpenApp(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'OPEN_DESKTOP_ACTION') {
+        handleOpenDesktopAction(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'UPSERT_LIBRARY_ITEM') {
+        handleUpsertLibraryItem(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'SET_DOMAIN_CATEGORY') {
+        handleSetDomainCategory(message.payload).then(sendResponse);
+        return true;
     } else if (message.type === 'BUY_PACK') {
         handleBuyPack(message.payload).then(sendResponse);
         return true;
@@ -595,42 +772,771 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message.type === 'START_STORE_SESSION') {
         handleStartStoreSession(message.payload).then(sendResponse);
         return true;
+    } else if (message.type === 'EMERGENCY_REVIEW') {
+        handleEmergencyReview(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'MARK_LIBRARY_CONSUMED') {
+        handleMarkLibraryConsumed(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'MARK_READING_CONSUMED') {
+        handleMarkReadingConsumed(message.payload).then(sendResponse);
+        return true;
     }
 });
 
+function emitUrlActivitySample(payload: { url: string; title?: string | null }, reason: string) {
+    const url = String(payload.url ?? '');
+    if (!url || !/^https?:/i.test(url)) return;
+
+    let domain: string;
+    try {
+        domain = new URL(url).hostname.replace(/^www\./, '');
+    } catch {
+        return;
+    }
+
+    const idleSeconds = idleState === 'active' ? 0 : Math.floor((Date.now() - lastIdleChange) / 1000);
+
+    emitActivity({
+        type: 'activity',
+        reason,
+        payload: {
+            timestamp: Date.now(),
+            source: 'url' as const,
+            appName: getBrowserLabel(),
+            windowTitle: payload.title ?? domain,
+            url,
+            domain,
+            idleSeconds
+        }
+    });
+}
+
+async function handlePageHeartbeat(payload: { url?: string; title?: string }, sender: chrome.runtime.MessageSender) {
+    try {
+        if (sender.tab && sender.tab.active === false) {
+            return { ok: true };
+        }
+        const url = typeof payload?.url === 'string' ? payload.url : sender.tab?.url;
+        if (!url) return { ok: true };
+
+        emitUrlActivitySample({ url, title: typeof payload?.title === 'string' ? payload.title : sender.tab?.title ?? undefined }, 'content-heartbeat');
+
+        // Keep offline session enforcement responsive even if the service worker is being suspended.
+        await tickSessions();
+
+        return { ok: true };
+    } catch {
+        return { ok: true };
+    }
+}
+
+async function handleOpenDesktopAction(payload: { kind: 'deeplink' | 'file'; url?: string; path?: string; app?: string }) {
+    if (!payload || (payload.kind !== 'deeplink' && payload.kind !== 'file')) {
+        return { success: false, error: 'Invalid action' };
+    }
+
+    try {
+        const response = await fetch(`${DESKTOP_API_URL}/actions/open`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            cache: 'no-store'
+        });
+        if (!response.ok) {
+            const data = (await response.json().catch(() => null)) as { error?: string } | null;
+            return { success: false, error: data?.error ?? 'Failed to open in desktop app' };
+        }
+        return { success: true };
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+}
+
+type LinkPreview = {
+    url: string;
+    title?: string;
+    description?: string;
+    imageUrl?: string;
+    iconUrl?: string;
+    updatedAt: number;
+};
+
+const LINK_PREVIEW_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const LINK_PREVIEW_MAX_ENTRIES = 250;
+
+function canonicalizePreviewUrl(raw: string): string | null {
+    try {
+        const parsed = new URL(raw);
+        parsed.hash = '';
+        return parsed.toString();
+    } catch {
+        return null;
+    }
+}
+
+function chromeFaviconUrl(url: string): string {
+    return `chrome://favicon2/?size=64&url=${encodeURIComponent(url)}`;
+}
+
+function extractMeta(html: string, attr: 'property' | 'name', key: string): string | undefined {
+    const re = new RegExp(`<meta\\s+[^>]*${attr}=["']${escapeRegExp(key)}["'][^>]*content=["']([^"']+)["'][^>]*>`, 'i');
+    const m = html.match(re);
+    if (!m?.[1]) return undefined;
+    return decodeHtml(m[1]).trim();
+}
+
+function extractTitle(html: string): string | undefined {
+    const ogTitle = extractMeta(html, 'property', 'og:title');
+    if (ogTitle) return ogTitle;
+    const m = html.match(/<title[^>]*>([^<]{1,200})<\/title>/i);
+    if (!m?.[1]) return undefined;
+    return decodeHtml(m[1]).trim();
+}
+
+function extractDescription(html: string): string | undefined {
+    return (
+        extractMeta(html, 'property', 'og:description') ??
+        extractMeta(html, 'name', 'description')
+    );
+}
+
+function extractOgImage(html: string): string | undefined {
+    return extractMeta(html, 'property', 'og:image');
+}
+
+function extractIconHref(html: string): string | undefined {
+    const m =
+        html.match(/<link\s+[^>]*rel=["'][^"']*(?:shortcut\s+icon|icon)[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>/i) ??
+        html.match(/<link\s+[^>]*href=["']([^"']+)["'][^>]*rel=["'][^"']*(?:shortcut\s+icon|icon)[^"']*["'][^>]*>/i);
+    if (!m?.[1]) return undefined;
+    return decodeHtml(m[1]).trim();
+}
+
+function resolveUrl(maybeRelative: string | undefined, base: string): string | undefined {
+    if (!maybeRelative) return undefined;
+    try {
+        return new URL(maybeRelative, base).toString();
+    } catch {
+        return undefined;
+    }
+}
+
+function escapeRegExp(input: string) {
+    return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function decodeHtml(input: string) {
+    return input
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>');
+}
+
+function youtubeThumb(url: URL): string | null {
+    const host = url.hostname.replace(/^www\./, '');
+    if (host === 'youtu.be') {
+        const id = url.pathname.split('/').filter(Boolean)[0];
+        return id ? `https://i.ytimg.com/vi/${encodeURIComponent(id)}/hqdefault.jpg` : null;
+    }
+    if (host.endsWith('youtube.com')) {
+        const id = url.searchParams.get('v');
+        return id ? `https://i.ytimg.com/vi/${encodeURIComponent(id)}/hqdefault.jpg` : null;
+    }
+    return null;
+}
+
+async function getLinkPreviewFromWeb(url: string): Promise<Omit<LinkPreview, 'updatedAt'> | null> {
+    const canonical = canonicalizePreviewUrl(url);
+    if (!canonical) return null;
+
+    try {
+        const parsed = new URL(canonical);
+        const yt = youtubeThumb(parsed);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 4500);
+        const response = await fetch(canonical, {
+            method: 'GET',
+            redirect: 'follow',
+            cache: 'no-store',
+            signal: controller.signal
+        }).finally(() => clearTimeout(timeout));
+
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const contentType = response.headers.get('content-type') ?? '';
+        if (!contentType.includes('text/html')) {
+            return {
+                url: canonical,
+                title: undefined,
+                description: undefined,
+                imageUrl: yt ?? undefined,
+                iconUrl: chromeFaviconUrl(canonical)
+            };
+        }
+
+        const html = await response.text();
+        const title = extractTitle(html);
+        const description = extractDescription(html);
+        const imageUrl = yt ?? resolveUrl(extractOgImage(html), canonical);
+        const iconUrl = resolveUrl(extractIconHref(html), canonical) ?? chromeFaviconUrl(canonical);
+
+        return { url: canonical, title, description, imageUrl, iconUrl };
+    } catch {
+        return { url: canonical, iconUrl: chromeFaviconUrl(canonical) };
+    }
+}
+
+async function loadLinkPreviewCache(): Promise<Record<string, LinkPreview>> {
+    const result = await chrome.storage.local.get('linkPreviewCache');
+    const raw = result.linkPreviewCache;
+    if (!raw || typeof raw !== 'object') return {};
+    return raw as Record<string, LinkPreview>;
+}
+
+async function saveLinkPreviewCache(cache: Record<string, LinkPreview>): Promise<void> {
+    const entries = Object.entries(cache)
+        .filter(([, v]) => v && typeof v.url === 'string')
+        .sort((a, b) => (b[1].updatedAt ?? 0) - (a[1].updatedAt ?? 0));
+
+    const pruned: Record<string, LinkPreview> = {};
+    for (const [k, v] of entries.slice(0, LINK_PREVIEW_MAX_ENTRIES)) {
+        pruned[k] = v;
+    }
+    await chrome.storage.local.set({ linkPreviewCache: pruned });
+}
+
+async function handleGetLinkPreviews(payload: { urls?: string[] }) {
+    const urls = Array.isArray(payload?.urls) ? payload.urls : [];
+    const canonicalUrls = urls
+        .map((u) => canonicalizePreviewUrl(String(u)))
+        .filter((u): u is string => Boolean(u));
+
+    if (!canonicalUrls.length) {
+        return { success: true as const, previews: {} as Record<string, LinkPreview | null> };
+    }
+
+    const now = Date.now();
+    const cache = await loadLinkPreviewCache();
+
+    const previews: Record<string, LinkPreview | null> = {};
+    let cacheChanged = false;
+
+    for (const url of canonicalUrls) {
+        const existing = cache[url];
+        if (existing && now - existing.updatedAt < LINK_PREVIEW_TTL_MS) {
+            previews[url] = existing;
+            continue;
+        }
+
+        const fetched = await getLinkPreviewFromWeb(url);
+        if (!fetched) {
+            previews[url] = null;
+            continue;
+        }
+
+        const next: LinkPreview = { ...fetched, updatedAt: now };
+        cache[url] = next;
+        previews[url] = next;
+        cacheChanged = true;
+    }
+
+    if (cacheChanged) {
+        await saveLinkPreviewCache(cache);
+    }
+
+    return { success: true as const, previews };
+}
+
+function setupContextMenus() {
+    if (!chrome.contextMenus?.create) return;
+    chrome.contextMenus.removeAll(() => {
+        const error = chrome.runtime.lastError;
+        if (error) {
+            console.warn('Failed to clear context menus', error);
+        }
+        chrome.contextMenus.create({
+            id: CONTEXT_MENU_IDS.rootSave,
+            title: 'Save to TimeWellSpent',
+            contexts: ['page', 'link']
+        });
+        chrome.contextMenus.create({
+            id: CONTEXT_MENU_IDS.saveReplace,
+            parentId: CONTEXT_MENU_IDS.rootSave,
+            title: 'Replace (Try this instead)',
+            contexts: ['page', 'link']
+        });
+        chrome.contextMenus.create({
+            id: CONTEXT_MENU_IDS.saveAllow,
+            parentId: CONTEXT_MENU_IDS.rootSave,
+            title: 'Allow (good link)',
+            contexts: ['page', 'link']
+        });
+        chrome.contextMenus.create({
+            id: CONTEXT_MENU_IDS.saveTemptation,
+            parentId: CONTEXT_MENU_IDS.rootSave,
+            title: 'Temptation (keep contained)',
+            contexts: ['page', 'link']
+        });
+        chrome.contextMenus.create({
+            id: CONTEXT_MENU_IDS.savePriced,
+            parentId: CONTEXT_MENU_IDS.rootSave,
+            title: 'Allow (priced)…',
+            contexts: ['page', 'link']
+        });
+
+        chrome.contextMenus.create({
+            id: CONTEXT_MENU_IDS.rootDomain,
+            title: 'Label this domain',
+            contexts: ['page']
+        });
+        chrome.contextMenus.create({
+            id: CONTEXT_MENU_IDS.domainProductive,
+            parentId: CONTEXT_MENU_IDS.rootDomain,
+            title: 'Productive',
+            contexts: ['page']
+        });
+        chrome.contextMenus.create({
+            id: CONTEXT_MENU_IDS.domainNeutral,
+            parentId: CONTEXT_MENU_IDS.rootDomain,
+            title: 'Neutral',
+            contexts: ['page']
+        });
+        chrome.contextMenus.create({
+            id: CONTEXT_MENU_IDS.domainFrivolous,
+            parentId: CONTEXT_MENU_IDS.rootDomain,
+            title: 'Frivolous',
+            contexts: ['page']
+        });
+    });
+}
+
+function normaliseUrl(raw?: string | null): string | null {
+    if (!raw) return null;
+    let candidate = raw.trim();
+    if (!candidate) return null;
+    if (candidate.startsWith('chrome://') || candidate.startsWith('about:')) return null;
+    if (!/^https?:/i.test(candidate)) {
+        candidate = `https://${candidate}`;
+    }
+    try {
+        const parsed = new URL(candidate);
+        return parsed.toString();
+    } catch {
+        return null;
+    }
+}
+
+function normaliseTitle(title?: string | null) {
+    if (!title) return undefined;
+    const trimmed = title.trim();
+    if (!trimmed) return undefined;
+    return trimmed.slice(0, 80);
+}
+
+function deriveTitle(url: string, linkText?: string | null, selection?: string | null, pageTitle?: string | null) {
+    const candidate = normaliseTitle(linkText) ?? normaliseTitle(selection) ?? normaliseTitle(pageTitle);
+    if (candidate) return candidate;
+    try {
+        return new URL(url).hostname;
+    } catch {
+        return url;
+    }
+}
+
+function matchPricedLibraryItem(items: LibraryItem[], url: string): LibraryItem | null {
+    const exact = items.find((item) => item.kind === 'url' && item.url === url && typeof item.price === 'number');
+    if (exact) return exact;
+    try {
+        const parsed = new URL(url);
+        const baseUrl = `${parsed.origin}${parsed.pathname}`;
+        return items.find((item) => item.kind === 'url' && item.url === baseUrl && typeof item.price === 'number') ?? null;
+    } catch {
+        return null;
+    }
+}
+
+async function showNotification(message: string, tabId?: number) {
+    if (chrome.notifications) {
+        try {
+            await chrome.notifications.create('', {
+                type: 'basic',
+                iconUrl: NOTIFICATION_ICON,
+                title: 'TimeWellSpent',
+                message,
+                priority: 0
+            });
+            return;
+        } catch (err) {
+            console.warn('Notification failed', err);
+        }
+    }
+
+    if (tabId) {
+        try {
+            await chrome.scripting.executeScript({
+                target: { tabId },
+                func: (msg) => alert(msg),
+                args: [message]
+            });
+            return;
+        } catch (error) {
+            console.warn('Failed to show in-tab alert', error);
+        }
+    }
+
+    console.log(message);
+}
+
+async function promptRouletteCompletion(session: RouletteOpen) {
+    const safeTitle = (session.title ?? '').trim();
+    const fallbackTitle = (() => {
+        try {
+            return new URL(session.url).hostname.replace(/^www\./, '');
+        } catch {
+            return 'this tab';
+        }
+    })();
+    const title = safeTitle ? safeTitle : fallbackTitle;
+
+    if (chrome.notifications) {
+        const id = `tws-roulette-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        rouletteNotificationMap.set(id, session);
+        try {
+            await chrome.notifications.create(id, {
+                type: 'basic',
+                iconUrl: NOTIFICATION_ICON,
+                title: 'TimeWellSpent',
+                message: `Done with “${title}”?`,
+                buttons: [{ title: 'Done' }, { title: 'Keep open' }],
+                priority: 0
+            });
+            return;
+        } catch (err) {
+            rouletteNotificationMap.delete(id);
+            console.warn('Failed to show roulette completion notification', err);
+        }
+    }
+}
+
+async function findLibraryItem(url: string) {
+    const items = (await storage.getState()).libraryItems || [];
+    const cached = items.find((it: any) => it.kind === 'url' && it.url === url) ?? null;
+    if (cached) return cached;
+
+    try {
+        const response = await fetch(`${DESKTOP_API_URL}/library/check?url=${encodeURIComponent(url)}`, { cache: 'no-store' });
+        if (response.ok) {
+            const data = await response.json();
+            return data?.item ?? null;
+        }
+    } catch {
+        // Desktop unavailable.
+    }
+    return null;
+}
+
+async function findLibraryItemOnDesktop(url: string) {
+    try {
+        const response = await fetch(`${DESKTOP_API_URL}/library/check?url=${encodeURIComponent(url)}`, { cache: 'no-store' });
+        if (!response.ok) return null;
+        const data = await response.json();
+        return data?.item ?? null;
+    } catch {
+        return null;
+    }
+}
+
+async function addLibraryItemToDesktop(payload: { url: string; purpose: LibraryPurpose; price?: number | null; title?: string | null; note?: string | null; consumedAt?: string | null }) {
+    const response = await fetch(`${DESKTOP_API_URL}/library`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            kind: 'url',
+            url: payload.url,
+            purpose: payload.purpose,
+            price: payload.price === undefined ? undefined : payload.price,
+            title: payload.title ?? undefined,
+            note: payload.note ?? undefined,
+            consumedAt: payload.consumedAt
+        }),
+        cache: 'no-store'
+    });
+
+    if (!response.ok) {
+        let errorMessage = 'Failed to save to desktop app. Is it running?';
+        try {
+            const data = await response.json();
+            if (data?.error) errorMessage = data.error;
+        } catch {
+            // Ignore JSON parse errors
+        }
+        throw new Error(errorMessage);
+    }
+}
+
+async function updateLibraryItemOnDesktop(id: number, payload: { purpose?: LibraryPurpose; price?: number | null; title?: string | null; note?: string | null; consumedAt?: string | null }) {
+    const response = await fetch(`${DESKTOP_API_URL}/library/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            purpose: payload.purpose,
+            price: payload.price === undefined ? undefined : payload.price,
+            title: payload.title ?? undefined,
+            note: payload.note ?? undefined,
+            consumedAt: payload.consumedAt
+        }),
+        cache: 'no-store'
+    });
+    if (!response.ok) {
+        let errorMessage = 'Failed to update the library item. Is the desktop app running?';
+        try {
+            const data = await response.json();
+            if (data?.error) errorMessage = data.error;
+        } catch {
+            // Ignore JSON parse errors
+        }
+        throw new Error(errorMessage);
+    }
+}
+
+async function upsertLibraryItemOnDesktop(payload: { url: string; purpose: LibraryPurpose; price?: number | null; title?: string | null; note?: string | null; consumedAt?: string | null }) {
+    const existing = await findLibraryItemOnDesktop(payload.url);
+    if (existing) {
+        await updateLibraryItemOnDesktop(existing.id, payload);
+        return { action: 'updated' as const };
+    }
+    await addLibraryItemToDesktop(payload);
+    return { action: 'added' as const };
+}
+
+async function syncPendingLibraryItems(onlyUrls?: string[]) {
+    const pending = await storage.getPendingLibrarySync();
+    const entries = Object.values(pending)
+        .filter(entry => !onlyUrls || onlyUrls.includes(entry.url))
+        .sort((a, b) => a.updatedAt - b.updatedAt);
+
+    if (!entries.length) return { attempted: 0, succeeded: 0 };
+
+    let succeeded = 0;
+    for (const entry of entries) {
+        try {
+            await upsertLibraryItemOnDesktop(entry as any);
+            await storage.clearPendingLibrarySync(entry.url);
+            succeeded += 1;
+        } catch (error) {
+            console.warn('Failed to sync library item to desktop', error);
+        }
+    }
+
+    if (succeeded > 0) {
+        await syncFromDesktop();
+    }
+    return { attempted: entries.length, succeeded };
+}
+
+async function upsertLibraryItem(payload: { url: string; purpose: LibraryPurpose; price?: number | null; title?: string | null; note?: string | null }) {
+    const existing = await findLibraryItem(payload.url);
+    const action = existing ? 'updated' : 'added';
+    await storage.queueLibrarySync(payload as any);
+    const syncResult = await syncPendingLibraryItems([payload.url]);
+    return { action, synced: syncResult.succeeded > 0 };
+}
+
+type CategorisationPayload = {
+    productiveDomains: string[];
+    neutralDomains: string[];
+    frivolityDomains: string[];
+};
+
+function normalizeDomainInput(raw: string) {
+    const trimmed = (raw ?? '').trim().toLowerCase();
+    if (!trimmed) return null;
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        try {
+            return new URL(trimmed).hostname.replace(/^www\./, '');
+        } catch {
+            return null;
+        }
+    }
+    const cleaned = trimmed.split('/')[0].replace(/^www\./, '');
+    return cleaned || null;
+}
+
+function dedupeDomains(items: string[]) {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const item of items) {
+        const norm = normalizeDomainInput(item);
+        if (!norm || seen.has(norm)) continue;
+        seen.add(norm);
+        result.push(norm);
+    }
+    return result;
+}
+
+async function updateCategorisationOnDesktop(payload: CategorisationPayload) {
+    const response = await fetch(`${DESKTOP_API_URL}/settings/categorisation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            productive: payload.productiveDomains,
+            neutral: payload.neutralDomains,
+            frivolity: payload.frivolityDomains
+        }),
+        cache: 'no-store'
+    });
+    if (!response.ok) {
+        let message = 'Failed to update categorisation on desktop app.';
+        try {
+            const data = await response.json();
+            if (data?.error) message = data.error;
+        } catch {
+            // ignore parse errors
+        }
+        throw new Error(message);
+    }
+}
+
+async function syncPendingCategorisation() {
+    const pending = await storage.getPendingCategorisationUpdate();
+    if (!pending) return { attempted: 0, succeeded: 0 };
+    try {
+        await updateCategorisationOnDesktop(pending);
+        await storage.clearPendingCategorisationUpdate();
+        await syncFromDesktop();
+        return { attempted: 1, succeeded: 1 };
+    } catch (error) {
+        console.warn('Failed to sync categorisation update to desktop', error);
+        return { attempted: 1, succeeded: 0 };
+    }
+}
+
+async function handleUpsertLibraryItem(payload: { url?: string; purpose?: LibraryPurpose; price?: number | null; title?: string | null; note?: string | null }) {
+    const url = typeof payload?.url === 'string' ? payload.url.trim() : '';
+    const purpose = payload?.purpose;
+    if (!url) return { success: false, error: 'Missing URL' };
+    if (purpose !== 'replace' && purpose !== 'allow' && purpose !== 'temptation') {
+        return { success: false, error: 'Invalid purpose' };
+    }
+    if (purpose !== 'allow' && typeof payload.price === 'number') {
+        return { success: false, error: 'Only Allow items can be priced' };
+    }
+    if (payload.price !== undefined && payload.price !== null) {
+        const price = Number(payload.price);
+        if (!Number.isFinite(price) || !Number.isInteger(price) || price < 1) {
+            return { success: false, error: 'Invalid price' };
+        }
+    }
+    try {
+        const result = await upsertLibraryItem({
+            url,
+            purpose,
+            price: payload.price,
+            title: payload?.title ?? null,
+            note: payload?.note ?? null
+        });
+        return { success: true, ...result };
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+}
+
+async function handleSetDomainCategory(payload: { domain?: string; category?: 'productive' | 'neutral' | 'frivolous' }) {
+    const category = payload?.category;
+    const domain = normalizeDomainInput(payload?.domain ?? '');
+    if (!domain) return { success: false, error: 'Invalid domain' };
+    if (category !== 'productive' && category !== 'neutral' && category !== 'frivolous') {
+        return { success: false, error: 'Invalid category' };
+    }
+
+    const state = await storage.getState();
+    const productive = dedupeDomains((state.settings?.productiveDomains ?? []).filter((d) => normalizeDomainInput(d) !== domain));
+    const neutral = dedupeDomains((state.settings?.neutralDomains ?? []).filter((d) => normalizeDomainInput(d) !== domain));
+    const frivolity = dedupeDomains((state.settings?.frivolityDomains ?? []).filter((d) => normalizeDomainInput(d) !== domain));
+
+    if (category === 'productive') productive.unshift(domain);
+    if (category === 'neutral') neutral.unshift(domain);
+    if (category === 'frivolous') frivolity.unshift(domain);
+
+    const payloadNext: CategorisationPayload = {
+        productiveDomains: productive,
+        neutralDomains: neutral,
+        frivolityDomains: frivolity
+    };
+    await storage.queueCategorisationUpdate(payloadNext);
+    const syncResult = await syncPendingCategorisation();
+    return { success: true, synced: syncResult.succeeded > 0 };
+}
+
+async function promptForUnlockDetails(tabId: number, defaults: { url: string; price: number; title?: string }) {
+    const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (input: { url: string; price: number; title?: string }) => {
+            const priceStr = prompt(`Save a one-time unlock\n\nPrice (f-coins) for:\n${input.url}`, String(input.price));
+            if (priceStr === null) return null;
+            const trimmedPrice = priceStr.trim();
+            if (!trimmedPrice) return { error: 'Price is required' };
+            const price = parseInt(trimmedPrice, 10);
+            if (isNaN(price) || price < 1) return { error: 'Invalid price' };
+            const titleStr = prompt(`Optional title:\n${input.url}`, input.title ?? '');
+            if (titleStr === null) return null;
+            const title = titleStr.trim();
+            return { url: input.url, price, title: title || null };
+        },
+        args: [defaults]
+    });
+
+    const payload = results[0]?.result;
+    if (!payload) return null;
+    if ((payload as { error?: string }).error) {
+        throw new Error((payload as { error?: string }).error ?? 'Invalid input');
+    }
+    return payload as { url: string; price: number; title?: string | null };
+}
+
 async function handleGetStatus(payload: { domain: string; url?: string }) {
+    await syncFromDesktop().catch(() => { });
     const balance = await storage.getBalance();
     const rate = await storage.getMarketRate(payload.domain);
     const session = await storage.getSession(payload.domain);
     const lastSync = await storage.getLastSyncTime();
+    const state = await storage.getState();
 
-    // Check for store item
-    let storeItem = null;
-    if (payload.url) {
-        const items = (await storage.getState()).storeItems || [];
-        // Exact match
-        storeItem = items.find(item => item.url === payload.url);
-        // If not exact, try without query params as fallback if not strict? 
-        // Plan said: "Supports exact URL match or URL prefix match" logic in backend. 
-        // Let's implement simple exact match first, or backend logic replication.
-        // Actually backend check is better if I can fetch it, but local cache is faster.
-        // Replicating backend logic:
-        if (!storeItem) {
-            try {
-                const parsed = new URL(payload.url);
-                const baseUrl = `${parsed.origin}${parsed.pathname}`;
-                storeItem = items.find(item => item.url === baseUrl);
-            } catch (e) { }
+    const libraryItems = state.libraryItems ?? [];
+    const matchedPricedItem = payload.url ? matchPricedLibraryItem(libraryItems, payload.url) : null;
+
+    let readingItems: any[] = [];
+    try {
+        const response = await fetch(`${DESKTOP_API_URL}/integrations/reading?limit=12`, { cache: 'no-store' });
+        if (response.ok) {
+            const data = (await response.json()) as { items?: any[] };
+            if (Array.isArray(data.items)) readingItems = data.items;
         }
+    } catch {
+        // Desktop not available or integration not supported.
     }
+
+    const consumedReading = state.consumedReading ?? {};
+    readingItems = readingItems.filter((item: any) => item?.id && !consumedReading[String(item.id)]);
 
     return {
         balance,
         rate,
         session,
-        storeItem,
+        matchedPricedItem,
         lastSync,
-        desktopConnected: ws?.readyState === WebSocket.OPEN
+        desktopConnected: ws?.readyState === WebSocket.OPEN,
+        emergencyPolicy: state.settings.emergencyPolicy ?? 'balanced',
+        emergency: state.emergency,
+        journal: state.settings.journal ?? { url: null, minutes: 10 },
+        library: {
+            items: libraryItems,
+            replaceItems: libraryItems.filter((item) => item.purpose === 'replace' && !item.consumedAt),
+            productiveDomains: state.settings.productiveDomains ?? [],
+            readingItems
+        }
     };
 }
 
@@ -653,7 +1559,8 @@ async function handleStartStoreSession(payload: { domain: string; price: number;
             lastTick: Date.now(),
             paused: false,
             purchasePrice: payload.price,
-            spendRemainder: 0
+            spendRemainder: 0,
+            allowedUrl: payload.url ? baseUrl(payload.url) ?? undefined : undefined
         };
         await storage.setSession(payload.domain, session);
 
@@ -678,6 +1585,96 @@ async function handleGetConnection() {
         lastSync,
         sessions
     };
+}
+
+async function handleOpenUrl(payload: { url: string; roulette?: { title?: string; libraryId?: number; readingId?: string } }, sender: chrome.runtime.MessageSender) {
+    const url = typeof payload?.url === 'string' ? payload.url.trim() : '';
+    if (!url) return { success: false, error: 'Missing URL' };
+    if (!/^https?:/i.test(url)) return { success: false, error: 'Only http(s) URLs are supported' };
+
+    try {
+        const tabId = sender.tab?.id;
+        if (typeof tabId === 'number') {
+            await chrome.tabs.update(tabId, { url });
+            if (payload.roulette) {
+                rouletteByTabId.set(tabId, {
+                    openedAt: Date.now(),
+                    url,
+                    title: typeof payload.roulette.title === 'string' ? payload.roulette.title : undefined,
+                    libraryId: typeof payload.roulette.libraryId === 'number' ? payload.roulette.libraryId : undefined,
+                    readingId: typeof payload.roulette.readingId === 'string' ? payload.roulette.readingId : undefined
+                });
+            }
+            return { success: true };
+        }
+        const created = await chrome.tabs.create({ url, active: true });
+        if (payload.roulette && created?.id != null) {
+            rouletteByTabId.set(created.id, {
+                openedAt: Date.now(),
+                url,
+                title: typeof payload.roulette.title === 'string' ? payload.roulette.title : undefined,
+                libraryId: typeof payload.roulette.libraryId === 'number' ? payload.roulette.libraryId : undefined,
+                readingId: typeof payload.roulette.readingId === 'string' ? payload.roulette.readingId : undefined
+            });
+        }
+        return { success: true };
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+}
+
+async function handleOpenApp(payload: { app: string }) {
+    const app = typeof payload?.app === 'string' ? payload.app.trim() : '';
+    if (!app) return { success: false, error: 'Missing app name' };
+
+    try {
+        const response = await fetch(`${DESKTOP_API_URL}/actions/open`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ kind: 'app', app }),
+            cache: 'no-store'
+        });
+        if (!response.ok) {
+            const body = await response.json().catch(() => null);
+            const message = body?.error ? String(body.error) : 'Failed to open app';
+            return { success: false, error: message };
+        }
+        return { success: true };
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+}
+
+async function handleMarkLibraryConsumed(payload: { id?: number; consumed?: boolean }) {
+    const id = typeof payload?.id === 'number' && Number.isFinite(payload.id) ? payload.id : null;
+    if (id == null) return { success: false, error: 'Missing library item id' };
+    const consumed = payload?.consumed === false ? false : true;
+    const consumedAt = consumed ? new Date().toISOString() : null;
+
+    const state = await storage.getState();
+    const item = (state.libraryItems ?? []).find((it) => it?.id === id) ?? null;
+    if (!item) return { success: false, error: 'Library item not found' };
+    if (item.kind !== 'url' || !item.url) return { success: false, error: 'Only URL items can be marked as consumed' };
+
+    await storage.setLibraryItemConsumed(id, consumedAt);
+    await storage.queueLibrarySync({
+        url: item.url,
+        purpose: item.purpose,
+        price: typeof item.price === 'number' ? item.price : undefined,
+        title: item.title ?? null,
+        note: item.note ?? null,
+        consumedAt
+    });
+    const syncResult = await syncPendingLibraryItems([item.url]);
+    return { success: true, synced: syncResult.succeeded > 0 };
+}
+
+async function handleMarkReadingConsumed(payload: { id?: string; consumed?: boolean }) {
+    const id = typeof payload?.id === 'string' ? payload.id.trim() : '';
+    if (!id) return { success: false, error: 'Missing reading id' };
+    const consumed = payload?.consumed === false ? false : true;
+    await storage.markReadingConsumed(id, consumed);
+    return { success: true };
 }
 
 async function handleBuyPack(payload: { domain: string; minutes: number }) {
@@ -791,107 +1788,204 @@ async function handleEndSession(payload: { domain: string }) {
     return { success: true, refund };
 }
 
-async function handleStartEmergency(payload: { domain: string; justification: string }) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'paywall:start-emergency', payload }));
-        // We expect the desktop to broadcast the session start back to us
-        return { success: true };
-    }
-
-    // Try desktop over HTTP if WS is down
+async function handleStartEmergency(payload: { domain: string; justification: string; url?: string }) {
     const desktopResult = await preferDesktopEmergency(payload);
     if (desktopResult.ok) return { success: true, session: desktopResult.session };
+    if (!desktopResult.canFallback) return { success: false, error: desktopResult.error };
 
-    // Fallback to local (offline)
+    const state = await storage.getState();
+    const policyId = (state.settings.emergencyPolicy ?? 'balanced') as EmergencyPolicyId;
+    const policy = getEmergencyPolicyConfig(policyId);
+    if (policy.id === 'off') return { success: false, error: 'Emergency access is disabled in Settings.' };
+
+    const now = Date.now();
+    const today = new Date(now).toISOString().slice(0, 10);
+    const current = await storage.getEmergencyUsage();
+    const usage =
+        current.day === today
+            ? current
+            : { day: today, tokensUsed: 0, cooldownUntil: null };
+
+    if (usage.cooldownUntil && now < usage.cooldownUntil) {
+        const remainingMinutes = Math.max(1, Math.ceil((usage.cooldownUntil - now) / 60_000));
+        return { success: false, error: `Emergency cooldown active (${remainingMinutes}m remaining).` };
+    }
+    if (typeof policy.tokensPerDay === 'number' && usage.tokensUsed >= policy.tokensPerDay) {
+        return { success: false, error: `No emergency uses left today (${policy.tokensPerDay}/day).` };
+    }
+
+    const nextUsage = {
+        ...usage,
+        tokensUsed: usage.tokensUsed + (typeof policy.tokensPerDay === 'number' ? 1 : 0),
+        cooldownUntil: policy.cooldownSeconds > 0 ? now + policy.cooldownSeconds * 1000 : null
+    };
+    await storage.setEmergencyUsage(nextUsage);
+
+    const allowedUrl = policy.urlLocked && payload.url ? baseUrl(payload.url) : null;
+
+    // Fallback to local (offline). No "debt" cost is applied because the extension wallet can't go negative.
     const session = {
         domain: payload.domain,
         mode: 'emergency' as const,
         ratePerMin: 0,
-        remainingSeconds: Infinity,
-        startedAt: Date.now(),
+        remainingSeconds: policy.durationSeconds,
+        startedAt: now,
+        lastTick: now,
+        paused: false,
         spendRemainder: 0,
         justification: payload.justification,
-        lastReminder: Date.now()
+        lastReminder: now,
+        allowedUrl: allowedUrl ?? undefined
     };
 
     await storage.setSession(payload.domain, session);
-    console.log(`✅ Started emergency session for ${payload.domain}`);
+    console.log(`✅ Started emergency session for ${payload.domain} (offline mode)`);
     return { success: true, session };
+}
+
+async function handleEmergencyReview(payload: { outcome: 'kept' | 'not-kept'; domain?: string }) {
+    const outcome = payload?.outcome;
+    if (outcome !== 'kept' && outcome !== 'not-kept') return { success: false, error: 'Invalid outcome' };
+
+    const stats = await storage.recordEmergencyReview(outcome);
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'paywall:emergency-review', payload: { outcome, domain: payload.domain } }));
+        return { success: true, stats };
+    }
+
+    try {
+        await fetch(`${DESKTOP_API_URL}/paywall/emergency-review`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ outcome }),
+            cache: 'no-store',
+        });
+    } catch {
+        // Desktop unreachable; local stats still recorded.
+    }
+
+    return { success: true, stats };
 }
 
 // Keep alive
 chrome.runtime.onStartup.addListener(() => {
     storage.init();
     tryConnectToDesktop();
+    setupContextMenus();
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-    chrome.contextMenus.create({
-        id: 'add-to-store',
-        title: 'Add to TimeWellSpent Store',
-        contexts: ['page', 'link']
-    });
+    setupContextMenus();
 });
 
+// Service worker may start without onStartup (e.g. first manual reload); ensure menus exist.
+setupContextMenus();
+
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-    if (info.menuItemId === 'add-to-store' && tab?.id) {
-        const url = info.linkUrl || info.pageUrl;
-        if (!url) return;
+    const tabId = (info as any).tabId ?? tab?.id;
+    const rawTarget = info.linkUrl || info.pageUrl;
+    const targetUrl = normaliseUrl(rawTarget);
+    const linkText = (info as { linkText?: string }).linkText ?? null;
+    const selectionText = typeof info.selectionText === 'string' ? info.selectionText : null;
+    const pageTitle = tab?.title ?? null;
 
-        // Inject script to ask for price
-        try {
-            const results = await chrome.scripting.executeScript({
-                target: { tabId: tab.id },
-                func: (urlToSave) => {
-                    const priceStr = prompt(`Add to TimeWellSpent Store\n\nEnter price (f-coins) for:\n${urlToSave}`, '10');
-                    if (!priceStr) return null;
-                    const price = parseInt(priceStr, 10);
-                    if (isNaN(price) || price < 1) return { error: 'Invalid price' };
-                    const title = document.title;
-                    return { url: urlToSave, price, title };
-                },
-                args: [url]
-            });
+    const itemId = String(info.menuItemId);
 
-            const result = results[0]?.result;
-            if (!result || result.error) {
-                if (result?.error) {
-                    await chrome.scripting.executeScript({
-                        target: { tabId: tab.id },
-                        func: (msg) => alert(msg),
-                        args: [result.error]
-                    });
-                }
-                return;
-            }
+    const isSave =
+        itemId === CONTEXT_MENU_IDS.saveReplace ||
+        itemId === CONTEXT_MENU_IDS.saveAllow ||
+        itemId === CONTEXT_MENU_IDS.saveTemptation ||
+        itemId === CONTEXT_MENU_IDS.savePriced;
 
-            // Send to desktop
-            try {
-                const response = await fetch(`${DESKTOP_API_URL}/store`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(result)
-                });
+    const purposeForMenu = (id: string): LibraryPurpose | null => {
+        if (id === CONTEXT_MENU_IDS.saveReplace) return 'replace';
+        if (id === CONTEXT_MENU_IDS.saveAllow) return 'allow';
+        if (id === CONTEXT_MENU_IDS.saveTemptation) return 'temptation';
+        if (id === CONTEXT_MENU_IDS.savePriced) return 'allow';
+        return null;
+    };
 
-                if (response.ok) {
-                    await chrome.scripting.executeScript({
-                        target: { tabId: tab.id },
-                        func: () => alert('✅ Added to store!'),
-                    });
-                    // Force sync
-                    syncFromDesktop();
-                } else {
-                    throw new Error('Failed to save');
-                }
-            } catch (err) {
-                await chrome.scripting.executeScript({
-                    target: { tabId: tab.id },
-                    func: () => alert('❌ Failed to save to desktop app. Is it running?'),
-                });
-            }
-
-        } catch (err) {
-            console.error('Failed to handle context menu click', err);
+    if (isSave) {
+        if (!targetUrl) {
+            await showNotification('Unable to capture that link.', tabId);
+            return;
         }
+
+        const purpose = purposeForMenu(itemId);
+        if (!purpose) return;
+
+        if (itemId === CONTEXT_MENU_IDS.savePriced) {
+            if (!tabId) return;
+            try {
+                const existing = await findLibraryItem(targetUrl);
+                const defaults = {
+                    url: targetUrl,
+                    price: typeof existing?.price === 'number' ? existing.price : DEFAULT_UNLOCK_PRICE,
+                    title: existing?.title ?? deriveTitle(targetUrl, linkText, selectionText, pageTitle)
+                };
+                const payload = await promptForUnlockDetails(tabId, defaults);
+                if (!payload) return;
+
+                const normalizedTitle = normaliseTitle(payload.title ?? null) ?? null;
+                const result = await upsertLibraryItem({
+                    url: payload.url,
+                    purpose: 'allow',
+                    price: payload.price,
+                    title: normalizedTitle,
+                    note: null
+                });
+                const verb = result.action === 'updated' ? 'Updated' : 'Saved';
+                const suffix = result.synced ? 'Synced to desktop.' : 'Saved locally. Will sync when desktop is available.';
+                await showNotification(`${verb} priced unlock (${payload.price} f-coins). ${suffix}`, tabId);
+            } catch (err) {
+                await showNotification((err as Error).message || 'Failed to save priced unlock', tabId);
+            }
+            return;
+        }
+
+        const title = deriveTitle(targetUrl, linkText, selectionText, pageTitle);
+        try {
+            const result = await upsertLibraryItem({
+                url: targetUrl,
+                purpose,
+                title,
+                note: null
+            });
+            const verb = result.action === 'updated' ? 'Updated' : 'Saved';
+            const suffix = result.synced ? 'Synced to desktop.' : 'Saved locally. Will sync when desktop is available.';
+            await showNotification(`${verb} to Library (${purpose}). ${suffix}`, tabId);
+        } catch (err) {
+            await showNotification((err as Error).message || 'Failed to save to library', tabId);
+        }
+        return;
+    }
+
+    if (
+        itemId === CONTEXT_MENU_IDS.domainProductive ||
+        itemId === CONTEXT_MENU_IDS.domainNeutral ||
+        itemId === CONTEXT_MENU_IDS.domainFrivolous
+    ) {
+        const pageUrl = typeof info.pageUrl === 'string' ? info.pageUrl : (typeof tab?.url === 'string' ? tab.url : '');
+        const domain = normalizeDomainInput(pageUrl);
+        if (!domain) {
+            await showNotification('Unable to detect a domain for this page.', tabId);
+            return;
+        }
+
+        const category =
+            itemId === CONTEXT_MENU_IDS.domainProductive
+                ? 'productive'
+                : itemId === CONTEXT_MENU_IDS.domainNeutral
+                    ? 'neutral'
+                    : 'frivolous';
+
+        const result = await handleSetDomainCategory({ domain, category });
+        if (!result.success) {
+            await showNotification(result.error ?? 'Failed to label domain', tabId);
+            return;
+        }
+        const suffix = result.synced ? 'Synced to desktop.' : 'Saved locally. Will sync when desktop is available.';
+        await showNotification(`Marked ${domain} as ${category}. ${suffix}`, tabId);
     }
 });

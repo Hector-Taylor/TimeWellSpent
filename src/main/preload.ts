@@ -61,17 +61,50 @@ const api: RendererApi = {
     idleThreshold: () => ipcRenderer.invoke('settings:idle-threshold'),
     updateIdleThreshold: (value) => ipcRenderer.invoke('settings:update-idle-threshold', value),
     frivolousIdleThreshold: () => ipcRenderer.invoke('settings:frivolous-idle-threshold'),
-    updateFrivolousIdleThreshold: (value) => ipcRenderer.invoke('settings:update-frivolous-idle-threshold', value)
+    updateFrivolousIdleThreshold: (value) => ipcRenderer.invoke('settings:update-frivolous-idle-threshold', value),
+    emergencyPolicy: () => ipcRenderer.invoke('settings:emergency-policy'),
+    updateEmergencyPolicy: (value) => ipcRenderer.invoke('settings:update-emergency-policy', value),
+    emergencyReminderInterval: () => ipcRenderer.invoke('settings:emergency-reminder-interval'),
+    updateEmergencyReminderInterval: (value) => ipcRenderer.invoke('settings:update-emergency-reminder-interval', value),
+    economyExchangeRate: () => ipcRenderer.invoke('settings:economy-exchange-rate'),
+    updateEconomyExchangeRate: (value) => ipcRenderer.invoke('settings:update-economy-exchange-rate', value),
+    journalConfig: () => ipcRenderer.invoke('settings:journal-config'),
+    updateJournalConfig: (value) => ipcRenderer.invoke('settings:update-journal-config', value)
   },
-  store: {
-    list: () => ipcRenderer.invoke('store:list'),
-    add: (url, price, title) => ipcRenderer.invoke('store:add', { url, price, title }),
-    remove: (id) => ipcRenderer.invoke('store:remove', { id }),
-    findByUrl: (url) => ipcRenderer.invoke('store:find-by-url', { url })
+  integrations: {
+    zotero: {
+      config: () => ipcRenderer.invoke('integrations:zotero-config'),
+      updateConfig: (value) => ipcRenderer.invoke('integrations:update-zotero-config', value),
+      collections: () => ipcRenderer.invoke('integrations:zotero-collections')
+    }
+  },
+  library: {
+    list: () => ipcRenderer.invoke('library:list'),
+    add: (payload) => ipcRenderer.invoke('library:add', payload),
+    update: (id, payload) => ipcRenderer.invoke('library:update', { id, ...payload }),
+    remove: (id) => ipcRenderer.invoke('library:remove', { id }),
+    findByUrl: (url) => ipcRenderer.invoke('library:find-by-url', { url })
+  },
+  analytics: {
+    overview: (days) => ipcRenderer.invoke('analytics:overview', { days }),
+    timeOfDay: (days) => ipcRenderer.invoke('analytics:time-of-day', { days }),
+    patterns: (days) => ipcRenderer.invoke('analytics:patterns', { days }),
+    engagement: (domain, days) => ipcRenderer.invoke('analytics:engagement', { domain, days }),
+    trends: (granularity) => ipcRenderer.invoke('analytics:trends', { granularity })
+  },
+  friends: {
+    identity: () => ipcRenderer.invoke('friends:identity'),
+    enable: (payload) => ipcRenderer.invoke('friends:enable', payload),
+    disable: () => ipcRenderer.invoke('friends:disable'),
+    publishNow: () => ipcRenderer.invoke('friends:publish'),
+    list: () => ipcRenderer.invoke('friends:list'),
+    add: (friend) => ipcRenderer.invoke('friends:add', friend),
+    remove: (id) => ipcRenderer.invoke('friends:remove', { id }),
+    fetchAll: () => ipcRenderer.invoke('friends:fetch-all')
   },
   events: {
-    on: (channel, callback) => {
-      const listener = (_event: IpcRendererEvent, payload: unknown) => callback(payload);
+    on: <T = unknown>(channel: string, callback: (payload: T) => void) => {
+      const listener = (_event: IpcRendererEvent, payload: T) => callback(payload);
       ipcRenderer.on(channel, listener);
       return () => ipcRenderer.removeListener(channel, listener);
     }

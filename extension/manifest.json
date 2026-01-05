@@ -3,6 +3,22 @@
     "name": "TimeWellSpent Companion",
     "version": "0.1.0",
     "description": "Companion extension that defers to the TimeWellSpent desktop app for paywall decisions.",
+    "action": {
+        "default_title": "TimeWellSpent",
+        "default_popup": "index.html",
+        "default_icon": {
+            "16": "icons/icon16.png",
+            "32": "icons/icon32.png",
+            "48": "icons/icon48.png",
+            "128": "icons/icon128.png"
+        }
+    },
+    "icons": {
+        "16": "icons/icon16.png",
+        "32": "icons/icon32.png",
+        "48": "icons/icon48.png",
+        "128": "icons/icon128.png"
+    },
     "permissions": [
         "tabs",
         "activeTab",
@@ -10,7 +26,8 @@
         "storage",
         "idle",
         "webNavigation",
-        "contextMenus"
+        "contextMenus",
+        "notifications"
     ],
     "host_permissions": [
         "http://localhost:17600/*",

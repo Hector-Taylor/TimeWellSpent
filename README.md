@@ -7,6 +7,7 @@ TimeWellSpent is a **cross-platform**, local-first focus companion that turns de
 - Always-on-top paywall that intercepts frivolous domains, instantly closes the offending tab, and enforces pay-as-you-go or pre-paid time packs.
 - Local economy with productive/neutral/frivolity categorisation, Pomodoro payouts, and idle detection.
 - Dashboard with wallet balance, activity feed, focus session controls, intentions, budgets, and market editor.
+- “Try this instead” roulette backed by a local Library of user-curated attractors (URLs/apps).
 - **Cross-platform URL monitoring:**
   - **macOS:** AppleScript-based URL watching for Safari, Chrome, Brave, Edge, Arc, and Firefox
   - **Windows:** Chrome DevTools Protocol (CDP) for Chromium browsers + title-based fallback
@@ -79,7 +80,13 @@ Everything runs locally; no network calls leave your machine.
 
 ## Optional browser extension
 
-The repo reserves `extension/` for a Manifest V3 companion that can connect to the local API to block frivolous domains in Chromium-based browsers. Run `pnpm dev:ext` from the root once you scaffold the extension to start its build/watch process, then load the unpacked build in Chrome/Arc/Edge.
+The repo reserves `extension/` for a Manifest V3 companion that can connect to the local API to block frivolous domains in Chromium-based browsers. Run `pnpm dev:ext` from the repo root to watch/rebuild, then load `extension/dist/` as an unpacked extension in Chrome/Arc/Edge and click **Reload** whenever the browser prompts you.
+
+## Friends feed (optional)
+
+A no-signup “friends feed” can publish and fetch daily aggregate summaries (no URLs) via a tiny relay you host.
+
+- Relay scaffold + deploy steps: `relay/README.md`
 
 ## Project layout
 

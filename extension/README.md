@@ -16,6 +16,16 @@ pnpm dev      # Watch mode for development
 pnpm build    # Production build
 ```
 
+### Seeing changes in the browser
+
+MV3 extensions don’t hot-reload in Chromium. After rebuilding (or while `pnpm dev` is watching):
+
+1. Open `chrome://extensions/` (or `arc://extensions/` / `edge://extensions/`).
+2. Find **TimeWellSpent** and click **Reload** (or click the browser’s **Relaunch to update** button if shown).
+3. Refresh any tabs you want the updated paywall UI/content script to run on.
+
+Tip: open the extension’s **Service worker** console from `chrome://extensions/` to see logs/errors.
+
 ## Installation
 
 1. Build the extension: `pnpm build`

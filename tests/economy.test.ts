@@ -47,6 +47,7 @@ describe('EconomyEngine', () => {
     const economy = new EconomyEngine(wallet as any, market as any, paywall);
     const classifier = new ActivityClassifier(
       () => ({ productive: ['docs'], neutral: [], frivolity: [] }),
+      () => 10,
       () => 10
     );
 
@@ -71,6 +72,7 @@ describe('EconomyEngine', () => {
     const economy = new EconomyEngine(wallet as any, market as any, paywall);
     const classifier = new ActivityClassifier(
       () => ({ productive: [], neutral: ['slack'], frivolity: [] }),
+      () => 10,
       () => 10
     );
 
@@ -107,6 +109,7 @@ describe('EconomyEngine', () => {
     const economy = new EconomyEngine(wallet as any, market as any, paywall);
     const classifier = new ActivityClassifier(
       () => ({ productive: [], neutral: [], frivolity: ['twitter.com'] }),
+      () => 10,
       () => 10
     );
     const requiredSpy = vi.fn();
@@ -135,6 +138,7 @@ describe('EconomyEngine', () => {
     const economy = new EconomyEngine(wallet as any, market as any, paywall);
     const classifier = new ActivityClassifier(
       () => ({ productive: [], neutral: [], frivolity: ['twitter.com', 'x.com'] }),
+      () => 10,
       () => 10
     );
 
@@ -166,6 +170,7 @@ describe('EconomyEngine', () => {
     const economy = new EconomyEngine(wallet as any, market as any, paywall);
     const classifier = new ActivityClassifier(
       () => ({ productive: [], neutral: [], frivolity: ['twitter.com'] }),
+      () => 5,
       () => 5
     );
 

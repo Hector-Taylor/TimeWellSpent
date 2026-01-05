@@ -3,6 +3,8 @@ import expressWs from 'express-ws';
 import type { Server } from 'node:http';
 import type WebSocket from 'ws';
 import { EventEmitter } from 'node:events';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { WalletManager } from './wallet';
 import { MarketService } from './market';
 import { SettingsService } from './settings';
@@ -15,9 +17,13 @@ import { BudgetService } from './budgets';
 import { ActivityClassifier } from './activityClassifier';
 import { ActivityPipeline, type ActivityOrigin } from './activityPipeline';
 import type { Database } from './storage';
-import type { MarketRate } from '@shared/types';
+import type { BehaviorEvent, MarketRate } from '@shared/types';
 import { logger } from '@shared/logger';
-import { StoreService } from './store';
+import { AnalyticsService } from './analytics';
+import { EmergencyService } from './emergency';
+import { LibraryService } from './library';
+import { FriendsService } from './friends';
+import { ReadingService } from './reading';
 
 export type BackendServices = {
   wallet: WalletManager;
@@ -27,9 +33,12 @@ export type BackendServices = {
   paywall: PaywallManager;
   economy: EconomyEngine;
   focus: FocusService;
+  analytics: AnalyticsService;
   intentions: IntentionService;
   budgets: BudgetService;
-  store: StoreService;
+  library: LibraryService;
+  reading: ReadingService;
+  friends: FriendsService;
   handleActivity: (event: ActivityEvent & { idleSeconds?: number }, origin?: ActivityOrigin) => void;
   extension: {
     status: () => { connected: boolean; lastSeen: number | null };
@@ -48,6 +57,7 @@ export async function createBackend(database: Database): Promise<BackendServices
   const settings = new SettingsService(database);
   const paywall = new PaywallManager(wallet, market);
   const economy = new EconomyEngine(wallet, market, paywall, () => settings.getEmergencyReminderInterval());
+  const emergency = new EmergencyService(settings, wallet, paywall);
   const activityTracker = new ActivityTracker(database);
   const classifier = new ActivityClassifier(
     () => settings.getCategorisation(),
@@ -58,7 +68,10 @@ export async function createBackend(database: Database): Promise<BackendServices
   const focus = new FocusService(database, wallet);
   const intentions = new IntentionService(database);
   const budgets = new BudgetService(database);
-  const store = new StoreService(database);
+  const analytics = new AnalyticsService(database);
+  const library = new LibraryService(database);
+  const reading = new ReadingService(settings);
+  const friends = new FriendsService(settings, analytics);
 
   const app = express();
   const ws = expressWs(app);
@@ -149,18 +162,162 @@ export async function createBackend(database: Database): Promise<BackendServices
 
   app.post('/paywall/emergency', (req, res) => {
     try {
-      const { domain, justification } = req.body as { domain: string; justification: string };
-      const session = economy.startEmergency(domain, justification);
+      const { domain, justification, url } = req.body as { domain: string; justification: string; url?: string };
+      const session = emergency.start(domain, justification, { url });
       res.json(session);
     } catch (error) {
       res.status(400).json({ error: (error as Error).message });
     }
   });
 
+  const startStoreSession = (req: express.Request, res: express.Response) => {
+    try {
+      const { domain, price, url } = req.body as { domain: string; price: number; url?: string };
+      if (!domain) throw new Error('Domain is required');
+      if (typeof price !== 'number' || Number.isNaN(price) || price < 1) {
+        throw new Error('Price must be at least 1');
+      }
+      const normalisedUrl = typeof url === 'string' && url.trim().length > 0 ? url : undefined;
+      const session = economy.startStore(domain, price, normalisedUrl);
+      res.json(session);
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+    }
+  };
+
+  app.post('/paywall/store', startStoreSession);
+  app.post('/paywall/start-store-fallback', startStoreSession);
+
   app.get('/paywall/status', (req, res) => {
     const domain = String(req.query.domain ?? '');
     const session = paywall.getSession(domain);
     res.json({ session, wallet: wallet.getSnapshot(), rates: market.getRate(domain) });
+  });
+
+  app.post('/paywall/emergency-review', (req, res) => {
+    try {
+      const { outcome } = req.body as { outcome: 'kept' | 'not-kept' };
+      if (outcome !== 'kept' && outcome !== 'not-kept') {
+        throw new Error('Invalid outcome');
+      }
+      const stats = emergency.recordReview(outcome);
+      res.json({ ok: true, stats });
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  app.post('/actions/open', (req, res) => {
+    try {
+      const body = (req.body ?? {}) as { kind?: string; url?: string; app?: string; path?: string };
+      const kind = String(body.kind ?? '');
+
+      const allowedApps = new Set(['Books', 'Zotero']);
+
+      if (kind === 'app') {
+        const appName = String(body.app ?? '').trim();
+        if (!appName) throw new Error('App is required');
+        if (!allowedApps.has(appName)) throw new Error('App not allowed');
+        if (process.platform !== 'darwin') throw new Error('Opening apps is only supported on macOS for now');
+
+        const child = spawn('open', ['-a', appName], { detached: true, stdio: 'ignore' });
+        child.unref();
+        res.json({ ok: true });
+        return;
+      }
+
+      if (kind === 'deeplink') {
+        const url = String(body.url ?? '').trim();
+        if (!url) throw new Error('URL is required');
+        let parsed: URL;
+        try {
+          parsed = new URL(url);
+        } catch {
+          throw new Error('Invalid URL');
+        }
+        if (parsed.protocol !== 'zotero:') {
+          throw new Error('Deep link not allowed');
+        }
+        if (process.platform !== 'darwin') throw new Error('Deep links are only supported on macOS for now');
+
+        const child = spawn('open', [url], { detached: true, stdio: 'ignore' });
+        child.unref();
+        res.json({ ok: true });
+        return;
+      }
+
+      if (kind === 'file') {
+        const filePath = String(body.path ?? '').trim();
+        if (!filePath) throw new Error('Path is required');
+        if (process.platform !== 'darwin') throw new Error('Opening files is only supported on macOS for now');
+
+        const allowedRoots = new Set<string>();
+        const zoteroDir = settings.getJson<string>('zoteroDataDir');
+        const booksDir = settings.getJson<string>('booksLibraryDir');
+        if (typeof zoteroDir === 'string' && zoteroDir.trim()) allowedRoots.add(zoteroDir.trim());
+        if (typeof booksDir === 'string' && booksDir.trim()) allowedRoots.add(booksDir.trim());
+
+        const resolved = path.resolve(filePath);
+        const isAllowed = [...allowedRoots].some((root) => {
+          const resolvedRoot = path.resolve(root);
+          return resolved === resolvedRoot || resolved.startsWith(resolvedRoot + path.sep);
+        });
+        if (!isAllowed) throw new Error('File path not allowed');
+
+        const appName = body.app ? String(body.app).trim() : '';
+        const args = appName && allowedApps.has(appName) ? ['-a', appName, resolved] : [resolved];
+        const child = spawn('open', args, { detached: true, stdio: 'ignore' });
+        child.unref();
+        res.json({ ok: true });
+        return;
+      }
+
+      if (kind === 'url') {
+        const url = String(body.url ?? '').trim();
+        if (!url) throw new Error('URL is required');
+        let parsed: URL;
+        try {
+          parsed = new URL(url);
+        } catch {
+          throw new Error('Invalid URL');
+        }
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          throw new Error('Only http(s) URLs are supported');
+        }
+
+        if (process.platform === 'darwin') {
+          const child = spawn('open', [url], { detached: true, stdio: 'ignore' });
+          child.unref();
+          res.json({ ok: true });
+          return;
+        }
+        if (process.platform === 'win32') {
+          const child = spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' });
+          child.unref();
+          res.json({ ok: true });
+          return;
+        }
+        const child = spawn('xdg-open', [url], { detached: true, stdio: 'ignore' });
+        child.unref();
+        res.json({ ok: true });
+        return;
+      }
+
+      throw new Error('Invalid kind');
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  app.get('/integrations/reading', async (req, res) => {
+    try {
+      const limit = Number(req.query.limit ?? 12);
+      const clamped = Number.isFinite(limit) ? Math.max(1, Math.min(24, limit)) : 12;
+      const items = await reading.getAttractors(clamped);
+      res.json({ items });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
   });
 
   app.get('/activities/recent', (req, res) => {
@@ -217,30 +374,101 @@ export async function createBackend(database: Database): Promise<BackendServices
     res.json({ ok: true });
   });
 
-  // Store Enpoints
-  app.get('/store', (_req, res) => {
-    res.json(store.list());
+  // Library Endpoints
+  app.get('/library', (_req, res) => {
+    res.json(library.list());
   });
 
-  app.post('/store', (req, res) => {
+  app.post('/library', (req, res) => {
     try {
-      const { url, price, title } = req.body as { url: string; price: number; title: string };
-      const item = store.add(url, price, title);
+      const payload = req.body as {
+        kind: 'url' | 'app';
+        url?: string;
+        app?: string;
+        title?: string;
+        note?: string;
+        purpose: 'replace' | 'allow' | 'temptation';
+        price?: number | null;
+      };
+      const item = library.add(payload);
       res.json(item);
     } catch (error) {
       res.status(400).json({ error: (error as Error).message });
     }
   });
 
-  app.delete('/store/:id', (req, res) => {
-    store.remove(Number(req.params.id));
+  app.patch('/library/:id', (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) {
+        throw new Error('Invalid library item id');
+      }
+      const payload = req.body as {
+        title?: string | null;
+        note?: string | null;
+        purpose?: 'replace' | 'allow' | 'temptation';
+        price?: number | null;
+        consumedAt?: string | null;
+      };
+      const item = library.update(id, payload);
+      res.json(item);
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+  app.delete('/library/:id', (req, res) => {
+    library.remove(Number(req.params.id));
     res.json({ ok: true });
   });
 
-  app.get('/store/check', (req, res) => {
+  app.get('/library/check', (req, res) => {
     const url = String(req.query.url ?? '');
-    const item = store.findMatchingItem(url);
+    const item = library.getByUrl(url);
     res.json({ item });
+  });
+
+  // ============================================================================
+  // Analytics Endpoints
+  // ============================================================================
+
+  app.get('/analytics/overview', (req, res) => {
+    const days = Number(req.query.days ?? 7);
+    res.json(analytics.getOverview(days));
+  });
+
+  app.get('/analytics/time-of-day', (req, res) => {
+    const days = Number(req.query.days ?? 7);
+    res.json(analytics.getTimeOfDayAnalysis(days));
+  });
+
+  app.get('/analytics/patterns', (req, res) => {
+    const days = Number(req.query.days ?? 30);
+    res.json(analytics.getBehavioralPatterns(days));
+  });
+
+  app.get('/analytics/engagement/:domain', (req, res) => {
+    const domain = req.params.domain;
+    const days = Number(req.query.days ?? 7);
+    res.json(analytics.getEngagementMetrics(domain, days));
+  });
+
+  app.get('/analytics/trends', (req, res) => {
+    const granularity = (req.query.granularity as 'hour' | 'day' | 'week') || 'day';
+    res.json(analytics.getTrends(granularity));
+  });
+
+  app.post('/analytics/behavior-events', (req, res) => {
+    try {
+      const events = req.body.events as BehaviorEvent[];
+      if (!Array.isArray(events)) {
+        return res.status(400).json({ error: 'events must be an array' });
+      }
+      analytics.ingestBehaviorEvents(events);
+      res.json({ ok: true, count: events.length });
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+    }
   });
 
   app.post('/paywall/cancel', (req, res) => {
@@ -268,6 +496,25 @@ export async function createBackend(database: Database): Promise<BackendServices
 
   app.get('/settings/idle-threshold', (_req, res) => {
     res.json({ threshold: settings.getIdleThreshold() });
+  });
+
+  app.get('/settings/categorisation', (_req, res) => {
+    res.json(settings.getCategorisation());
+  });
+
+  app.post('/settings/categorisation', (req, res) => {
+    try {
+      const payload = req.body as { productive?: string[]; neutral?: string[]; frivolity?: string[] };
+      const next = {
+        productive: Array.isArray(payload.productive) ? payload.productive : [],
+        neutral: Array.isArray(payload.neutral) ? payload.neutral : [],
+        frivolity: Array.isArray(payload.frivolity) ? payload.frivolity : []
+      };
+      settings.setCategorisation(next);
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+    }
   });
 
   app.post('/settings/idle-threshold', (req, res) => {
@@ -305,7 +552,7 @@ export async function createBackend(database: Database): Promise<BackendServices
         marketRates[rate.domain] = rate;
       }
 
-      const sessionsRecord = paywall.listSessions().reduce<Record<string, { domain: string; mode: 'metered' | 'pack' | 'emergency' | 'store'; ratePerMin: number; remainingSeconds: number; paused?: boolean; purchasePrice?: number; purchasedSeconds?: number; justification?: string; lastReminder?: number }>>((acc, session) => {
+      const sessionsRecord = paywall.listSessions().reduce<Record<string, { domain: string; mode: 'metered' | 'pack' | 'emergency' | 'store'; ratePerMin: number; remainingSeconds: number; paused?: boolean; purchasePrice?: number; purchasedSeconds?: number; justification?: string; lastReminder?: number; allowedUrl?: string }>>((acc, session) => {
         acc[session.domain] = {
           domain: session.domain,
           mode: session.mode,
@@ -315,7 +562,8 @@ export async function createBackend(database: Database): Promise<BackendServices
           purchasePrice: session.purchasePrice,
           purchasedSeconds: session.purchasedSeconds,
           justification: session.justification,
-          lastReminder: session.lastReminder
+          lastReminder: session.lastReminder,
+          allowedUrl: session.allowedUrl
         };
         return acc;
       }, {});
@@ -326,12 +574,15 @@ export async function createBackend(database: Database): Promise<BackendServices
           lastSynced: Date.now()
         },
         marketRates,
-        storeItems: store.list(),
+        libraryItems: library.list(),
         settings: {
           frivolityDomains: categorisation.frivolity,
           productiveDomains: categorisation.productive,
           neutralDomains: categorisation.neutral,
-          idleThreshold: settings.getIdleThreshold()
+          idleThreshold: settings.getIdleThreshold(),
+          emergencyPolicy: settings.getEmergencyPolicy(),
+          economyExchangeRate: settings.getEconomyExchangeRate(),
+          journal: settings.getJournalConfig()
         },
         sessions: sessionsRecord
       });
@@ -391,16 +642,31 @@ export async function createBackend(database: Database): Promise<BackendServices
           }
         } else if (data.type === 'paywall:start-emergency' && data.payload?.domain && data.payload?.justification) {
           try {
-            const session = economy.startEmergency(String(data.payload.domain), String(data.payload.justification));
+            const session = emergency.start(String(data.payload.domain), String(data.payload.justification), {
+              url: data.payload.url ? String(data.payload.url) : undefined
+            });
             broadcast({ type: 'paywall-session-started', payload: session });
           } catch (error) {
             logger.error('Failed to start emergency from extension', error);
             socket.send(JSON.stringify({ type: 'error', payload: { message: (error as Error).message } }));
           }
+        } else if (data.type === 'paywall:emergency-review' && data.payload?.outcome) {
+          try {
+            const outcome = String(data.payload.outcome);
+            if (outcome !== 'kept' && outcome !== 'not-kept') throw new Error('Invalid outcome');
+            const stats = emergency.recordReview(outcome);
+            socket.send(JSON.stringify({ type: 'emergency-review-recorded', payload: stats }));
+          } catch (error) {
+            socket.send(JSON.stringify({ type: 'error', payload: { message: (error as Error).message } }));
+          }
         } else if (data.type === 'paywall:start-store' && data.payload?.domain && typeof data.payload?.price === 'number') {
           try {
             // We use startStore on economy which delegates to paywall
-            const session = economy.startStore(String(data.payload.domain), Number(data.payload.price));
+            const session = economy.startStore(
+              String(data.payload.domain),
+              Number(data.payload.price),
+              data.payload.url ? String(data.payload.url) : undefined
+            );
             broadcast({ type: 'paywall-session-started', payload: session });
           } catch (error) {
             logger.error('Failed to start store session from extension', error);
@@ -438,6 +704,10 @@ export async function createBackend(database: Database): Promise<BackendServices
   focus.on('tick', (payload) => broadcast({ type: 'focus-tick', payload }));
   focus.on('start', (payload) => broadcast({ type: 'focus-start', payload }));
   focus.on('stop', (payload) => broadcast({ type: 'focus-stop', payload }));
+  const emitLibrarySync = () => broadcast({ type: 'library-sync', payload: { items: library.list() } });
+  library.on('added', emitLibrarySync);
+  library.on('updated', emitLibrarySync);
+  library.on('removed', emitLibrarySync);
 
   const handleActivity = (event: ActivityEvent & { idleSeconds?: number }, origin: ActivityOrigin = 'system') => {
     activityPipeline.handle(event, origin);
@@ -476,7 +746,10 @@ export async function createBackend(database: Database): Promise<BackendServices
     focus,
     intentions,
     budgets,
-    store,
+    library,
+    analytics,
+    reading,
+    friends,
     handleActivity,
     extension: {
       status: () => ({ connected: clients.size > 0, lastSeen: lastExtensionSeen }),

@@ -59,13 +59,46 @@ const api = {
     idleThreshold: () => electron.ipcRenderer.invoke("settings:idle-threshold"),
     updateIdleThreshold: (value) => electron.ipcRenderer.invoke("settings:update-idle-threshold", value),
     frivolousIdleThreshold: () => electron.ipcRenderer.invoke("settings:frivolous-idle-threshold"),
-    updateFrivolousIdleThreshold: (value) => electron.ipcRenderer.invoke("settings:update-frivolous-idle-threshold", value)
+    updateFrivolousIdleThreshold: (value) => electron.ipcRenderer.invoke("settings:update-frivolous-idle-threshold", value),
+    emergencyPolicy: () => electron.ipcRenderer.invoke("settings:emergency-policy"),
+    updateEmergencyPolicy: (value) => electron.ipcRenderer.invoke("settings:update-emergency-policy", value),
+    emergencyReminderInterval: () => electron.ipcRenderer.invoke("settings:emergency-reminder-interval"),
+    updateEmergencyReminderInterval: (value) => electron.ipcRenderer.invoke("settings:update-emergency-reminder-interval", value),
+    economyExchangeRate: () => electron.ipcRenderer.invoke("settings:economy-exchange-rate"),
+    updateEconomyExchangeRate: (value) => electron.ipcRenderer.invoke("settings:update-economy-exchange-rate", value),
+    journalConfig: () => electron.ipcRenderer.invoke("settings:journal-config"),
+    updateJournalConfig: (value) => electron.ipcRenderer.invoke("settings:update-journal-config", value)
   },
-  store: {
-    list: () => electron.ipcRenderer.invoke("store:list"),
-    add: (url, price, title) => electron.ipcRenderer.invoke("store:add", { url, price, title }),
-    remove: (id) => electron.ipcRenderer.invoke("store:remove", { id }),
-    findByUrl: (url) => electron.ipcRenderer.invoke("store:find-by-url", { url })
+  integrations: {
+    zotero: {
+      config: () => electron.ipcRenderer.invoke("integrations:zotero-config"),
+      updateConfig: (value) => electron.ipcRenderer.invoke("integrations:update-zotero-config", value),
+      collections: () => electron.ipcRenderer.invoke("integrations:zotero-collections")
+    }
+  },
+  library: {
+    list: () => electron.ipcRenderer.invoke("library:list"),
+    add: (payload) => electron.ipcRenderer.invoke("library:add", payload),
+    update: (id, payload) => electron.ipcRenderer.invoke("library:update", { id, ...payload }),
+    remove: (id) => electron.ipcRenderer.invoke("library:remove", { id }),
+    findByUrl: (url) => electron.ipcRenderer.invoke("library:find-by-url", { url })
+  },
+  analytics: {
+    overview: (days) => electron.ipcRenderer.invoke("analytics:overview", { days }),
+    timeOfDay: (days) => electron.ipcRenderer.invoke("analytics:time-of-day", { days }),
+    patterns: (days) => electron.ipcRenderer.invoke("analytics:patterns", { days }),
+    engagement: (domain, days) => electron.ipcRenderer.invoke("analytics:engagement", { domain, days }),
+    trends: (granularity) => electron.ipcRenderer.invoke("analytics:trends", { granularity })
+  },
+  friends: {
+    identity: () => electron.ipcRenderer.invoke("friends:identity"),
+    enable: (payload) => electron.ipcRenderer.invoke("friends:enable", payload),
+    disable: () => electron.ipcRenderer.invoke("friends:disable"),
+    publishNow: () => electron.ipcRenderer.invoke("friends:publish"),
+    list: () => electron.ipcRenderer.invoke("friends:list"),
+    add: (friend) => electron.ipcRenderer.invoke("friends:add", friend),
+    remove: (id) => electron.ipcRenderer.invoke("friends:remove", { id }),
+    fetchAll: () => electron.ipcRenderer.invoke("friends:fetch-all")
   },
   events: {
     on: (channel, callback) => {

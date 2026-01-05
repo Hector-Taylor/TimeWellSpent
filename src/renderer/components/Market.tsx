@@ -16,11 +16,13 @@ export default function Market({ api, rates, onChange, wallet }: MarketProps) {
 
   async function addRate(event: FormEvent) {
     event.preventDefault();
-    if (!domain.trim()) return;
-    const existing = rates.find((rate) => rate.domain === domain.trim());
+    const trimmed = domain.trim();
+    if (!trimmed) return;
+    const existing = rates.find((rate) => rate.domain === trimmed);
+    const hourlyModifiers = existing?.hourlyModifiers ?? Array(24).fill(1);
     const record: MarketRate = existing
-      ? { ...existing, ratePerMin }
-      : { domain: domain.trim(), ratePerMin, packs: [] };
+      ? { ...existing, ratePerMin, hourlyModifiers }
+      : { domain: trimmed, ratePerMin, packs: [], hourlyModifiers };
     if (packMinutes > 0 && packPrice > 0) {
       record.packs = [...record.packs.filter((pack) => pack.minutes !== packMinutes), { minutes: packMinutes, price: packPrice }];
     }

@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { calculateScore } from '../src/backend/scoring';
+import type { Budget } from '@shared/types';
 
 const sampleIntentions = [
   { id: 1, date: '2024-05-01', text: 'Ship feature', completed: true },
   { id: 2, date: '2024-05-01', text: 'Inbox zero', completed: false }
 ];
 
-const sampleBudgets = [
+const sampleBudgets: Budget[] = [
   { id: 1, period: 'day', category: 'Social', secondsBudgeted: 3600 }
 ];
 

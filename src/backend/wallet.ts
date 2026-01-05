@@ -23,7 +23,7 @@ export class WalletManager extends EventEmitter {
   }
 
   getSnapshot(): WalletSnapshot {
-    const row = this.getStmt.get();
+    const row = this.getStmt.get() as { balance: number } | undefined;
     return { balance: row?.balance ?? 0 };
   }
 

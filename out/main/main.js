@@ -40,9 +40,12 @@ const require$$0$9 = require("crypto");
 const require$$1$4 = require("https");
 const require$$4$2 = require("tls");
 const node_events = require("node:events");
-const DatabaseDriver = require("better-sqlite3");
 const node_child_process = require("node:child_process");
+const crypto$1 = require("node:crypto");
+const fs$3 = require("node:fs/promises");
+const os = require("node:os");
 const node_util = require("node:util");
+const DatabaseDriver = require("better-sqlite3");
 var commonjsGlobal = typeof globalThis !== "undefined" ? globalThis : typeof window !== "undefined" ? window : typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : {};
 function getDefaultExportFromCjs(x) {
   return x && x.__esModule && Object.prototype.hasOwnProperty.call(x, "default") ? x["default"] : x;
@@ -23940,7 +23943,7 @@ var objectInspect = function inspect_(obj, options, depth, seen) {
     var ys = arrObjKeys(obj, inspect2);
     var isPlainObject = gPO ? gPO(obj) === Object.prototype : obj instanceof Object || obj.constructor === Object;
     var protoTag = obj instanceof Object ? "" : "null prototype";
-    var stringTag = !isPlainObject && toStringTag && Object(obj) === obj && toStringTag in obj ? $slice.call(toStr$1(obj), 8, -1) : protoTag ? "Object" : "";
+    var stringTag = !isPlainObject && toStringTag && Object(obj) === obj && toStringTag in obj ? $slice.call(toStr(obj), 8, -1) : protoTag ? "Object" : "";
     var constructorTag = isPlainObject || typeof obj.constructor !== "function" ? "" : obj.constructor.name ? obj.constructor.name + " " : "";
     var tag = constructorTag + (stringTag || protoTag ? "[" + $join.call($concat$1.call([], stringTag || [], protoTag || []), ": ") + "] " : "");
     if (ys.length === 0) {
@@ -23965,25 +23968,25 @@ function canTrustToString(obj) {
   return !toStringTag || !(typeof obj === "object" && (toStringTag in obj || typeof obj[toStringTag] !== "undefined"));
 }
 function isArray$3(obj) {
-  return toStr$1(obj) === "[object Array]" && canTrustToString(obj);
+  return toStr(obj) === "[object Array]" && canTrustToString(obj);
 }
 function isDate$1(obj) {
-  return toStr$1(obj) === "[object Date]" && canTrustToString(obj);
+  return toStr(obj) === "[object Date]" && canTrustToString(obj);
 }
 function isRegExp$1(obj) {
-  return toStr$1(obj) === "[object RegExp]" && canTrustToString(obj);
+  return toStr(obj) === "[object RegExp]" && canTrustToString(obj);
 }
 function isError(obj) {
-  return toStr$1(obj) === "[object Error]" && canTrustToString(obj);
+  return toStr(obj) === "[object Error]" && canTrustToString(obj);
 }
 function isString(obj) {
-  return toStr$1(obj) === "[object String]" && canTrustToString(obj);
+  return toStr(obj) === "[object String]" && canTrustToString(obj);
 }
 function isNumber(obj) {
-  return toStr$1(obj) === "[object Number]" && canTrustToString(obj);
+  return toStr(obj) === "[object Number]" && canTrustToString(obj);
 }
 function isBoolean(obj) {
-  return toStr$1(obj) === "[object Boolean]" && canTrustToString(obj);
+  return toStr(obj) === "[object Boolean]" && canTrustToString(obj);
 }
 function isSymbol(obj) {
   if (hasShammedSymbols) {
@@ -24019,7 +24022,7 @@ var hasOwn$1 = Object.prototype.hasOwnProperty || function(key) {
 function has$3(obj, key) {
   return hasOwn$1.call(obj, key);
 }
-function toStr$1(obj) {
+function toStr(obj) {
   return objectToString.call(obj);
 }
 function nameOf(f) {
@@ -24328,7 +24331,7 @@ var syntax = SyntaxError;
 var uri = URIError;
 var abs$1 = Math.abs;
 var floor$1 = Math.floor;
-var max$2 = Math.max;
+var max$1 = Math.max;
 var min$1 = Math.min;
 var pow$1 = Math.pow;
 var round$1 = Math.round;
@@ -24457,78 +24460,99 @@ function requireObject_getPrototypeOf() {
   Object_getPrototypeOf = $Object2.getPrototypeOf || null;
   return Object_getPrototypeOf;
 }
-var ERROR_MESSAGE = "Function.prototype.bind called on incompatible ";
-var toStr = Object.prototype.toString;
-var max$1 = Math.max;
-var funcType = "[object Function]";
-var concatty = function concatty2(a, b) {
-  var arr = [];
-  for (var i = 0; i < a.length; i += 1) {
-    arr[i] = a[i];
-  }
-  for (var j = 0; j < b.length; j += 1) {
-    arr[j + a.length] = b[j];
-  }
-  return arr;
-};
-var slicy = function slicy2(arrLike, offset) {
-  var arr = [];
-  for (var i = offset, j = 0; i < arrLike.length; i += 1, j += 1) {
-    arr[j] = arrLike[i];
-  }
-  return arr;
-};
-var joiny = function(arr, joiner) {
-  var str = "";
-  for (var i = 0; i < arr.length; i += 1) {
-    str += arr[i];
-    if (i + 1 < arr.length) {
-      str += joiner;
+var implementation;
+var hasRequiredImplementation;
+function requireImplementation() {
+  if (hasRequiredImplementation) return implementation;
+  hasRequiredImplementation = 1;
+  var ERROR_MESSAGE = "Function.prototype.bind called on incompatible ";
+  var toStr2 = Object.prototype.toString;
+  var max2 = Math.max;
+  var funcType = "[object Function]";
+  var concatty = function concatty2(a, b) {
+    var arr = [];
+    for (var i = 0; i < a.length; i += 1) {
+      arr[i] = a[i];
     }
-  }
-  return str;
-};
-var implementation$1 = function bind(that) {
-  var target = this;
-  if (typeof target !== "function" || toStr.apply(target) !== funcType) {
-    throw new TypeError(ERROR_MESSAGE + target);
-  }
-  var args = slicy(arguments, 1);
-  var bound;
-  var binder = function() {
-    if (this instanceof bound) {
-      var result = target.apply(
-        this,
+    for (var j = 0; j < b.length; j += 1) {
+      arr[j + a.length] = b[j];
+    }
+    return arr;
+  };
+  var slicy = function slicy2(arrLike, offset) {
+    var arr = [];
+    for (var i = offset, j = 0; i < arrLike.length; i += 1, j += 1) {
+      arr[j] = arrLike[i];
+    }
+    return arr;
+  };
+  var joiny = function(arr, joiner) {
+    var str = "";
+    for (var i = 0; i < arr.length; i += 1) {
+      str += arr[i];
+      if (i + 1 < arr.length) {
+        str += joiner;
+      }
+    }
+    return str;
+  };
+  implementation = function bind2(that) {
+    var target = this;
+    if (typeof target !== "function" || toStr2.apply(target) !== funcType) {
+      throw new TypeError(ERROR_MESSAGE + target);
+    }
+    var args = slicy(arguments, 1);
+    var bound;
+    var binder = function() {
+      if (this instanceof bound) {
+        var result = target.apply(
+          this,
+          concatty(args, arguments)
+        );
+        if (Object(result) === result) {
+          return result;
+        }
+        return this;
+      }
+      return target.apply(
+        that,
         concatty(args, arguments)
       );
-      if (Object(result) === result) {
-        return result;
-      }
-      return this;
-    }
-    return target.apply(
-      that,
-      concatty(args, arguments)
-    );
-  };
-  var boundLength = max$1(0, target.length - args.length);
-  var boundArgs = [];
-  for (var i = 0; i < boundLength; i++) {
-    boundArgs[i] = "$" + i;
-  }
-  bound = Function("binder", "return function (" + joiny(boundArgs, ",") + "){ return binder.apply(this,arguments); }")(binder);
-  if (target.prototype) {
-    var Empty = function Empty2() {
     };
-    Empty.prototype = target.prototype;
-    bound.prototype = new Empty();
-    Empty.prototype = null;
-  }
-  return bound;
-};
-var implementation = implementation$1;
-var functionBind = Function.prototype.bind || implementation;
-var functionCall = Function.prototype.call;
+    var boundLength = max2(0, target.length - args.length);
+    var boundArgs = [];
+    for (var i = 0; i < boundLength; i++) {
+      boundArgs[i] = "$" + i;
+    }
+    bound = Function("binder", "return function (" + joiny(boundArgs, ",") + "){ return binder.apply(this,arguments); }")(binder);
+    if (target.prototype) {
+      var Empty = function Empty2() {
+      };
+      Empty.prototype = target.prototype;
+      bound.prototype = new Empty();
+      Empty.prototype = null;
+    }
+    return bound;
+  };
+  return implementation;
+}
+var functionBind;
+var hasRequiredFunctionBind;
+function requireFunctionBind() {
+  if (hasRequiredFunctionBind) return functionBind;
+  hasRequiredFunctionBind = 1;
+  var implementation2 = requireImplementation();
+  functionBind = Function.prototype.bind || implementation2;
+  return functionBind;
+}
+var functionCall;
+var hasRequiredFunctionCall;
+function requireFunctionCall() {
+  if (hasRequiredFunctionCall) return functionCall;
+  hasRequiredFunctionCall = 1;
+  functionCall = Function.prototype.call;
+  return functionCall;
+}
 var functionApply;
 var hasRequiredFunctionApply;
 function requireFunctionApply() {
@@ -24538,14 +24562,14 @@ function requireFunctionApply() {
   return functionApply;
 }
 var reflectApply = typeof Reflect !== "undefined" && Reflect && Reflect.apply;
-var bind$2 = functionBind;
+var bind$2 = requireFunctionBind();
 var $apply$1 = requireFunctionApply();
-var $call$2 = functionCall;
+var $call$2 = requireFunctionCall();
 var $reflectApply = reflectApply;
 var actualApply = $reflectApply || bind$2.call($call$2, $apply$1);
-var bind$1 = functionBind;
+var bind$1 = requireFunctionBind();
 var $TypeError$4 = type;
-var $call$1 = functionCall;
+var $call$1 = requireFunctionCall();
 var $actualApply = actualApply;
 var callBindApplyHelpers = function callBindBasic(args) {
   if (args.length < 1 || typeof args[0] !== "function") {
@@ -24611,8 +24635,8 @@ function requireHasown() {
   hasRequiredHasown = 1;
   var call = Function.prototype.call;
   var $hasOwn = Object.prototype.hasOwnProperty;
-  var bind3 = functionBind;
-  hasown = bind3.call(call, $hasOwn);
+  var bind2 = requireFunctionBind();
+  hasown = bind2.call(call, $hasOwn);
   return hasown;
 }
 var undefined$1;
@@ -24626,7 +24650,7 @@ var $TypeError$3 = type;
 var $URIError = uri;
 var abs = abs$1;
 var floor = floor$1;
-var max = max$2;
+var max = max$1;
 var min = min$1;
 var pow = pow$1;
 var round = round$1;
@@ -24660,7 +24684,7 @@ var getProto = requireGetProto();
 var $ObjectGPO = requireObject_getPrototypeOf();
 var $ReflectGPO = requireReflect_getPrototypeOf();
 var $apply = requireFunctionApply();
-var $call = functionCall;
+var $call = requireFunctionCall();
 var needsEval = {};
 var TypedArray = typeof Uint8Array === "undefined" || !getProto ? undefined$1 : getProto(Uint8Array);
 var INTRINSICS = {
@@ -24831,13 +24855,13 @@ var LEGACY_ALIASES = {
   "%WeakMapPrototype%": ["WeakMap", "prototype"],
   "%WeakSetPrototype%": ["WeakSet", "prototype"]
 };
-var bind2 = functionBind;
+var bind = requireFunctionBind();
 var hasOwn = requireHasown();
-var $concat = bind2.call($call, Array.prototype.concat);
-var $spliceApply = bind2.call($apply, Array.prototype.splice);
-var $replace = bind2.call($call, String.prototype.replace);
-var $strSlice = bind2.call($call, String.prototype.slice);
-var $exec = bind2.call($call, RegExp.prototype.exec);
+var $concat = bind.call($call, Array.prototype.concat);
+var $spliceApply = bind.call($apply, Array.prototype.splice);
+var $replace = bind.call($call, String.prototype.replace);
+var $strSlice = bind.call($call, String.prototype.slice);
+var $exec = bind.call($call, RegExp.prototype.exec);
 var rePropName = /[^%.[\]]+|\[(?:(-?\d+(?:\.\d+)?)|(["'])((?:(?!\2)[^\\]|\\.)*?)\2)\]|(?=(?:\.|\[\])(?:\.|\[\]|%$))/g;
 var reEscapeChar = /\\(\\)?/g;
 var stringToPath = function stringToPath2(string) {
@@ -34428,9 +34452,9 @@ var cookieSignature = {};
     if ("string" != typeof val) throw new TypeError("Signed cookie string must be provided.");
     if ("string" != typeof secret) throw new TypeError("Secret string must be provided.");
     var str = val.slice(0, val.lastIndexOf(".")), mac = exports.sign(str, secret);
-    return sha1(mac) == sha1(val) ? str : false;
+    return sha12(mac) == sha12(val) ? str : false;
   };
-  function sha1(str) {
+  function sha12(str) {
     return crypto2.createHash("sha1").update(str).digest("hex");
   }
 })(cookieSignature);
@@ -38787,6 +38811,134 @@ class SettingsService {
   setEmergencyReminderInterval(value) {
     this.setJson("emergencyReminderInterval", value);
   }
+  getEmergencyPolicy() {
+    const val = this.getJson("emergencyPolicy");
+    if (val === "off" || val === "gentle" || val === "balanced" || val === "strict") return val;
+    return "balanced";
+  }
+  setEmergencyPolicy(value) {
+    this.setJson("emergencyPolicy", value);
+  }
+  getEconomyExchangeRate() {
+    const raw = this.getJson("economyExchangeRate");
+    if (typeof raw === "number" && Number.isFinite(raw) && raw > 0.05 && raw < 20) return raw;
+    return 5 / 3;
+  }
+  setEconomyExchangeRate(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0.05 || n > 20) {
+      throw new Error("Invalid exchange rate");
+    }
+    this.setJson("economyExchangeRate", n);
+  }
+  getJournalConfig() {
+    const raw = this.getJson("journalConfig");
+    const minutes = typeof (raw == null ? void 0 : raw.minutes) === "number" && Number.isFinite(raw.minutes) ? Math.max(1, Math.min(180, Math.round(raw.minutes))) : 10;
+    const url2 = typeof (raw == null ? void 0 : raw.url) === "string" ? raw.url.trim() : "";
+    return { url: url2 ? url2 : null, minutes };
+  }
+  setJournalConfig(value) {
+    const minutes = typeof (value == null ? void 0 : value.minutes) === "number" && Number.isFinite(value.minutes) ? Math.max(1, Math.min(180, Math.round(value.minutes))) : 10;
+    const url2 = typeof (value == null ? void 0 : value.url) === "string" ? value.url.trim() : "";
+    if (url2) {
+      try {
+        const parsed = new URL(url2);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          throw new Error("Journal URL must be http(s)");
+        }
+      } catch {
+        throw new Error("Invalid journal URL");
+      }
+    }
+    this.setJson("journalConfig", { url: url2 ? url2 : null, minutes });
+  }
+  getZoteroIntegrationConfig() {
+    const raw = this.getJson("zoteroIntegration");
+    const mode = (raw == null ? void 0 : raw.mode) === "collection" || (raw == null ? void 0 : raw.mode) === "recent" ? raw.mode : "recent";
+    const collectionId = typeof (raw == null ? void 0 : raw.collectionId) === "number" && Number.isFinite(raw.collectionId) ? raw.collectionId : null;
+    const includeSubcollections = typeof (raw == null ? void 0 : raw.includeSubcollections) === "boolean" ? raw.includeSubcollections : true;
+    return { mode, collectionId, includeSubcollections };
+  }
+  setZoteroIntegrationConfig(value) {
+    const mode = value.mode === "collection" ? "collection" : "recent";
+    const collectionId = typeof value.collectionId === "number" && Number.isFinite(value.collectionId) ? value.collectionId : null;
+    const includeSubcollections = Boolean(value.includeSubcollections);
+    this.setJson("zoteroIntegration", { mode, collectionId, includeSubcollections });
+  }
+  getEmergencyUsageState() {
+    const raw = this.getJson("emergencyUsage");
+    if (!raw || typeof raw !== "object") {
+      return { day: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10), tokensUsed: 0, cooldownUntil: null };
+    }
+    const day = typeof raw.day === "string" ? raw.day : (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+    const tokensUsed = typeof raw.tokensUsed === "number" && Number.isFinite(raw.tokensUsed) ? raw.tokensUsed : 0;
+    const cooldownUntil = raw.cooldownUntil === null ? null : typeof raw.cooldownUntil === "number" && Number.isFinite(raw.cooldownUntil) ? raw.cooldownUntil : null;
+    return { day, tokensUsed, cooldownUntil };
+  }
+  setEmergencyUsageState(value) {
+    this.setJson("emergencyUsage", value);
+  }
+  getEmergencyReviewStats() {
+    const raw = this.getJson("emergencyReviewStats");
+    if (!raw || typeof raw !== "object") {
+      return { total: 0, kept: 0, notKept: 0, lastAt: null };
+    }
+    return {
+      total: typeof raw.total === "number" && Number.isFinite(raw.total) ? raw.total : 0,
+      kept: typeof raw.kept === "number" && Number.isFinite(raw.kept) ? raw.kept : 0,
+      notKept: typeof raw.notKept === "number" && Number.isFinite(raw.notKept) ? raw.notKept : 0,
+      lastAt: typeof raw.lastAt === "string" ? raw.lastAt : null
+    };
+  }
+  recordEmergencyReview(outcome) {
+    const current = this.getEmergencyReviewStats();
+    const next = {
+      total: current.total + 1,
+      kept: current.kept + (outcome === "kept" ? 1 : 0),
+      notKept: current.notKept + (outcome === "not-kept" ? 1 : 0),
+      lastAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    this.setJson("emergencyReviewStats", next);
+    return next;
+  }
+  getFriendsIdentity() {
+    const raw = this.getJson("friendsIdentity");
+    if (!raw || typeof raw !== "object") return null;
+    if (typeof raw.userId !== "string" || typeof raw.publishKey !== "string" || typeof raw.readKey !== "string" || typeof raw.relayUrl !== "string" || typeof raw.createdAt !== "string") {
+      return null;
+    }
+    return raw;
+  }
+  setFriendsIdentity(value) {
+    if (value === null) {
+      this.setJson("friendsIdentity", null);
+      return;
+    }
+    this.setJson("friendsIdentity", value);
+  }
+  listFriends() {
+    const raw = this.getJson("friendsList");
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((item) => item && typeof item.id === "string" && typeof item.name === "string" && typeof item.userId === "string" && typeof item.readKey === "string" && typeof item.addedAt === "string");
+  }
+  setFriendsList(list) {
+    this.setJson("friendsList", list);
+  }
+  getFriendsCache() {
+    const raw = this.getJson("friendsCache");
+    if (!raw || typeof raw !== "object") return {};
+    return raw;
+  }
+  setFriendsCache(cache) {
+    this.setJson("friendsCache", cache);
+  }
+}
+function canonicalDomain(domain) {
+  const cleaned = domain.trim().toLowerCase().replace(/^www\./, "");
+  const aliasMap = {
+    "x.com": "twitter.com"
+  };
+  return aliasMap[cleaned] ?? cleaned;
 }
 class ActivityTracker {
   constructor(database) {
@@ -38911,14 +39063,15 @@ class ActivityTracker {
       totalsByCategory[category] = (totalsByCategory[category] ?? 0) + activeSeconds;
       totalsByCategory.idle += idleSeconds;
       totalsBySource[row.source] += activeSeconds;
-      const key = row.domain ?? row.appName ?? "Unknown";
+      const domain = row.domain ? canonicalDomain(row.domain) : null;
+      const key = domain ?? row.appName ?? "Unknown";
       if (!contextTotals.has(key)) {
         contextTotals.set(key, {
           label: key,
           category: row.category,
           seconds: 0,
           source: row.source,
-          domain: row.domain ?? null,
+          domain,
           appName: row.appName ?? null
         });
       }
@@ -38933,14 +39086,14 @@ class ActivityTracker {
           timeline[bucketIndex].neutral += activeSeconds;
         }
         timeline[bucketIndex].idle += idleSeconds;
-        const key2 = row.domain ?? row.appName ?? "Unknown";
+        const key2 = domain ?? row.appName ?? "Unknown";
         const contextMap = timelineContexts[bucketIndex];
         const ctx = contextMap.get(key2) ?? {
           label: key2,
           category: row.category ?? null,
           seconds: 0,
           source: row.source,
-          domain: row.domain ?? null,
+          domain,
           appName: row.appName ?? null
         };
         ctx.seconds += activeSeconds;
@@ -38981,6 +39134,19 @@ class ActivityTracker {
     this.current = null;
   }
 }
+function normaliseBaseUrl$1(url2) {
+  try {
+    const parsed = new URL(url2);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return null;
+  }
+}
+function urlsMatch(expectedBaseUrl, actualUrl) {
+  const actualBase = normaliseBaseUrl$1(actualUrl);
+  if (!actualBase) return false;
+  return expectedBaseUrl === actualBase;
+}
 class PaywallManager extends node_events.EventEmitter {
   constructor(wallet, market) {
     super();
@@ -38994,8 +39160,9 @@ class PaywallManager extends node_events.EventEmitter {
   hasValidPass(domain, url2) {
     const session = this.sessions.get(domain);
     if (!session) return false;
-    if (session.allowedUrl && url2 && session.allowedUrl !== url2) {
-      return false;
+    if (session.allowedUrl) {
+      if (!url2) return false;
+      if (!urlsMatch(session.allowedUrl, url2)) return false;
     }
     if (session.mode === "metered" || session.mode === "store") return true;
     return session.remainingSeconds > 0;
@@ -39021,7 +39188,7 @@ class PaywallManager extends node_events.EventEmitter {
       paused: false,
       spendRemainder: 0,
       purchasePrice: price,
-      allowedUrl: url2
+      allowedUrl: url2 ? normaliseBaseUrl$1(url2) ?? void 0 : void 0
     };
     this.sessions.set(domain, session);
     this.emit("session-started", session);
@@ -39043,17 +39210,21 @@ class PaywallManager extends node_events.EventEmitter {
     this.emit("session-started", session);
     return session;
   }
-  startEmergency(domain, justification) {
+  notifyWalletUpdated(snapshot) {
+    this.emit("wallet-update", snapshot);
+  }
+  startEmergency(domain, justification, options = {}) {
     const session = {
       domain,
       mode: "emergency",
       ratePerMin: 0,
-      remainingSeconds: Infinity,
+      remainingSeconds: Number.isFinite(options.durationSeconds) ? Math.max(1, Math.round(options.durationSeconds)) : Infinity,
       lastTick: Date.now(),
       paused: false,
       spendRemainder: 0,
       justification,
-      lastReminder: Date.now()
+      lastReminder: Date.now(),
+      allowedUrl: options.allowedUrl
     };
     this.sessions.set(domain, session);
     this.emit("session-started", session);
@@ -39119,10 +39290,8 @@ class PaywallManager extends node_events.EventEmitter {
     const currentHour = (/* @__PURE__ */ new Date()).getHours();
     for (const session of [...this.sessions.values()]) {
       let isActive = activeDomain ? session.domain === activeDomain : false;
-      if (isActive && session.allowedUrl && activeUrl) {
-        if (session.allowedUrl !== activeUrl) {
-          isActive = false;
-        }
+      if (isActive && session.allowedUrl) {
+        if (!activeUrl || !urlsMatch(session.allowedUrl, activeUrl)) isActive = false;
       }
       if (!isActive) {
         if (!session.paused) {
@@ -39143,7 +39312,17 @@ class PaywallManager extends node_events.EventEmitter {
             justification: session.justification
           });
         }
-        session.lastTick = now;
+        if (Number.isFinite(session.remainingSeconds)) {
+          session.remainingSeconds -= intervalSeconds;
+          session.lastTick = now;
+          this.emit("session-tick", session);
+          if (session.remainingSeconds <= 0) {
+            this.sessions.delete(session.domain);
+            this.emit("session-ended", { domain: session.domain, reason: "emergency-expired" });
+          }
+        } else {
+          session.lastTick = now;
+        }
       } else if (session.mode === "metered") {
         let currentRate = session.ratePerMin;
         const marketRate = this.market.getRate(session.domain);
@@ -39328,8 +39507,8 @@ class EconomyEngine extends node_events.EventEmitter {
     }
     return this.paywall.buyPack(domain, minutes, price);
   }
-  startStore(domain, price) {
-    return this.paywall.startStore(domain, price);
+  startStore(domain, price, url2) {
+    return this.paywall.startStore(domain, price, url2);
   }
 }
 const FOCUS_BASE_RATE_PER_MIN = 4;
@@ -39567,96 +39746,718 @@ class ActivityPipeline {
     if (!fresh2) return true;
     const browserNames = ["chrome", "safari", "edge", "brave", "arc", "firefox"];
     const foregroundName = this.lastForeground.appName.toLowerCase();
-    const extensionApp = (event.appName ?? "").toLowerCase();
     const foregroundIsBrowser = browserNames.some((name) => foregroundName.includes(name));
     if (!foregroundIsBrowser) {
-      return false;
-    }
-    if (extensionApp && !foregroundName.includes(extensionApp) && !extensionApp.includes(foregroundName)) {
       return false;
     }
     return true;
   }
 }
-class StoreService extends node_events.EventEmitter {
+class AnalyticsService {
+  constructor(database) {
+    this.db = database.connection;
+    this.activitiesInRangeStmt = this.db.prepare(`
+      SELECT 
+        id, started_at as startedAt, ended_at as endedAt, 
+        domain, app_name as appName, category, 
+        seconds_active as secondsActive, idle_seconds as idleSeconds
+      FROM activities 
+      WHERE started_at >= ? 
+      ORDER BY started_at DESC
+    `);
+    this.behaviorEventsInRangeStmt = this.db.prepare(`
+      SELECT id, timestamp, session_id, domain, event_type, value_int, value_float, metadata
+      FROM behavior_events
+      WHERE timestamp >= ?
+      ORDER BY timestamp DESC
+    `);
+    this.sessionAnalyticsInRangeStmt = this.db.prepare(`
+      SELECT * FROM session_analytics
+      WHERE date >= ?
+      ORDER BY date DESC
+    `);
+    this.insertBehaviorEventStmt = this.db.prepare(`
+      INSERT INTO behavior_events (timestamp, session_id, domain, event_type, value_int, value_float, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.upsertSessionAnalyticsStmt = this.db.prepare(`
+      INSERT INTO session_analytics (
+        activity_id, domain, date, hour_of_day, total_scroll_depth, avg_scroll_velocity,
+        total_clicks, total_keystrokes, fixation_seconds, quality_score, engagement_level
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(activity_id) DO UPDATE SET
+        total_scroll_depth = excluded.total_scroll_depth,
+        avg_scroll_velocity = excluded.avg_scroll_velocity,
+        total_clicks = excluded.total_clicks,
+        total_keystrokes = excluded.total_keystrokes,
+        fixation_seconds = excluded.fixation_seconds,
+        quality_score = excluded.quality_score,
+        engagement_level = excluded.engagement_level
+    `);
+    this.insertPatternStmt = this.db.prepare(`
+      INSERT INTO behavioral_patterns (
+        computed_at, from_category, from_domain, to_category, to_domain,
+        transition_count, avg_duration_before, correlation_strength, time_of_day_bucket
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.clearPatternsStmt = this.db.prepare(`DELETE FROM behavioral_patterns`);
+    this.getPatternsStmt = this.db.prepare(`
+      SELECT * FROM behavioral_patterns
+      ORDER BY transition_count DESC
+      LIMIT 50
+    `);
+  }
+  /**
+   * Ingest behavioral events from the extension
+   */
+  ingestBehaviorEvents(events) {
+    const insertMany = this.db.transaction((evts) => {
+      for (const evt of evts) {
+        this.insertBehaviorEventStmt.run(
+          evt.timestamp,
+          evt.sessionId ?? null,
+          evt.domain,
+          evt.eventType,
+          evt.valueInt ?? null,
+          evt.valueFloat ?? null,
+          evt.metadata ? JSON.stringify(evt.metadata) : null
+        );
+      }
+    });
+    insertMany(events);
+    logger.info(`Ingested ${events.length} behavior events`);
+  }
+  /**
+   * Get time-of-day analysis for the past N days
+   */
+  getTimeOfDayAnalysis(days = 7) {
+    const rangeStart = new Date(Date.now() - days * 24 * 60 * 60 * 1e3).toISOString();
+    const activities = this.activitiesInRangeStmt.all(rangeStart);
+    const buckets = Array.from({ length: 24 }, (_, hour) => ({
+      hour,
+      productive: 0,
+      neutral: 0,
+      frivolity: 0,
+      idle: 0,
+      avgEngagement: 0,
+      dominantCategory: "idle",
+      dominantDomain: null,
+      sampleCount: 0
+    }));
+    const domainCounts = /* @__PURE__ */ new Map();
+    for (let i = 0; i < 24; i++) {
+      domainCounts.set(i, /* @__PURE__ */ new Map());
+    }
+    for (const activity of activities) {
+      const startDate = new Date(activity.startedAt);
+      const hour = startDate.getHours();
+      const bucket = buckets[hour];
+      bucket.sampleCount++;
+      bucket.idle += activity.idleSeconds;
+      const category = activity.category ?? "neutral";
+      if (category === "productive") bucket.productive += activity.secondsActive;
+      else if (category === "frivolity") bucket.frivolity += activity.secondsActive;
+      else bucket.neutral += activity.secondsActive;
+      const domain = activity.domain ?? activity.appName ?? "Unknown";
+      const hourDomains = domainCounts.get(hour);
+      hourDomains.set(domain, (hourDomains.get(domain) ?? 0) + activity.secondsActive);
+    }
+    for (let hour = 0; hour < 24; hour++) {
+      const bucket = buckets[hour];
+      const totals = [
+        { cat: "productive", val: bucket.productive },
+        { cat: "neutral", val: bucket.neutral },
+        { cat: "frivolity", val: bucket.frivolity },
+        { cat: "idle", val: bucket.idle }
+      ];
+      const dominant = totals.reduce((a, b) => b.val > a.val ? b : a);
+      bucket.dominantCategory = dominant.cat;
+      const hourDomains = domainCounts.get(hour);
+      let maxDomain = null;
+      let maxSeconds = 0;
+      hourDomains.forEach((seconds, domain) => {
+        if (seconds > maxSeconds) {
+          maxSeconds = seconds;
+          maxDomain = domain;
+        }
+      });
+      bucket.dominantDomain = maxDomain;
+      const totalActive = bucket.productive + bucket.neutral + bucket.frivolity;
+      const totalTime = totalActive + bucket.idle;
+      bucket.avgEngagement = totalTime > 0 ? Math.round(totalActive / totalTime * 100) : 0;
+    }
+    return buckets;
+  }
+  /**
+   * Compute behavioral patterns (what leads to what)
+   */
+  computeTransitionPatterns(days = 30) {
+    const rangeStart = new Date(Date.now() - days * 24 * 60 * 60 * 1e3).toISOString();
+    const activities = this.activitiesInRangeStmt.all(rangeStart);
+    const sorted = activities.sort(
+      (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
+    );
+    const transitions = /* @__PURE__ */ new Map();
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = sorted[i - 1];
+      const curr = sorted[i];
+      const key = `${prev.category ?? "null"}:${prev.domain ?? "null"}→${curr.category ?? "null"}:${curr.domain ?? "null"}`;
+      if (!transitions.has(key)) {
+        transitions.set(key, {
+          fromCategory: prev.category,
+          fromDomain: prev.domain,
+          toCategory: curr.category,
+          toDomain: curr.domain,
+          count: 0,
+          totalDurationBefore: 0,
+          hourBuckets: /* @__PURE__ */ new Map()
+        });
+      }
+      const t = transitions.get(key);
+      t.count++;
+      t.totalDurationBefore += prev.secondsActive;
+      const hour = new Date(curr.startedAt).getHours();
+      t.hourBuckets.set(hour, (t.hourBuckets.get(hour) ?? 0) + 1);
+    }
+    const computedAt = (/* @__PURE__ */ new Date()).toISOString();
+    this.db.transaction(() => {
+      this.clearPatternsStmt.run();
+      transitions.forEach((t) => {
+        let dominantHour = 0;
+        let maxCount = 0;
+        t.hourBuckets.forEach((count, hour) => {
+          if (count > maxCount) {
+            maxCount = count;
+            dominantHour = hour;
+          }
+        });
+        const correlationStrength = Math.min(1, t.count / 10);
+        this.insertPatternStmt.run(
+          computedAt,
+          t.fromCategory,
+          t.fromDomain,
+          t.toCategory,
+          t.toDomain,
+          t.count,
+          t.count > 0 ? t.totalDurationBefore / t.count : 0,
+          correlationStrength,
+          dominantHour
+        );
+      });
+    })();
+    logger.info(`Computed ${transitions.size} behavioral patterns`);
+  }
+  /**
+   * Get behavioral patterns
+   */
+  getBehavioralPatterns(days = 30) {
+    const latestPattern = this.db.prepare(
+      `SELECT computed_at FROM behavioral_patterns ORDER BY computed_at DESC LIMIT 1`
+    ).get();
+    const oneHourAgo = Date.now() - 60 * 60 * 1e3;
+    if (!latestPattern || new Date(latestPattern.computed_at).getTime() < oneHourAgo) {
+      this.computeTransitionPatterns(days);
+    }
+    const rows = this.getPatternsStmt.all();
+    return rows.map((row) => ({
+      id: row.id,
+      fromContext: { category: row.from_category, domain: row.from_domain },
+      toContext: { category: row.to_category, domain: row.to_domain },
+      frequency: row.transition_count,
+      avgTimeBefore: row.avg_duration_before,
+      correlationStrength: row.correlation_strength,
+      timeOfDayBucket: row.time_of_day_bucket
+    }));
+  }
+  /**
+   * Get engagement metrics for a specific domain
+   */
+  getEngagementMetrics(domain, days = 7) {
+    const rangeStart = new Date(Date.now() - days * 24 * 60 * 60 * 1e3).toISOString();
+    const activities = this.db.prepare(`
+      SELECT seconds_active as secondsActive, idle_seconds as idleSeconds
+      FROM activities
+      WHERE domain = ? AND started_at >= ?
+    `).all(domain, rangeStart);
+    const behaviorData = this.db.prepare(`
+      SELECT event_type, value_int, value_float
+      FROM behavior_events
+      WHERE domain = ? AND timestamp >= ?
+    `).all(domain, rangeStart);
+    const totalSeconds = activities.reduce((acc, a) => acc + a.secondsActive, 0);
+    const totalMinutes = Math.max(1, totalSeconds / 60);
+    const sessionCount = activities.length;
+    let totalScrollDepth = 0;
+    let scrollCount = 0;
+    let totalScrollVelocity = 0;
+    let totalClicks = 0;
+    let totalKeystrokes = 0;
+    for (const evt of behaviorData) {
+      switch (evt.event_type) {
+        case "scroll":
+          if (evt.value_int !== null) {
+            totalScrollDepth += evt.value_int;
+            scrollCount++;
+          }
+          if (evt.value_float !== null) {
+            totalScrollVelocity += evt.value_float;
+          }
+          break;
+        case "click":
+          totalClicks += evt.value_int ?? 1;
+          break;
+        case "keystroke":
+          totalKeystrokes += evt.value_int ?? 1;
+          break;
+      }
+    }
+    const avgScrollDepth = scrollCount > 0 ? Math.round(totalScrollDepth / scrollCount) : 0;
+    const avgScrollVelocity = scrollCount > 0 ? Math.round(totalScrollVelocity / scrollCount) : 0;
+    const avgClicksPerMinute = Math.round(totalClicks / totalMinutes * 10) / 10;
+    const avgKeystrokesPerMinute = Math.round(totalKeystrokes / totalMinutes * 10) / 10;
+    const fixationScore = Math.min(100, Math.round(
+      (avgClicksPerMinute * 5 + avgKeystrokesPerMinute * 2) * (1 - avgScrollVelocity / 1e3)
+    ));
+    let engagementLevel;
+    if (fixationScore >= 80) engagementLevel = "intense";
+    else if (fixationScore >= 60) engagementLevel = "high";
+    else if (fixationScore >= 40) engagementLevel = "moderate";
+    else if (fixationScore >= 20) engagementLevel = "passive";
+    else engagementLevel = "low";
+    return {
+      domain,
+      totalSeconds,
+      avgScrollDepth,
+      avgScrollVelocity,
+      avgClicksPerMinute,
+      avgKeystrokesPerMinute,
+      fixationScore,
+      engagementLevel,
+      sessionCount
+    };
+  }
+  /**
+   * Get analytics overview
+   */
+  getOverview(days = 7) {
+    const rangeStart = new Date(Date.now() - days * 24 * 60 * 60 * 1e3).toISOString();
+    const activities = this.activitiesInRangeStmt.all(rangeStart);
+    let totalActive = 0;
+    let totalIdle = 0;
+    const categoryTotals = {
+      productive: 0,
+      neutral: 0,
+      frivolity: 0,
+      idle: 0
+    };
+    const domainTotals = /* @__PURE__ */ new Map();
+    const hourlyProductive = /* @__PURE__ */ new Map();
+    const hourlyFrivolity = /* @__PURE__ */ new Map();
+    for (const activity of activities) {
+      totalActive += activity.secondsActive;
+      totalIdle += activity.idleSeconds;
+      categoryTotals.idle += activity.idleSeconds;
+      const category = activity.category ?? "neutral";
+      categoryTotals[category] += activity.secondsActive;
+      const domain = activity.domain ?? activity.appName ?? "Unknown";
+      domainTotals.set(domain, (domainTotals.get(domain) ?? 0) + activity.secondsActive);
+      const hour = new Date(activity.startedAt).getHours();
+      if (category === "productive") {
+        hourlyProductive.set(hour, (hourlyProductive.get(hour) ?? 0) + activity.secondsActive);
+      } else if (category === "frivolity") {
+        hourlyFrivolity.set(hour, (hourlyFrivolity.get(hour) ?? 0) + activity.secondsActive);
+      }
+    }
+    let topDomain = null;
+    let topDomainSeconds = 0;
+    domainTotals.forEach((seconds, domain) => {
+      if (seconds > topDomainSeconds) {
+        topDomainSeconds = seconds;
+        topDomain = domain;
+      }
+    });
+    let peakProductiveHour = 9;
+    let peakProductiveSeconds = 0;
+    hourlyProductive.forEach((seconds, hour) => {
+      if (seconds > peakProductiveSeconds) {
+        peakProductiveSeconds = seconds;
+        peakProductiveHour = hour;
+      }
+    });
+    let riskHour = 15;
+    let riskSeconds = 0;
+    hourlyFrivolity.forEach((seconds, hour) => {
+      if (seconds > riskSeconds) {
+        riskSeconds = seconds;
+        riskHour = hour;
+      }
+    });
+    const totalCategorized = categoryTotals.productive + categoryTotals.neutral + categoryTotals.frivolity;
+    const productivityScore = totalCategorized > 0 ? Math.round(categoryTotals.productive / totalCategorized * 100) : 50;
+    const midpoint = activities.length / 2;
+    const recentProductivity = activities.slice(0, midpoint).filter((a) => a.category === "productive").reduce((acc, a) => acc + a.secondsActive, 0);
+    const olderProductivity = activities.slice(midpoint).filter((a) => a.category === "productive").reduce((acc, a) => acc + a.secondsActive, 0);
+    let focusTrend;
+    if (recentProductivity > olderProductivity * 1.1) focusTrend = "improving";
+    else if (recentProductivity < olderProductivity * 0.9) focusTrend = "declining";
+    else focusTrend = "stable";
+    const insights = this.generateInsights(categoryTotals, peakProductiveHour, riskHour, focusTrend);
+    return {
+      periodDays: days,
+      totalActiveHours: Math.round(totalActive / 3600 * 10) / 10,
+      productivityScore,
+      topEngagementDomain: topDomain,
+      focusTrend,
+      peakProductiveHour,
+      riskHour,
+      avgSessionLength: activities.length > 0 ? Math.round(totalActive / activities.length) : 0,
+      totalSessions: activities.length,
+      categoryBreakdown: categoryTotals,
+      insights
+    };
+  }
+  /**
+   * Get trend data
+   */
+  getTrends(granularity = "day") {
+    const now = Date.now();
+    const msPerUnit = granularity === "hour" ? 36e5 : granularity === "day" ? 864e5 : 6048e5;
+    const bucketCount = granularity === "hour" ? 24 : granularity === "day" ? 30 : 12;
+    const rangeStart = new Date(now - bucketCount * msPerUnit).toISOString();
+    const activities = this.activitiesInRangeStmt.all(rangeStart);
+    const buckets = [];
+    for (let i = 0; i < bucketCount; i++) {
+      const timestamp = new Date(now - (bucketCount - 1 - i) * msPerUnit);
+      const label = granularity === "hour" ? timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : granularity === "day" ? timestamp.toLocaleDateString([], { month: "short", day: "numeric" }) : `Week ${Math.ceil((now - timestamp.getTime()) / 6048e5)}`;
+      buckets.push({
+        timestamp: timestamp.toISOString(),
+        label,
+        productive: 0,
+        neutral: 0,
+        frivolity: 0,
+        idle: 0,
+        engagement: 0,
+        qualityScore: 0
+      });
+    }
+    for (const activity of activities) {
+      const activityTime = new Date(activity.startedAt).getTime();
+      const bucketIndex = Math.floor((activityTime - (now - bucketCount * msPerUnit)) / msPerUnit);
+      if (bucketIndex >= 0 && bucketIndex < bucketCount) {
+        const bucket = buckets[bucketIndex];
+        const category = activity.category ?? "neutral";
+        if (category === "productive") bucket.productive += activity.secondsActive;
+        else if (category === "frivolity") bucket.frivolity += activity.secondsActive;
+        else bucket.neutral += activity.secondsActive;
+        bucket.idle += activity.idleSeconds;
+      }
+    }
+    for (const bucket of buckets) {
+      const total = bucket.productive + bucket.neutral + bucket.frivolity + bucket.idle;
+      const active = bucket.productive + bucket.neutral + bucket.frivolity;
+      bucket.engagement = total > 0 ? Math.round(active / total * 100) : 0;
+      bucket.qualityScore = active > 0 ? Math.round(bucket.productive / active * 100) : 50;
+    }
+    return buckets;
+  }
+  /**
+   * Generate human-readable insights
+   */
+  generateInsights(categories, peakHour, riskHour, trend) {
+    const insights = [];
+    const formatHour = (h2) => {
+      const ampm = h2 >= 12 ? "PM" : "AM";
+      const hour = h2 % 12 || 12;
+      return `${hour}${ampm}`;
+    };
+    insights.push(`🎯 Your peak focus hour is ${formatHour(peakHour)} — schedule deep work here`);
+    if (categories.frivolity > categories.productive * 0.3) {
+      insights.push(`⚠️ ${formatHour(riskHour)} is your highest risk hour for distraction`);
+    }
+    if (trend === "improving") {
+      insights.push(`📈 Your focus has been improving — keep it up!`);
+    } else if (trend === "declining") {
+      insights.push(`📉 Focus is trending down — consider a reset tomorrow`);
+    }
+    const totalActive = categories.productive + categories.neutral + categories.frivolity;
+    const idleRatio = categories.idle / (totalActive + categories.idle);
+    if (idleRatio > 0.3) {
+      insights.push(`💤 ${Math.round(idleRatio * 100)}% idle time detected — are you stepping away often?`);
+    }
+    const frivolityRatio = categories.frivolity / Math.max(1, totalActive);
+    if (frivolityRatio > 0.25) {
+      insights.push(`🔴 ${Math.round(frivolityRatio * 100)}% frivolity — that's higher than average`);
+    } else if (frivolityRatio < 0.1) {
+      insights.push(`✨ Only ${Math.round(frivolityRatio * 100)}% frivolity — excellent discipline!`);
+    }
+    return insights.slice(0, 5);
+  }
+}
+function getEmergencyPolicyConfig(id) {
+  switch (id) {
+    case "off":
+      return {
+        id,
+        label: "Off",
+        summary: "Emergency access disabled.",
+        durationSeconds: 0,
+        tokensPerDay: 0,
+        cooldownSeconds: 0,
+        urlLocked: true,
+        debtCoins: 0
+      };
+    case "gentle":
+      return {
+        id,
+        label: "Gentle",
+        summary: "Timeboxed, URL-locked, unlimited uses.",
+        durationSeconds: 5 * 60,
+        tokensPerDay: null,
+        cooldownSeconds: 0,
+        urlLocked: true,
+        debtCoins: 0
+      };
+    case "strict":
+      return {
+        id,
+        label: "Strict",
+        summary: "2 minutes, 1/day, 60m cooldown, and a debt cost.",
+        durationSeconds: 2 * 60,
+        tokensPerDay: 1,
+        cooldownSeconds: 60 * 60,
+        urlLocked: true,
+        debtCoins: 15
+      };
+    case "balanced":
+    default:
+      return {
+        id: "balanced",
+        label: "Balanced",
+        summary: "3 minutes, 2/day, 30m cooldown, and a small debt cost.",
+        durationSeconds: 3 * 60,
+        tokensPerDay: 2,
+        cooldownSeconds: 30 * 60,
+        urlLocked: true,
+        debtCoins: 8
+      };
+  }
+}
+function normaliseBaseUrl(url2) {
+  try {
+    const parsed = new URL(url2);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return null;
+  }
+}
+class EmergencyService {
+  constructor(settings, wallet, paywall) {
+    this.settings = settings;
+    this.wallet = wallet;
+    this.paywall = paywall;
+  }
+  start(domain, justification, options) {
+    const policyId = this.settings.getEmergencyPolicy();
+    const policy = getEmergencyPolicyConfig(policyId);
+    if (policy.id === "off") {
+      throw new Error("Emergency access is disabled in Settings.");
+    }
+    const now = Date.now();
+    const today = new Date(now).toISOString().slice(0, 10);
+    const current = this.settings.getEmergencyUsageState();
+    const usage = current.day === today ? current : { day: today, tokensUsed: 0, cooldownUntil: null };
+    if (usage.cooldownUntil && now < usage.cooldownUntil) {
+      const remainingMinutes = Math.max(1, Math.ceil((usage.cooldownUntil - now) / 6e4));
+      throw new Error(`Emergency cooldown active (${remainingMinutes}m remaining).`);
+    }
+    if (typeof policy.tokensPerDay === "number") {
+      if (usage.tokensUsed >= policy.tokensPerDay) {
+        throw new Error(`No emergency uses left today (${policy.tokensPerDay}/day).`);
+      }
+    }
+    const nextUsage = {
+      ...usage,
+      tokensUsed: usage.tokensUsed + (typeof policy.tokensPerDay === "number" ? 1 : 0),
+      cooldownUntil: policy.cooldownSeconds > 0 ? now + policy.cooldownSeconds * 1e3 : null
+    };
+    this.settings.setEmergencyUsageState(nextUsage);
+    if (policy.debtCoins > 0) {
+      const snapshot = this.wallet.adjust(-policy.debtCoins, {
+        type: "emergency-debt",
+        domain,
+        policy: policy.id
+      });
+      this.paywall.notifyWalletUpdated(snapshot);
+    }
+    const allowedUrl = policy.urlLocked && (options == null ? void 0 : options.url) ? normaliseBaseUrl(options.url) : void 0;
+    logger.info("Starting emergency session", { domain, policy: policy.id, allowedUrl });
+    return this.paywall.startEmergency(domain, justification, {
+      durationSeconds: policy.durationSeconds,
+      allowedUrl: allowedUrl ?? void 0
+    });
+  }
+  recordReview(outcome) {
+    return this.settings.recordEmergencyReview(outcome);
+  }
+}
+function toDomainFromUrl(url2) {
+  try {
+    const parsed = new URL(url2);
+    return parsed.hostname.replace(/^www\./, "");
+  } catch {
+    return url2;
+  }
+}
+function ensurePurpose(purpose) {
+  if (purpose === "replace" || purpose === "allow" || purpose === "temptation") return purpose;
+  throw new Error("Invalid purpose");
+}
+function purposeFromBucket(bucket) {
+  if (bucket === "attractor") return "replace";
+  if (bucket === "frivolous") return "temptation";
+  return "allow";
+}
+function bucketFromPurpose(purpose) {
+  if (purpose === "replace") return "attractor";
+  if (purpose === "temptation") return "frivolous";
+  return "productive";
+}
+function ensurePrice(value) {
+  if (value === null || value === void 0) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1) {
+    throw new Error("Price must be a whole number of at least 1");
+  }
+  return n;
+}
+class LibraryService extends node_events.EventEmitter {
   constructor(database) {
     super();
     this.database = database;
     this.db = this.database.connection;
     this.listStmt = this.db.prepare(
-      "SELECT id, url, domain, title, price, created_at, last_used_at FROM store_items ORDER BY created_at DESC"
+      "SELECT id, kind, url, app, domain, title, note, bucket, purpose, price, created_at, last_used_at, consumed_at FROM library_items ORDER BY created_at DESC"
+    );
+    this.getByIdStmt = this.db.prepare(
+      "SELECT id, kind, url, app, domain, title, note, bucket, purpose, price, created_at, last_used_at, consumed_at FROM library_items WHERE id = ?"
     );
     this.getByUrlStmt = this.db.prepare(
-      "SELECT id, url, domain, title, price, created_at, last_used_at FROM store_items WHERE url = ?"
-    );
-    this.getByDomainStmt = this.db.prepare(
-      "SELECT id, url, domain, title, price, created_at, last_used_at FROM store_items WHERE domain = ?"
+      "SELECT id, kind, url, app, domain, title, note, bucket, purpose, price, created_at, last_used_at, consumed_at FROM library_items WHERE url = ?"
     );
     this.insertStmt = this.db.prepare(
-      "INSERT INTO store_items(url, domain, title, price, created_at) VALUES (?, ?, ?, ?, ?)"
+      "INSERT INTO library_items(kind, url, app, domain, title, note, bucket, purpose, price, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
-    this.deleteStmt = this.db.prepare("DELETE FROM store_items WHERE id = ?");
-    this.updateLastUsedStmt = this.db.prepare("UPDATE store_items SET last_used_at = ? WHERE id = ?");
+    this.deleteStmt = this.db.prepare("DELETE FROM library_items WHERE id = ?");
+    this.updateStmt = this.db.prepare("UPDATE library_items SET title = ?, note = ?, bucket = ?, purpose = ?, price = ?, consumed_at = ? WHERE id = ?");
+    this.markUsedStmt = this.db.prepare("UPDATE library_items SET last_used_at = ? WHERE id = ?");
+    this.findByBaseUrlStmt = this.db.prepare(
+      "SELECT id, kind, url, app, domain, title, note, bucket, purpose, price, created_at, last_used_at, consumed_at FROM library_items WHERE url = ? AND price IS NOT NULL LIMIT 1"
+    );
   }
   rowToItem(row) {
+    const purpose = ensurePurpose(row.purpose ?? purposeFromBucket(row.bucket));
     return {
       id: row.id,
-      url: row.url,
+      kind: row.kind,
+      url: row.url ?? void 0,
+      app: row.app ?? void 0,
       domain: row.domain,
       title: row.title ?? void 0,
-      price: row.price,
+      note: row.note ?? void 0,
+      purpose,
+      price: typeof row.price === "number" ? row.price : void 0,
       createdAt: row.created_at,
-      lastUsedAt: row.last_used_at ?? void 0
+      lastUsedAt: row.last_used_at ?? void 0,
+      consumedAt: row.consumed_at ?? void 0
     };
   }
   list() {
     const rows = this.listStmt.all();
-    return rows.map((r) => this.rowToItem(r));
+    return rows.map((row) => this.rowToItem(row));
+  }
+  getById(id) {
+    const row = this.getByIdStmt.get(id);
+    return row ? this.rowToItem(row) : null;
   }
   getByUrl(url2) {
     const row = this.getByUrlStmt.get(url2);
     return row ? this.rowToItem(row) : null;
   }
-  getByDomain(domain) {
-    const rows = this.getByDomainStmt.all(domain);
-    return rows.map((r) => this.rowToItem(r));
-  }
-  /**
-   * Check if a URL matches a store item
-   * Supports exact URL match or URL prefix match
-   */
-  findMatchingItem(url2) {
+  findMatchingPricedItem(url2) {
     const exact = this.getByUrl(url2);
-    if (exact) return exact;
+    if (exact && typeof exact.price === "number") return exact;
     try {
       const parsed = new URL(url2);
       const baseUrl = `${parsed.origin}${parsed.pathname}`;
-      const baseItem = this.getByUrl(baseUrl);
-      if (baseItem) return baseItem;
+      const row = this.findByBaseUrlStmt.get(baseUrl);
+      return row ? this.rowToItem(row) : null;
     } catch {
+      return null;
     }
-    return null;
   }
-  add(url2, price, title) {
-    let domain;
-    try {
-      const parsed = new URL(url2);
-      domain = parsed.hostname.replace(/^www\./, "");
-    } catch {
-      domain = url2;
+  add(payload) {
+    const purpose = ensurePurpose(payload.purpose);
+    const bucket = bucketFromPurpose(purpose);
+    const price = payload.kind === "url" ? ensurePrice(payload.price) : null;
+    if (payload.kind === "url") {
+      const url2 = String(payload.url ?? "").trim();
+      if (!url2) throw new Error("URL is required");
+      const domain = toDomainFromUrl(url2);
+      const now2 = (/* @__PURE__ */ new Date()).toISOString();
+      const result2 = this.insertStmt.run("url", url2, null, domain, payload.title ?? null, payload.note ?? null, bucket, purpose, price, now2);
+      const item2 = {
+        id: Number(result2.lastInsertRowid),
+        kind: "url",
+        url: url2,
+        domain,
+        title: payload.title ?? void 0,
+        note: payload.note ?? void 0,
+        purpose,
+        price: typeof price === "number" ? price : void 0,
+        createdAt: now2
+      };
+      this.emit("added", item2);
+      return item2;
     }
+    const app = String(payload.app ?? "").trim();
+    if (!app) throw new Error("App is required");
     const now = (/* @__PURE__ */ new Date()).toISOString();
-    const result = this.insertStmt.run(url2, domain, title ?? null, price, now);
-    const id = Number(result.lastInsertRowid);
+    const result = this.insertStmt.run("app", null, app, app, payload.title ?? null, payload.note ?? null, bucket, purpose, null, now);
     const item = {
-      id,
-      url: url2,
-      domain,
-      title,
-      price,
+      id: Number(result.lastInsertRowid),
+      kind: "app",
+      app,
+      domain: app,
+      title: payload.title ?? void 0,
+      note: payload.note ?? void 0,
+      purpose,
       createdAt: now
     };
     this.emit("added", item);
+    return item;
+  }
+  update(id, payload) {
+    const existing = this.getById(id);
+    if (!existing) throw new Error("Library item not found");
+    const nextTitle = payload.title !== void 0 ? payload.title : existing.title ?? null;
+    const nextNote = payload.note !== void 0 ? payload.note : existing.note ?? null;
+    const nextPurpose = payload.purpose !== void 0 ? ensurePurpose(payload.purpose) : existing.purpose;
+    const nextBucket = bucketFromPurpose(nextPurpose);
+    if (existing.kind !== "url" && payload.price !== void 0 && payload.price !== null) {
+      throw new Error("Only URL items can be priced");
+    }
+    const nextPrice = payload.price !== void 0 ? ensurePrice(payload.price) : existing.price ?? null;
+    const nextConsumedAt = payload.consumedAt !== void 0 ? payload.consumedAt : existing.consumedAt ?? null;
+    this.updateStmt.run(nextTitle ?? null, nextNote ?? null, nextBucket, nextPurpose, nextPrice, nextConsumedAt, id);
+    const item = {
+      ...existing,
+      title: nextTitle ?? void 0,
+      note: nextNote ?? void 0,
+      purpose: nextPurpose,
+      price: typeof nextPrice === "number" ? nextPrice : void 0,
+      consumedAt: nextConsumedAt ?? void 0
+    };
+    this.emit("updated", item);
     return item;
   }
   remove(id) {
@@ -39665,7 +40466,710 @@ class StoreService extends node_events.EventEmitter {
   }
   markUsed(id) {
     const now = (/* @__PURE__ */ new Date()).toISOString();
-    this.updateLastUsedStmt.run(now, id);
+    this.markUsedStmt.run(now, id);
+  }
+}
+function randomToken(bytes2 = 24) {
+  return crypto$1.randomBytes(bytes2).toString("base64url");
+}
+function uuid() {
+  return crypto$1.randomUUID();
+}
+function localDateString(date = /* @__PURE__ */ new Date()) {
+  const y2 = date.getFullYear();
+  const m2 = String(date.getMonth() + 1).padStart(2, "0");
+  const d2 = String(date.getDate()).padStart(2, "0");
+  return `${y2}-${m2}-${d2}`;
+}
+function normaliseRelayUrl(raw) {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  if (!trimmed) throw new Error("Relay URL is required");
+  let url2;
+  try {
+    url2 = new URL(trimmed);
+  } catch {
+    throw new Error("Invalid relay URL");
+  }
+  if (url2.protocol !== "https:" && url2.protocol !== "http:") throw new Error("Relay URL must be http(s)");
+  return url2.toString().replace(/\/+$/, "");
+}
+class FriendsService extends node_events.EventEmitter {
+  constructor(settings, analytics) {
+    super();
+    this.settings = settings;
+    this.analytics = analytics;
+    this.publishTimer = null;
+  }
+  getIdentity() {
+    return this.settings.getFriendsIdentity();
+  }
+  async enable(payload) {
+    const relayUrl = normaliseRelayUrl(payload.relayUrl);
+    const existing = this.settings.getFriendsIdentity();
+    if (existing) {
+      const next = { ...existing, relayUrl };
+      this.settings.setFriendsIdentity(next);
+      await this.register(next);
+      this.ensurePublisher();
+      return next;
+    }
+    const identity = {
+      userId: uuid(),
+      publishKey: randomToken(32),
+      readKey: randomToken(32),
+      relayUrl,
+      createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    this.settings.setFriendsIdentity(identity);
+    await this.register(identity);
+    this.ensurePublisher();
+    return identity;
+  }
+  disable() {
+    this.settings.setFriendsIdentity(null);
+    this.stopPublisher();
+  }
+  listFriends() {
+    return this.settings.listFriends();
+  }
+  addFriend(payload) {
+    const name = payload.name.trim();
+    const userId = payload.userId.trim();
+    const readKey = payload.readKey.trim();
+    if (!name) throw new Error("Name is required");
+    if (!userId) throw new Error("userId is required");
+    if (readKey.length < 8) throw new Error("readKey looks too short");
+    const entry = {
+      id: uuid(),
+      name,
+      userId,
+      readKey,
+      addedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    const existing = this.settings.listFriends();
+    this.settings.setFriendsList([entry, ...existing]);
+    return entry;
+  }
+  removeFriend(id) {
+    const next = this.settings.listFriends().filter((f) => f.id !== id);
+    this.settings.setFriendsList(next);
+  }
+  ensurePublisher() {
+    if (this.publishTimer) return;
+    this.publishTimer = setInterval(() => {
+      this.publishNow().catch(() => {
+      });
+    }, 30 * 60 * 1e3);
+  }
+  stopPublisher() {
+    if (!this.publishTimer) return;
+    clearInterval(this.publishTimer);
+    this.publishTimer = null;
+  }
+  async register(identity) {
+    const ident = identity ?? this.settings.getFriendsIdentity();
+    if (!ident) throw new Error("Friends Feed not enabled");
+    const url2 = `${ident.relayUrl}/v1/register`;
+    const res2 = await fetch(url2, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ userId: ident.userId, publishKey: ident.publishKey, readKey: ident.readKey })
+    });
+    if (!res2.ok) {
+      const body = await res2.json().catch(() => null);
+      throw new Error((body == null ? void 0 : body.error) ? String(body.error) : `Register failed (${res2.status})`);
+    }
+  }
+  async publishNow() {
+    const ident = this.settings.getFriendsIdentity();
+    if (!ident) throw new Error("Friends Feed not enabled");
+    const overview = this.analytics.getOverview(1);
+    const payload = {
+      periodDays: overview.periodDays,
+      totalActiveHours: overview.totalActiveHours,
+      productivityScore: overview.productivityScore,
+      categoryBreakdown: overview.categoryBreakdown,
+      focusTrend: overview.focusTrend,
+      peakProductiveHour: overview.peakProductiveHour,
+      riskHour: overview.riskHour
+    };
+    const date = localDateString();
+    const res2 = await fetch(`${ident.relayUrl}/v1/u/${encodeURIComponent(ident.userId)}/summary`, {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${ident.publishKey}`
+      },
+      body: JSON.stringify({ date, payload })
+    });
+    if (!res2.ok) {
+      const body = await res2.json().catch(() => null);
+      throw new Error((body == null ? void 0 : body.error) ? String(body.error) : `Publish failed (${res2.status})`);
+    }
+    const publishedAt = (/* @__PURE__ */ new Date()).toISOString();
+    this.settings.setFriendsIdentity({ ...ident, lastPublishedAt: publishedAt });
+    logger.info("Friends feed published", ident.userId, date);
+    this.emit("published", { at: publishedAt });
+    return { ok: true, publishedAt };
+  }
+  async fetchAll() {
+    const ident = this.settings.getFriendsIdentity();
+    if (!ident) throw new Error("Friends Feed not enabled");
+    const friends = this.settings.listFriends();
+    const cache = this.settings.getFriendsCache();
+    const updates = await Promise.allSettled(
+      friends.map(async (friend) => {
+        const url2 = `${ident.relayUrl}/v1/u/${encodeURIComponent(friend.userId)}/latest`;
+        const res2 = await fetch(url2, { headers: { authorization: `Bearer ${friend.readKey}` } });
+        if (!res2.ok) {
+          const body2 = await res2.json().catch(() => null);
+          throw new Error((body2 == null ? void 0 : body2.error) ? String(body2.error) : `Fetch failed (${res2.status})`);
+        }
+        const body = await res2.json().catch(() => null);
+        if (!(body == null ? void 0 : body.summary)) {
+          cache[friend.userId] = null;
+          return;
+        }
+        const summary = {
+          userId: friend.userId,
+          name: friend.name,
+          date: String(body.summary.date),
+          updatedAt: String(body.summary.updatedAt),
+          payload: body.summary.payload
+        };
+        cache[friend.userId] = summary;
+      })
+    );
+    const failures = updates.filter((r) => r.status === "rejected");
+    if (failures.length) {
+      logger.warn("Friends fetch failures", failures.length);
+    }
+    this.settings.setFriendsCache(cache);
+    this.emit("updated", cache);
+    return cache;
+  }
+}
+function getPlatform() {
+  switch (process.platform) {
+    case "darwin":
+      return "mac";
+    case "win32":
+      return "windows";
+    case "linux":
+      return "linux";
+    default:
+      return "unknown";
+  }
+}
+function getAppDataPath() {
+  const os2 = require("os");
+  const path3 = require("path");
+  switch (getPlatform()) {
+    case "mac":
+      return path3.join(os2.homedir(), "Library", "Application Support");
+    case "windows":
+      return process.env.APPDATA || path3.join(os2.homedir(), "AppData", "Roaming");
+    case "linux":
+      return process.env.XDG_CONFIG_HOME || path3.join(os2.homedir(), ".config");
+    default:
+      return path3.join(os2.homedir(), ".config");
+  }
+}
+const execFileAsync$1 = node_util.promisify(node_child_process.execFile);
+const CACHE_TTL_MS = 60 * 1e3;
+const THUMB_TTL_MS = 24 * 60 * 60 * 1e3;
+const THUMB_SIZE = 560;
+function dataUrlForPng(buffer) {
+  return `data:image/png;base64,${buffer.toString("base64")}`;
+}
+function dataUrlForSvg(svg) {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+function isFile(pathname) {
+  return fs$3.stat(pathname).then((s2) => s2.isFile()).catch(() => false);
+}
+function isDir(pathname) {
+  return fs$3.stat(pathname).then((s2) => s2.isDirectory()).catch(() => false);
+}
+function safeTitle(value, fallback) {
+  const s2 = typeof value === "string" ? value.trim() : "";
+  return s2 ? s2 : fallback;
+}
+function zoteroIconDataUrl() {
+  return dataUrlForSvg(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+      <defs>
+        <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+          <stop offset="0" stop-color="#d74b4b"/>
+          <stop offset="1" stop-color="#a31f1f"/>
+        </linearGradient>
+      </defs>
+      <rect x="6" y="6" width="52" height="52" rx="14" fill="url(#g)"/>
+      <path d="M18 22h28v6H30l16 14v6H18v-6h16L18 28v-6z" fill="rgba(255,255,255,0.92)"/>
+    </svg>`
+  );
+}
+function booksIconDataUrl() {
+  return dataUrlForSvg(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+      <defs>
+        <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+          <stop offset="0" stop-color="#6aa9ff"/>
+          <stop offset="1" stop-color="#3b6bdc"/>
+        </linearGradient>
+      </defs>
+      <rect x="6" y="6" width="52" height="52" rx="14" fill="url(#g)"/>
+      <path d="M20 20h20a6 6 0 0 1 6 6v22a6 6 0 0 0-6-6H20V20z" fill="rgba(255,255,255,0.9)"/>
+      <path d="M20 20h-2a4 4 0 0 0-4 4v24a6 6 0 0 1 6-6h20" fill="rgba(255,255,255,0.75)"/>
+    </svg>`
+  );
+}
+function readDirCandidates(dir) {
+  return fs$3.readdir(dir, { withFileTypes: true }).catch(() => []);
+}
+function sha1(input) {
+  return crypto$1.createHash("sha1").update(input).digest("hex");
+}
+function clamp01(value) {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+async function readZoteroPdfProgress(args) {
+  const statePath = path$3.join(args.dataDir, "storage", args.attachmentKey, ".zotero-reader-state");
+  try {
+    const raw = await fs$3.readFile(statePath, "utf8");
+    const parsed = JSON.parse(raw);
+    const pageIndex = typeof parsed.pageIndex === "number" && Number.isFinite(parsed.pageIndex) ? parsed.pageIndex : null;
+    const totalPages = typeof args.totalPages === "number" && Number.isFinite(args.totalPages) ? args.totalPages : null;
+    if (pageIndex === null || totalPages === null || totalPages <= 0) return null;
+    const safeTotal = Math.max(1, Math.floor(totalPages));
+    const safePage = Math.max(0, Math.min(safeTotal - 1, Math.floor(pageIndex)));
+    return clamp01((safePage + 1) / safeTotal);
+  } catch {
+    return null;
+  }
+}
+async function mdlsNumberOfPages(filePath) {
+  try {
+    const { stdout } = await execFileAsync$1("/usr/bin/mdls", ["-name", "kMDItemNumberOfPages", "-raw", filePath], {
+      timeout: 2e3,
+      maxBuffer: 1024 * 1024
+    });
+    const value = String(stdout ?? "").trim();
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+async function ensureDir(dir) {
+  await fs$3.mkdir(dir, { recursive: true });
+}
+async function quickLookThumbnail(filePath, cacheDir) {
+  try {
+    const st = await fs$3.stat(filePath);
+    const key = `${filePath}|${st.mtimeMs}|${THUMB_SIZE}`;
+    const hash = sha1(key);
+    const outPath = path$3.join(cacheDir, `${hash}.png`);
+    const existing = await fs$3.stat(outPath).then((s2) => Date.now() - s2.mtimeMs < THUMB_TTL_MS ? true : false).catch(() => false);
+    if (existing) {
+      const buf = await fs$3.readFile(outPath);
+      return dataUrlForPng(buf);
+    }
+    const tmpDir = await fs$3.mkdtemp(path$3.join(cacheDir, "tmp-"));
+    try {
+      await execFileAsync$1(
+        "/usr/bin/qlmanage",
+        ["-t", "-s", String(THUMB_SIZE), "-o", tmpDir, filePath],
+        { timeout: 8e3, maxBuffer: 1024 * 1024 * 10 }
+      );
+      const files = await fs$3.readdir(tmpDir);
+      const png = files.find((f) => f.toLowerCase().endsWith(".png"));
+      if (!png) return null;
+      const producedPath = path$3.join(tmpDir, png);
+      await fs$3.copyFile(producedPath, outPath);
+      const buf = await fs$3.readFile(outPath);
+      return dataUrlForPng(buf);
+    } finally {
+      await fs$3.rm(tmpDir, { recursive: true, force: true }).catch(() => {
+      });
+    }
+  } catch {
+    return null;
+  }
+}
+function resolveZoteroAttachmentPath(dataDir, attachmentKey, raw) {
+  const value = (raw ?? "").trim();
+  if (!value) return null;
+  if (path$3.isAbsolute(value)) return value;
+  if (value.startsWith("storage:")) {
+    const rest = value.slice("storage:".length).replace(/^\/+/, "");
+    if (!rest) return null;
+    if (!rest.includes("/") && attachmentKey) return path$3.join(dataDir, "storage", attachmentKey, rest);
+    return path$3.join(dataDir, "storage", rest);
+  }
+  if (value.startsWith("storage/")) {
+    const rest = value.slice("storage/".length).replace(/^\/+/, "");
+    if (!rest) return null;
+    if (!rest.includes("/") && attachmentKey) return path$3.join(dataDir, "storage", attachmentKey, rest);
+    return path$3.join(dataDir, "storage", rest);
+  }
+  return path$3.join(dataDir, value);
+}
+function detectZoteroDataDir() {
+  const candidates = [];
+  const home = os.homedir();
+  candidates.push(path$3.join(home, "Zotero"));
+  candidates.push(path$3.join(home, "Library", "Application Support", "Zotero"));
+  candidates.push(path$3.join(home, "Library", "Application Support", "Zotero", "Profiles"));
+  const existsSqlite = (dir) => {
+    const sqlite = path$3.join(dir, "zotero.sqlite");
+    try {
+      return require("fs").existsSync(sqlite);
+    } catch {
+      return false;
+    }
+  };
+  for (const dir of candidates) {
+    try {
+      const fsSync = require("fs");
+      if (!fsSync.existsSync(dir)) continue;
+      const st = fsSync.statSync(dir);
+      if (!st.isDirectory()) continue;
+      if (existsSqlite(dir)) return dir;
+      const children = fsSync.readdirSync(dir);
+      for (const name of children) {
+        const profile = path$3.join(dir, name);
+        try {
+          const pst = fsSync.statSync(profile);
+          if (!pst.isDirectory()) continue;
+          if (existsSqlite(profile)) return profile;
+        } catch {
+          continue;
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+function hasColumn(db2, table, column) {
+  try {
+    const rows = db2.prepare(`PRAGMA table_info(${table})`).all();
+    return rows.some((r) => r.name === column);
+  } catch {
+    return false;
+  }
+}
+function buildCollectionPath(rows) {
+  const byId = /* @__PURE__ */ new Map();
+  for (const row of rows) byId.set(row.collectionID, row);
+  const memo = /* @__PURE__ */ new Map();
+  const compute = (id) => {
+    const cached = memo.get(id);
+    if (cached) return cached;
+    const row = byId.get(id);
+    if (!row) return "";
+    const parts = [row.collectionName];
+    let cur = row;
+    let guard = 0;
+    while (cur.parentCollectionID && guard < 50) {
+      const parent = byId.get(cur.parentCollectionID);
+      if (!parent) break;
+      parts.push(parent.collectionName);
+      cur = parent;
+      guard += 1;
+    }
+    const pathValue = parts.reverse().join(" / ");
+    memo.set(id, pathValue);
+    return pathValue;
+  };
+  return { byId, computePath: compute };
+}
+function detectBooksLibraryDir() {
+  const home = os.homedir();
+  const candidates = [
+    path$3.join(home, "Library", "Containers", "com.apple.BKAgentService", "Data", "Documents", "iBooks", "Books"),
+    path$3.join(home, "Library", "Containers", "com.apple.iBooksX", "Data", "Documents"),
+    path$3.join(home, "Library", "Containers", "com.apple.Books", "Data", "Documents")
+  ];
+  const fsSync = require("fs");
+  for (const dir of candidates) {
+    try {
+      if (!fsSync.existsSync(dir)) continue;
+      const st = fsSync.statSync(dir);
+      if (!st.isDirectory()) continue;
+      return dir;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+async function listRecentFiles(rootDir, extensions, limit2) {
+  const results = [];
+  const queue = [{ dir: rootDir, depth: 0 }];
+  const maxDepth = 4;
+  const maxEntriesScanned = 5e3;
+  while (queue.length && results.length < maxEntriesScanned) {
+    const { dir, depth } = queue.shift();
+    const entries = await readDirCandidates(dir);
+    for (const ent of entries) {
+      const full = path$3.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        if (depth < maxDepth && ent.name !== ".git" && ent.name !== "cache") {
+          queue.push({ dir: full, depth: depth + 1 });
+        }
+        continue;
+      }
+      if (!ent.isFile()) continue;
+      const ext = path$3.extname(ent.name).toLowerCase();
+      if (!extensions.has(ext)) continue;
+      try {
+        const st = await fs$3.stat(full);
+        results.push({ path: full, updatedAt: st.mtimeMs });
+      } catch {
+        continue;
+      }
+    }
+  }
+  results.sort((a, b) => b.updatedAt - a.updatedAt);
+  return results.slice(0, limit2);
+}
+class ReadingService {
+  constructor(settings) {
+    this.settings = settings;
+    this.cache = null;
+    this.thumbCache = /* @__PURE__ */ new Map();
+    this.thumbDir = path$3.join(getAppDataPath(), "TimeWellSpent", "integrations", "thumbs");
+  }
+  getZoteroIntegrationConfig() {
+    return this.settings.getZoteroIntegrationConfig();
+  }
+  setZoteroIntegrationConfig(value) {
+    this.settings.setZoteroIntegrationConfig(value);
+    this.cache = null;
+  }
+  async listZoteroCollections() {
+    if (process.platform !== "darwin") return [];
+    const configured = this.settings.getJson("zoteroDataDir");
+    let dataDir = typeof configured === "string" && configured.trim() ? configured.trim() : null;
+    if (dataDir && !await isDir(dataDir)) dataDir = null;
+    if (!dataDir) {
+      dataDir = detectZoteroDataDir();
+      if (dataDir) this.settings.setJson("zoteroDataDir", dataDir);
+    }
+    if (!dataDir) return [];
+    const sqlitePath = path$3.join(dataDir, "zotero.sqlite");
+    if (!await isFile(sqlitePath)) return [];
+    const db2 = new DatabaseDriver(sqlitePath, { readonly: true, fileMustExist: true });
+    try {
+      const includeKey = hasColumn(db2, "collections", "key");
+      const rows = db2.prepare(
+        `SELECT collectionID, parentCollectionID, collectionName${includeKey ? ", key" : ""} FROM collections`
+      ).all();
+      const { computePath } = buildCollectionPath(rows);
+      return rows.map((row) => ({
+        id: row.collectionID,
+        key: includeKey ? row.key ?? void 0 : void 0,
+        name: row.collectionName,
+        path: computePath(row.collectionID)
+      })).sort((a, b) => a.path.localeCompare(b.path));
+    } finally {
+      db2.close();
+    }
+  }
+  async getAttractors(limit2 = 12) {
+    if (process.platform !== "darwin") return [];
+    const now = Date.now();
+    if (this.cache && now - this.cache.computedAt < CACHE_TTL_MS) {
+      return this.cache.value.slice(0, limit2);
+    }
+    await ensureDir(this.thumbDir);
+    const [zotero, books] = await Promise.all([
+      this.getZoteroAttractors(Math.max(3, Math.floor(limit2 * 0.7))).catch(() => []),
+      this.getBooksAttractors(Math.max(2, Math.floor(limit2 * 0.5))).catch(() => [])
+    ]);
+    const merged = [...zotero, ...books].sort((a, b) => b.updatedAt - a.updatedAt);
+    this.cache = { value: merged, computedAt: now };
+    return merged.slice(0, limit2);
+  }
+  async getThumb(filePath) {
+    const now = Date.now();
+    const existing = this.thumbCache.get(filePath);
+    if (existing && now - existing.computedAt < CACHE_TTL_MS) return existing.value;
+    const value = await quickLookThumbnail(filePath, this.thumbDir);
+    this.thumbCache.set(filePath, { value, computedAt: now });
+    return value;
+  }
+  async getZoteroAttractors(limit2) {
+    var _a, _b, _c;
+    const configured = this.settings.getJson("zoteroDataDir");
+    let dataDir = typeof configured === "string" && configured.trim() ? configured.trim() : null;
+    if (dataDir && !await isDir(dataDir)) dataDir = null;
+    if (!dataDir) {
+      dataDir = detectZoteroDataDir();
+      if (dataDir) this.settings.setJson("zoteroDataDir", dataDir);
+    }
+    if (!dataDir) return [];
+    const sqlitePath = path$3.join(dataDir, "zotero.sqlite");
+    if (!await isFile(sqlitePath)) return [];
+    const db2 = new DatabaseDriver(sqlitePath, { readonly: true, fileMustExist: true });
+    try {
+      const integration = this.settings.getZoteroIntegrationConfig();
+      const itemTypeStmt = db2.prepare("SELECT itemTypeID FROM itemTypes WHERE typeName = ?");
+      const attachmentType = (_a = itemTypeStmt.get("attachment")) == null ? void 0 : _a.itemTypeID;
+      const noteType = (_b = itemTypeStmt.get("note")) == null ? void 0 : _b.itemTypeID;
+      const annotationType = (_c = itemTypeStmt.get("annotation")) == null ? void 0 : _c.itemTypeID;
+      const idsToSkip = [attachmentType, noteType, annotationType].filter((n) => typeof n === "number");
+      let collectionLabel = null;
+      let collectionIds = null;
+      if (integration.mode === "collection" && typeof integration.collectionId === "number") {
+        const includeKey = hasColumn(db2, "collections", "key");
+        const colRows = db2.prepare(`SELECT collectionID, parentCollectionID, collectionName${includeKey ? ", key" : ""} FROM collections`).all();
+        const { byId, computePath } = buildCollectionPath(colRows);
+        const root2 = byId.get(integration.collectionId);
+        if (root2) {
+          collectionLabel = computePath(root2.collectionID);
+          const ids = [];
+          const queue = [root2.collectionID];
+          const childrenByParent = /* @__PURE__ */ new Map();
+          for (const r of colRows) {
+            if (!r.parentCollectionID) continue;
+            const list = childrenByParent.get(r.parentCollectionID) ?? [];
+            list.push(r.collectionID);
+            childrenByParent.set(r.parentCollectionID, list);
+          }
+          while (queue.length) {
+            const current = queue.shift();
+            ids.push(current);
+            if (!integration.includeSubcollections) continue;
+            const kids = childrenByParent.get(current) ?? [];
+            for (const kid of kids) queue.push(kid);
+          }
+          collectionIds = ids;
+        }
+      }
+      const baseSelect = `
+        SELECT i.itemID, i.key, i.dateModified,
+          (
+            SELECT v.value
+            FROM itemData id
+            JOIN fields f ON f.fieldID = id.fieldID
+            JOIN itemDataValues v ON v.valueID = id.valueID
+            WHERE id.itemID = i.itemID AND f.fieldName = 'title'
+            LIMIT 1
+          ) AS title
+        FROM items i
+      `;
+      const whereClauses = ["i.itemID IS NOT NULL"];
+      const params = [];
+      if (idsToSkip.length) {
+        whereClauses.push(`i.itemTypeID NOT IN (${idsToSkip.map(() => "?").join(",")})`);
+        params.push(...idsToSkip);
+      }
+      let joinClause = "";
+      if (collectionIds && collectionIds.length) {
+        joinClause = "JOIN collectionItems ci ON ci.itemID = i.itemID";
+        whereClauses.push(`ci.collectionID IN (${collectionIds.map(() => "?").join(",")})`);
+        params.push(...collectionIds);
+      }
+      const stmt = db2.prepare(
+        `
+        ${baseSelect}
+        ${joinClause}
+        WHERE ${whereClauses.join(" AND ")}
+        ORDER BY i.dateModified DESC
+        LIMIT ?
+        `
+      );
+      params.push(limit2);
+      const rows = stmt.all(...params);
+      if (!rows.length) return [];
+      const attachmentStmt = db2.prepare(
+        `
+        SELECT ia.itemID as attachmentItemID, ia.path as path, ia.contentType as contentType, ai.key as attachmentKey, ai.dateModified as attachmentModified
+        FROM itemAttachments ia
+        JOIN items ai ON ai.itemID = ia.itemID
+        WHERE ia.parentItemID = ?
+        ORDER BY (ia.contentType = 'application/pdf') DESC, ai.dateModified DESC
+        LIMIT 1
+        `
+      );
+      const totalPagesStmt = db2.prepare("SELECT totalPages FROM fulltextItems WHERE itemID = ? LIMIT 1");
+      const results = [];
+      for (const row of rows) {
+        const att = attachmentStmt.get(row.itemID);
+        const zoteroUrl = (att == null ? void 0 : att.attachmentKey) ? `zotero://open-pdf/library/items/${att.attachmentKey}` : `zotero://select/library/items/${row.key}`;
+        let resolvedAttachmentPath = null;
+        let thumbDataUrl;
+        if (att == null ? void 0 : att.path) {
+          resolvedAttachmentPath = resolveZoteroAttachmentPath(dataDir, (att == null ? void 0 : att.attachmentKey) ?? null, att.path);
+          if (resolvedAttachmentPath && await isFile(resolvedAttachmentPath)) {
+            const thumb = await this.getThumb(resolvedAttachmentPath);
+            if (thumb) thumbDataUrl = thumb;
+          }
+        }
+        let progress;
+        if ((att == null ? void 0 : att.attachmentKey) && (att.contentType ?? "").toLowerCase() === "application/pdf") {
+          const rowPages = totalPagesStmt.get(att.attachmentItemID);
+          let totalPages = typeof (rowPages == null ? void 0 : rowPages.totalPages) === "number" ? rowPages.totalPages : null;
+          if ((!totalPages || totalPages <= 0) && resolvedAttachmentPath && await isFile(resolvedAttachmentPath)) {
+            totalPages = await mdlsNumberOfPages(resolvedAttachmentPath);
+          }
+          const computed = await readZoteroPdfProgress({ dataDir, attachmentKey: att.attachmentKey, totalPages });
+          if (typeof computed === "number") progress = computed;
+        }
+        const updatedAt = row.dateModified ? Date.parse(row.dateModified) : Date.now();
+        results.push({
+          id: `zotero:${row.key}`,
+          source: "zotero",
+          title: safeTitle(row.title, "Zotero item"),
+          subtitle: collectionLabel ? `Zotero • ${collectionLabel}` : "Zotero • recent reading",
+          updatedAt: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
+          progress,
+          action: { kind: "deeplink", url: zoteroUrl, app: "Zotero" },
+          thumbDataUrl,
+          iconDataUrl: zoteroIconDataUrl()
+        });
+      }
+      return results;
+    } finally {
+      db2.close();
+    }
+  }
+  async getBooksAttractors(limit2) {
+    const configured = this.settings.getJson("booksLibraryDir");
+    let rootDir = typeof configured === "string" && configured.trim() ? configured.trim() : null;
+    if (rootDir && !await isDir(rootDir)) rootDir = null;
+    if (!rootDir) {
+      rootDir = detectBooksLibraryDir();
+      if (rootDir) this.settings.setJson("booksLibraryDir", rootDir);
+    }
+    if (!rootDir) return [];
+    const files = await listRecentFiles(rootDir, /* @__PURE__ */ new Set([".epub", ".pdf"]), limit2);
+    if (!files.length) return [];
+    const results = [];
+    for (const f of files) {
+      const filename = path$3.basename(f.path);
+      const title = filename.replace(/\.(epub|pdf)$/i, "");
+      const thumb = await this.getThumb(f.path);
+      results.push({
+        id: `books:${sha1(f.path).slice(0, 12)}`,
+        source: "books",
+        title: safeTitle(title, "Book"),
+        subtitle: "Books • recent file",
+        updatedAt: f.updatedAt,
+        action: { kind: "file", path: f.path, app: "Books" },
+        thumbDataUrl: thumb ?? void 0,
+        iconDataUrl: booksIconDataUrl()
+      });
+    }
+    return results;
   }
 }
 const PORT = 17600;
@@ -39675,6 +41179,7 @@ async function createBackend(database) {
   const settings = new SettingsService(database);
   const paywall = new PaywallManager(wallet, market);
   const economy = new EconomyEngine(wallet, market, paywall, () => settings.getEmergencyReminderInterval());
+  const emergency = new EmergencyService(settings, wallet, paywall);
   const activityTracker = new ActivityTracker(database);
   const classifier = new ActivityClassifier(
     () => settings.getCategorisation(),
@@ -39685,7 +41190,10 @@ async function createBackend(database) {
   const focus = new FocusService(database, wallet);
   const intentions = new IntentionService(database);
   const budgets = new BudgetService(database);
-  const store = new StoreService(database);
+  const analytics = new AnalyticsService(database);
+  const library = new LibraryService(database);
+  const reading = new ReadingService(settings);
+  const friends = new FriendsService(settings, analytics);
   const app = express$1();
   const ws2 = expressWs$1(app);
   const clients = /* @__PURE__ */ new Set();
@@ -39763,17 +41271,144 @@ async function createBackend(database) {
   });
   app.post("/paywall/emergency", (req2, res2) => {
     try {
-      const { domain, justification } = req2.body;
-      const session = economy.startEmergency(domain, justification);
+      const { domain, justification, url: url2 } = req2.body;
+      const session = emergency.start(domain, justification, { url: url2 });
       res2.json(session);
     } catch (error3) {
       res2.status(400).json({ error: error3.message });
     }
   });
+  const startStoreSession = (req2, res2) => {
+    try {
+      const { domain, price, url: url2 } = req2.body;
+      if (!domain) throw new Error("Domain is required");
+      if (typeof price !== "number" || Number.isNaN(price) || price < 1) {
+        throw new Error("Price must be at least 1");
+      }
+      const normalisedUrl = typeof url2 === "string" && url2.trim().length > 0 ? url2 : void 0;
+      const session = economy.startStore(domain, price, normalisedUrl);
+      res2.json(session);
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
+  };
+  app.post("/paywall/store", startStoreSession);
+  app.post("/paywall/start-store-fallback", startStoreSession);
   app.get("/paywall/status", (req2, res2) => {
     const domain = String(req2.query.domain ?? "");
     const session = paywall.getSession(domain);
     res2.json({ session, wallet: wallet.getSnapshot(), rates: market.getRate(domain) });
+  });
+  app.post("/paywall/emergency-review", (req2, res2) => {
+    try {
+      const { outcome } = req2.body;
+      if (outcome !== "kept" && outcome !== "not-kept") {
+        throw new Error("Invalid outcome");
+      }
+      const stats = emergency.recordReview(outcome);
+      res2.json({ ok: true, stats });
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
+  });
+  app.post("/actions/open", (req2, res2) => {
+    try {
+      const body = req2.body ?? {};
+      const kind = String(body.kind ?? "");
+      const allowedApps = /* @__PURE__ */ new Set(["Books", "Zotero"]);
+      if (kind === "app") {
+        const appName = String(body.app ?? "").trim();
+        if (!appName) throw new Error("App is required");
+        if (!allowedApps.has(appName)) throw new Error("App not allowed");
+        if (process.platform !== "darwin") throw new Error("Opening apps is only supported on macOS for now");
+        const child = node_child_process.spawn("open", ["-a", appName], { detached: true, stdio: "ignore" });
+        child.unref();
+        res2.json({ ok: true });
+        return;
+      }
+      if (kind === "deeplink") {
+        const url2 = String(body.url ?? "").trim();
+        if (!url2) throw new Error("URL is required");
+        let parsed;
+        try {
+          parsed = new URL(url2);
+        } catch {
+          throw new Error("Invalid URL");
+        }
+        if (parsed.protocol !== "zotero:") {
+          throw new Error("Deep link not allowed");
+        }
+        if (process.platform !== "darwin") throw new Error("Deep links are only supported on macOS for now");
+        const child = node_child_process.spawn("open", [url2], { detached: true, stdio: "ignore" });
+        child.unref();
+        res2.json({ ok: true });
+        return;
+      }
+      if (kind === "file") {
+        const filePath = String(body.path ?? "").trim();
+        if (!filePath) throw new Error("Path is required");
+        if (process.platform !== "darwin") throw new Error("Opening files is only supported on macOS for now");
+        const allowedRoots = /* @__PURE__ */ new Set();
+        const zoteroDir = settings.getJson("zoteroDataDir");
+        const booksDir = settings.getJson("booksLibraryDir");
+        if (typeof zoteroDir === "string" && zoteroDir.trim()) allowedRoots.add(zoteroDir.trim());
+        if (typeof booksDir === "string" && booksDir.trim()) allowedRoots.add(booksDir.trim());
+        const resolved = path$3.resolve(filePath);
+        const isAllowed = [...allowedRoots].some((root2) => {
+          const resolvedRoot = path$3.resolve(root2);
+          return resolved === resolvedRoot || resolved.startsWith(resolvedRoot + path$3.sep);
+        });
+        if (!isAllowed) throw new Error("File path not allowed");
+        const appName = body.app ? String(body.app).trim() : "";
+        const args = appName && allowedApps.has(appName) ? ["-a", appName, resolved] : [resolved];
+        const child = node_child_process.spawn("open", args, { detached: true, stdio: "ignore" });
+        child.unref();
+        res2.json({ ok: true });
+        return;
+      }
+      if (kind === "url") {
+        const url2 = String(body.url ?? "").trim();
+        if (!url2) throw new Error("URL is required");
+        let parsed;
+        try {
+          parsed = new URL(url2);
+        } catch {
+          throw new Error("Invalid URL");
+        }
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          throw new Error("Only http(s) URLs are supported");
+        }
+        if (process.platform === "darwin") {
+          const child2 = node_child_process.spawn("open", [url2], { detached: true, stdio: "ignore" });
+          child2.unref();
+          res2.json({ ok: true });
+          return;
+        }
+        if (process.platform === "win32") {
+          const child2 = node_child_process.spawn("cmd", ["/c", "start", "", url2], { detached: true, stdio: "ignore" });
+          child2.unref();
+          res2.json({ ok: true });
+          return;
+        }
+        const child = node_child_process.spawn("xdg-open", [url2], { detached: true, stdio: "ignore" });
+        child.unref();
+        res2.json({ ok: true });
+        return;
+      }
+      throw new Error("Invalid kind");
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
+  });
+  app.get("/integrations/reading", async (req2, res2) => {
+    try {
+      const limit2 = Number(req2.query.limit ?? 12);
+      const clamped = Number.isFinite(limit2) ? Math.max(1, Math.min(24, limit2)) : 12;
+      const items = await reading.getAttractors(clamped);
+      res2.json({ items });
+    } catch (error3) {
+      res2.status(500).json({ error: error3.message });
+    }
   });
   app.get("/activities/recent", (req2, res2) => {
     const limit2 = Number(req2.query.limit ?? 50);
@@ -39820,26 +41455,72 @@ async function createBackend(database) {
     budgets.remove(Number(req2.params.id));
     res2.json({ ok: true });
   });
-  app.get("/store", (_req, res2) => {
-    res2.json(store.list());
+  app.get("/library", (_req, res2) => {
+    res2.json(library.list());
   });
-  app.post("/store", (req2, res2) => {
+  app.post("/library", (req2, res2) => {
     try {
-      const { url: url2, price, title } = req2.body;
-      const item = store.add(url2, price, title);
+      const payload = req2.body;
+      const item = library.add(payload);
       res2.json(item);
     } catch (error3) {
       res2.status(400).json({ error: error3.message });
     }
   });
-  app.delete("/store/:id", (req2, res2) => {
-    store.remove(Number(req2.params.id));
+  app.patch("/library/:id", (req2, res2) => {
+    try {
+      const id = Number(req2.params.id);
+      if (!Number.isFinite(id)) {
+        throw new Error("Invalid library item id");
+      }
+      const payload = req2.body;
+      const item = library.update(id, payload);
+      res2.json(item);
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
+  });
+  app.delete("/library/:id", (req2, res2) => {
+    library.remove(Number(req2.params.id));
     res2.json({ ok: true });
   });
-  app.get("/store/check", (req2, res2) => {
+  app.get("/library/check", (req2, res2) => {
     const url2 = String(req2.query.url ?? "");
-    const item = store.findMatchingItem(url2);
+    const item = library.getByUrl(url2);
     res2.json({ item });
+  });
+  app.get("/analytics/overview", (req2, res2) => {
+    const days = Number(req2.query.days ?? 7);
+    res2.json(analytics.getOverview(days));
+  });
+  app.get("/analytics/time-of-day", (req2, res2) => {
+    const days = Number(req2.query.days ?? 7);
+    res2.json(analytics.getTimeOfDayAnalysis(days));
+  });
+  app.get("/analytics/patterns", (req2, res2) => {
+    const days = Number(req2.query.days ?? 30);
+    res2.json(analytics.getBehavioralPatterns(days));
+  });
+  app.get("/analytics/engagement/:domain", (req2, res2) => {
+    const domain = req2.params.domain;
+    const days = Number(req2.query.days ?? 7);
+    res2.json(analytics.getEngagementMetrics(domain, days));
+  });
+  app.get("/analytics/trends", (req2, res2) => {
+    const granularity = req2.query.granularity || "day";
+    res2.json(analytics.getTrends(granularity));
+  });
+  app.post("/analytics/behavior-events", (req2, res2) => {
+    try {
+      const events = req2.body.events;
+      if (!Array.isArray(events)) {
+        return res2.status(400).json({ error: "events must be an array" });
+      }
+      analytics.ingestBehaviorEvents(events);
+      res2.json({ ok: true, count: events.length });
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
   });
   app.post("/paywall/cancel", (req2, res2) => {
     try {
@@ -39864,6 +41545,23 @@ async function createBackend(database) {
   });
   app.get("/settings/idle-threshold", (_req, res2) => {
     res2.json({ threshold: settings.getIdleThreshold() });
+  });
+  app.get("/settings/categorisation", (_req, res2) => {
+    res2.json(settings.getCategorisation());
+  });
+  app.post("/settings/categorisation", (req2, res2) => {
+    try {
+      const payload = req2.body;
+      const next = {
+        productive: Array.isArray(payload.productive) ? payload.productive : [],
+        neutral: Array.isArray(payload.neutral) ? payload.neutral : [],
+        frivolity: Array.isArray(payload.frivolity) ? payload.frivolity : []
+      };
+      settings.setCategorisation(next);
+      res2.json({ ok: true });
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
   });
   app.post("/settings/idle-threshold", (req2, res2) => {
     const { threshold } = req2.body;
@@ -39903,7 +41601,8 @@ async function createBackend(database) {
           purchasePrice: session.purchasePrice,
           purchasedSeconds: session.purchasedSeconds,
           justification: session.justification,
-          lastReminder: session.lastReminder
+          lastReminder: session.lastReminder,
+          allowedUrl: session.allowedUrl
         };
         return acc;
       }, {});
@@ -39913,12 +41612,15 @@ async function createBackend(database) {
           lastSynced: Date.now()
         },
         marketRates,
-        storeItems: store.list(),
+        libraryItems: library.list(),
         settings: {
           frivolityDomains: categorisation.frivolity,
           productiveDomains: categorisation.productive,
           neutralDomains: categorisation.neutral,
-          idleThreshold: settings.getIdleThreshold()
+          idleThreshold: settings.getIdleThreshold(),
+          emergencyPolicy: settings.getEmergencyPolicy(),
+          economyExchangeRate: settings.getEconomyExchangeRate(),
+          journal: settings.getJournalConfig()
         },
         sessions: sessionsRecord
       });
@@ -39932,7 +41634,7 @@ async function createBackend(database) {
     extensionEvents.emit("status", { connected: true, lastSeen: lastExtensionSeen });
     logger.info("WS client connected", clients.size);
     socket.on("message", (msg) => {
-      var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j;
+      var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
       try {
         const data = JSON.parse(msg);
         if (data.type === "activity" && data.payload) {
@@ -39976,15 +41678,30 @@ async function createBackend(database) {
           }
         } else if (data.type === "paywall:start-emergency" && ((_g = data.payload) == null ? void 0 : _g.domain) && ((_h = data.payload) == null ? void 0 : _h.justification)) {
           try {
-            const session = economy.startEmergency(String(data.payload.domain), String(data.payload.justification));
+            const session = emergency.start(String(data.payload.domain), String(data.payload.justification), {
+              url: data.payload.url ? String(data.payload.url) : void 0
+            });
             broadcast({ type: "paywall-session-started", payload: session });
           } catch (error3) {
             logger.error("Failed to start emergency from extension", error3);
             socket.send(JSON.stringify({ type: "error", payload: { message: error3.message } }));
           }
-        } else if (data.type === "paywall:start-store" && ((_i = data.payload) == null ? void 0 : _i.domain) && typeof ((_j = data.payload) == null ? void 0 : _j.price) === "number") {
+        } else if (data.type === "paywall:emergency-review" && ((_i = data.payload) == null ? void 0 : _i.outcome)) {
           try {
-            const session = economy.startStore(String(data.payload.domain), Number(data.payload.price));
+            const outcome = String(data.payload.outcome);
+            if (outcome !== "kept" && outcome !== "not-kept") throw new Error("Invalid outcome");
+            const stats = emergency.recordReview(outcome);
+            socket.send(JSON.stringify({ type: "emergency-review-recorded", payload: stats }));
+          } catch (error3) {
+            socket.send(JSON.stringify({ type: "error", payload: { message: error3.message } }));
+          }
+        } else if (data.type === "paywall:start-store" && ((_j = data.payload) == null ? void 0 : _j.domain) && typeof ((_k = data.payload) == null ? void 0 : _k.price) === "number") {
+          try {
+            const session = economy.startStore(
+              String(data.payload.domain),
+              Number(data.payload.price),
+              data.payload.url ? String(data.payload.url) : void 0
+            );
             broadcast({ type: "paywall-session-started", payload: session });
           } catch (error3) {
             logger.error("Failed to start store session from extension", error3);
@@ -40019,6 +41736,10 @@ async function createBackend(database) {
   focus.on("tick", (payload) => broadcast({ type: "focus-tick", payload }));
   focus.on("start", (payload) => broadcast({ type: "focus-start", payload }));
   focus.on("stop", (payload) => broadcast({ type: "focus-stop", payload }));
+  const emitLibrarySync = () => broadcast({ type: "library-sync", payload: { items: library.list() } });
+  library.on("added", emitLibrarySync);
+  library.on("updated", emitLibrarySync);
+  library.on("removed", emitLibrarySync);
   const handleActivity = (event, origin = "system") => {
     activityPipeline.handle(event, origin);
   };
@@ -40051,7 +41772,10 @@ async function createBackend(database) {
     focus,
     intentions,
     budgets,
-    store,
+    library,
+    analytics,
+    reading,
+    friends,
     handleActivity,
     extension: {
       status: () => ({ connected: clients.size > 0, lastSeen: lastExtensionSeen }),
@@ -40063,32 +41787,6 @@ async function createBackend(database) {
     stop,
     port: PORT
   };
-}
-function getPlatform() {
-  switch (process.platform) {
-    case "darwin":
-      return "mac";
-    case "win32":
-      return "windows";
-    case "linux":
-      return "linux";
-    default:
-      return "unknown";
-  }
-}
-function getAppDataPath() {
-  const os = require("os");
-  const path3 = require("path");
-  switch (getPlatform()) {
-    case "mac":
-      return path3.join(os.homedir(), "Library", "Application Support");
-    case "windows":
-      return process.env.APPDATA || path3.join(os.homedir(), "AppData", "Roaming");
-    case "linux":
-      return process.env.XDG_CONFIG_HOME || path3.join(os.homedir(), ".config");
-    default:
-      return path3.join(os.homedir(), ".config");
-  }
 }
 class Database {
   constructor(options = {}) {
@@ -40163,20 +41861,78 @@ class Database {
         value TEXT
       );
 
-      CREATE TABLE IF NOT EXISTS store_items (
+      CREATE TABLE IF NOT EXISTS library_items (
         id INTEGER PRIMARY KEY,
-        url TEXT NOT NULL UNIQUE,
+        kind TEXT CHECK(kind IN ('url','app')) NOT NULL,
+        url TEXT UNIQUE,
+        app TEXT,
         domain TEXT NOT NULL,
         title TEXT,
-        price INTEGER NOT NULL,
+        note TEXT,
+        bucket TEXT CHECK(bucket IN ('attractor','productive','frivolous')) NOT NULL,
+        purpose TEXT NOT NULL DEFAULT 'allow',
+        price INTEGER,
         created_at TEXT NOT NULL,
-        last_used_at TEXT
+        last_used_at TEXT,
+        consumed_at TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_activities_started_at ON activities(started_at);
       CREATE INDEX IF NOT EXISTS idx_activities_domain ON activities(domain);
       CREATE INDEX IF NOT EXISTS idx_transactions_ts ON transactions(ts);
-      CREATE INDEX IF NOT EXISTS idx_store_items_domain ON store_items(domain);
+      CREATE INDEX IF NOT EXISTS idx_library_items_bucket ON library_items(bucket);
+      CREATE INDEX IF NOT EXISTS idx_library_items_domain ON library_items(domain);
+
+      -- Granular behavioral events captured by extension
+      CREATE TABLE IF NOT EXISTS behavior_events (
+        id INTEGER PRIMARY KEY,
+        timestamp TEXT NOT NULL,
+        session_id INTEGER,
+        domain TEXT NOT NULL,
+        event_type TEXT CHECK(event_type IN 
+          ('scroll', 'click', 'keystroke', 'focus', 'blur', 'idle_start', 'idle_end', 'visibility')) NOT NULL,
+        value_int INTEGER,
+        value_float REAL,
+        metadata TEXT
+      );
+
+      -- Aggregated session analytics (computed periodically)
+      CREATE TABLE IF NOT EXISTS session_analytics (
+        id INTEGER PRIMARY KEY,
+        activity_id INTEGER UNIQUE,
+        domain TEXT NOT NULL,
+        date TEXT NOT NULL,
+        hour_of_day INTEGER DEFAULT 0,
+        total_scroll_depth INTEGER DEFAULT 0,
+        avg_scroll_velocity REAL DEFAULT 0,
+        total_clicks INTEGER DEFAULT 0,
+        total_keystrokes INTEGER DEFAULT 0,
+        fixation_seconds INTEGER DEFAULT 0,
+        quality_score REAL DEFAULT 0,
+        engagement_level TEXT CHECK(engagement_level IN 
+          ('low', 'passive', 'moderate', 'high', 'intense'))
+      );
+
+      -- Behavioral patterns (what leads to what)
+      CREATE TABLE IF NOT EXISTS behavioral_patterns (
+        id INTEGER PRIMARY KEY,
+        computed_at TEXT NOT NULL,
+        from_category TEXT,
+        from_domain TEXT,
+        to_category TEXT,
+        to_domain TEXT,
+        transition_count INTEGER DEFAULT 0,
+        avg_duration_before REAL,
+        correlation_strength REAL,
+        time_of_day_bucket INTEGER
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_behavior_events_ts ON behavior_events(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_behavior_events_domain ON behavior_events(domain);
+      CREATE INDEX IF NOT EXISTS idx_behavior_events_session ON behavior_events(session_id);
+      CREATE INDEX IF NOT EXISTS idx_session_analytics_date ON session_analytics(date);
+      CREATE INDEX IF NOT EXISTS idx_session_analytics_domain ON session_analytics(domain);
+      CREATE INDEX IF NOT EXISTS idx_behavioral_patterns_computed ON behavioral_patterns(computed_at);
     `;
     this.driver.exec(ddl);
     const wallet = this.driver.prepare("SELECT balance FROM wallet WHERE id = 1").get();
@@ -40188,6 +41944,66 @@ class Database {
     if (!hasHourlyModifiers) {
       logger.info("Migrating database: Adding hourly_modifiers_json to market_rates");
       this.driver.exec("ALTER TABLE market_rates ADD COLUMN hourly_modifiers_json TEXT DEFAULT '[]'");
+    }
+    const libraryInfo = this.driver.prepare("PRAGMA table_info(library_items)").all();
+    const hasPurpose = libraryInfo.some((c) => c.name === "purpose");
+    const hasPrice = libraryInfo.some((c) => c.name === "price");
+    const hasConsumedAt = libraryInfo.some((c) => c.name === "consumed_at");
+    if (!hasPurpose) {
+      logger.info("Migrating database: Adding purpose to library_items");
+      this.driver.exec("ALTER TABLE library_items ADD COLUMN purpose TEXT DEFAULT 'allow'");
+      this.driver.exec(`
+        UPDATE library_items
+        SET purpose = CASE bucket
+          WHEN 'attractor' THEN 'replace'
+          WHEN 'productive' THEN 'allow'
+          WHEN 'frivolous' THEN 'temptation'
+          ELSE 'allow'
+        END
+      `);
+    }
+    if (!hasPrice) {
+      logger.info("Migrating database: Adding price to library_items");
+      this.driver.exec("ALTER TABLE library_items ADD COLUMN price INTEGER");
+    }
+    if (!hasConsumedAt) {
+      logger.info("Migrating database: Adding consumed_at to library_items");
+      this.driver.exec("ALTER TABLE library_items ADD COLUMN consumed_at TEXT");
+    }
+    this.driver.exec("CREATE INDEX IF NOT EXISTS idx_library_items_purpose ON library_items(purpose)");
+    const storeTable = this.driver.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='store_items'").get();
+    if (storeTable) {
+      try {
+        this.driver.exec(`
+          INSERT OR IGNORE INTO library_items(
+            kind, url, app, domain, title, note, bucket, purpose, price, created_at, last_used_at
+          )
+          SELECT
+            'url' as kind,
+            url,
+            NULL as app,
+            domain,
+            title,
+            NULL as note,
+            'productive' as bucket,
+            'allow' as purpose,
+            price,
+            created_at,
+            last_used_at
+          FROM store_items
+        `);
+      } catch (error3) {
+        logger.warn("Failed to migrate store_items into library_items", error3);
+      }
+    }
+    this.migrateAnalyticsTables();
+  }
+  migrateAnalyticsTables() {
+    const tables = this.driver.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('behavior_events', 'session_analytics', 'behavioral_patterns')"
+    ).all();
+    if (tables.length < 3) {
+      logger.info("Analytics tables created/verified");
     }
   }
   get connection() {
@@ -40704,15 +42520,57 @@ function createIpc(context) {
   electron.ipcMain.handle("settings:update-idle-threshold", (_event, value) => backend.settings.setIdleThreshold(value));
   electron.ipcMain.handle("settings:frivolous-idle-threshold", () => backend.settings.getFrivolousIdleThreshold());
   electron.ipcMain.handle("settings:update-frivolous-idle-threshold", (_event, value) => backend.settings.setFrivolousIdleThreshold(value));
-  electron.ipcMain.handle("store:list", () => backend.store.list());
-  electron.ipcMain.handle("store:add", (_event, payload) => {
-    return backend.store.add(payload.url, payload.price, payload.title);
+  electron.ipcMain.handle("settings:emergency-policy", () => backend.settings.getEmergencyPolicy());
+  electron.ipcMain.handle("settings:update-emergency-policy", (_event, value) => backend.settings.setEmergencyPolicy(value));
+  electron.ipcMain.handle("settings:emergency-reminder-interval", () => backend.settings.getEmergencyReminderInterval());
+  electron.ipcMain.handle("settings:update-emergency-reminder-interval", (_event, value) => backend.settings.setEmergencyReminderInterval(value));
+  electron.ipcMain.handle("settings:economy-exchange-rate", () => backend.settings.getEconomyExchangeRate());
+  electron.ipcMain.handle("settings:update-economy-exchange-rate", (_event, value) => backend.settings.setEconomyExchangeRate(value));
+  electron.ipcMain.handle("settings:journal-config", () => backend.settings.getJournalConfig());
+  electron.ipcMain.handle("settings:update-journal-config", (_event, value) => backend.settings.setJournalConfig(value));
+  electron.ipcMain.handle("integrations:zotero-config", () => backend.reading.getZoteroIntegrationConfig());
+  electron.ipcMain.handle("integrations:update-zotero-config", (_event, value) => backend.reading.setZoteroIntegrationConfig(value));
+  electron.ipcMain.handle("integrations:zotero-collections", async () => backend.reading.listZoteroCollections());
+  electron.ipcMain.handle("library:list", () => backend.library.list());
+  electron.ipcMain.handle("library:add", (_event, payload) => {
+    return backend.library.add(payload);
   });
-  electron.ipcMain.handle("store:remove", (_event, payload) => {
-    backend.store.remove(payload.id);
+  electron.ipcMain.handle(
+    "library:update",
+    (_event, payload) => {
+      return backend.library.update(payload.id, {
+        title: payload.title,
+        note: payload.note,
+        purpose: payload.purpose,
+        price: payload.price,
+        consumedAt: payload.consumedAt
+      });
+    }
+  );
+  electron.ipcMain.handle("library:remove", (_event, payload) => backend.library.remove(payload.id));
+  electron.ipcMain.handle("library:find-by-url", (_event, payload) => backend.library.getByUrl(payload.url));
+  electron.ipcMain.handle("friends:identity", () => backend.friends.getIdentity());
+  electron.ipcMain.handle("friends:enable", async (_event, payload) => backend.friends.enable({ relayUrl: payload.relayUrl }));
+  electron.ipcMain.handle("friends:disable", () => backend.friends.disable());
+  electron.ipcMain.handle("friends:publish", () => backend.friends.publishNow());
+  electron.ipcMain.handle("friends:list", () => backend.friends.listFriends());
+  electron.ipcMain.handle("friends:add", (_event, payload) => backend.friends.addFriend(payload));
+  electron.ipcMain.handle("friends:remove", (_event, payload) => backend.friends.removeFriend(payload.id));
+  electron.ipcMain.handle("friends:fetch-all", () => backend.friends.fetchAll());
+  electron.ipcMain.handle("analytics:overview", (_event, payload) => {
+    return backend.analytics.getOverview(payload.days ?? 7);
   });
-  electron.ipcMain.handle("store:find-by-url", (_event, payload) => {
-    return backend.store.findMatchingItem(payload.url);
+  electron.ipcMain.handle("analytics:time-of-day", (_event, payload) => {
+    return backend.analytics.getTimeOfDayAnalysis(payload.days ?? 7);
+  });
+  electron.ipcMain.handle("analytics:patterns", (_event, payload) => {
+    return backend.analytics.getBehavioralPatterns(payload.days ?? 30);
+  });
+  electron.ipcMain.handle("analytics:engagement", (_event, payload) => {
+    return backend.analytics.getEngagementMetrics(payload.domain, payload.days ?? 7);
+  });
+  electron.ipcMain.handle("analytics:trends", (_event, payload) => {
+    return backend.analytics.getTrends(payload.granularity ?? "day");
   });
 }
 const isMac = process.platform === "darwin";
@@ -40721,6 +42579,7 @@ let tray = null;
 let db = null;
 let stopBackend = null;
 let stopWatcher = null;
+let lastTrayLabel = "TimeWellSpent";
 async function createWindow() {
   mainWindow = new electron.BrowserWindow({
     width: 1280,
@@ -40800,11 +42659,7 @@ async function bootstrap() {
   };
   backend.paywall.on("session-tick", (session) => {
     const minutes = Math.ceil(session.remainingSeconds / 60);
-    if (process.platform === "darwin") {
-      tray == null ? void 0 : tray.setTitle(`${session.domain}: ${minutes}m`);
-    } else {
-      tray == null ? void 0 : tray.setToolTip(`${session.domain}: ${minutes}m remaining`);
-    }
+    updateTray(`⏳ ${session.domain}: ${minutes}m`);
     if (Math.abs(session.remainingSeconds - 120) < 5) {
       new electron.Notification({
         title: "TimeWellSpent",
@@ -40823,20 +42678,18 @@ async function bootstrap() {
         title: "TimeWellSpent",
         body: `Time's up for ${payload.domain}!`
       }).show();
-      if (process.platform === "darwin") {
-        tray == null ? void 0 : tray.setTitle("");
-      } else {
-        tray == null ? void 0 : tray.setToolTip("TimeWellSpent");
-      }
+      updateTray(`💰 ${backend.wallet.getSnapshot().balance}`);
+      buildTrayMenu();
     }
   });
   const updateTray = (label) => {
-    if (tray) {
-      if (isMac) {
-        tray.setTitle(label);
-      } else {
-        tray.setToolTip(label);
-      }
+    lastTrayLabel = label;
+    if (!tray) return;
+    if (isMac) {
+      tray.setTitle(label);
+      tray.setToolTip(label);
+    } else {
+      tray.setToolTip(label);
     }
   };
   backend.wallet.on("balance-changed", (balance) => {
@@ -40871,11 +42724,7 @@ async function bootstrap() {
     }
   }
   tray = new electron.Tray(trayIcon);
-  if (isMac) {
-    tray.setTitle("TimeWellSpent");
-  } else {
-    tray.setToolTip("Time Well Spent");
-  }
+  updateTray(lastTrayLabel || "TimeWellSpent");
   console.log("Tray initialized");
   const buildTrayMenu = () => {
     const walletBalance = backend.wallet.getSnapshot().balance;
@@ -40967,6 +42816,11 @@ async function bootstrap() {
   console.log("Watcher started");
   backend.extension.onStatus((status3) => emitToRenderers("extension:status", status3));
   emitToRenderers("extension:status", backend.extension.status());
+  backend.library.on("added", (item) => emitToRenderers("library:changed", { action: "added", item }));
+  backend.library.on("updated", (item) => emitToRenderers("library:changed", { action: "updated", item }));
+  backend.library.on("removed", (payload) => emitToRenderers("library:changed", { action: "removed", ...payload }));
+  backend.friends.on("published", () => emitToRenderers("friends:published", {}));
+  backend.friends.on("updated", (payload) => emitToRenderers("friends:updated", payload));
   createIpc({ backend });
   await createWindow();
   console.log("Window created");
