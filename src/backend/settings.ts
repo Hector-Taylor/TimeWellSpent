@@ -1,7 +1,7 @@
 import type { Statement } from 'better-sqlite3';
 import type { Database } from './storage';
 import type { CategorisationConfig } from '@shared/types';
-import type { EmergencyPolicyId } from '@shared/types';
+import type { EmergencyPolicyId, PeekConfig } from '@shared/types';
 import { DEFAULT_CATEGORISATION, DEFAULT_IDLE_THRESHOLD_SECONDS } from './defaults';
 import type { FriendEntry, FriendIdentity, FriendFeedSummary } from '@shared/types';
 import type { ZoteroIntegrationConfig } from '@shared/types';
@@ -130,6 +130,20 @@ export class SettingsService {
       }
     }
     this.setJson('journalConfig', { url: url ? url : null, minutes });
+  }
+
+  getPeekConfig(): PeekConfig {
+    const raw = this.getJson<PeekConfig>('peekConfig');
+    const enabled = typeof raw?.enabled === 'boolean' ? raw.enabled : true;
+    const allowOnNewPages = typeof raw?.allowOnNewPages === 'boolean' ? raw.allowOnNewPages : false;
+    return { enabled, allowOnNewPages };
+  }
+
+  setPeekConfig(value: PeekConfig) {
+    this.setJson('peekConfig', {
+      enabled: Boolean(value?.enabled),
+      allowOnNewPages: Boolean(value?.allowOnNewPages)
+    });
   }
 
   getZoteroIntegrationConfig(): ZoteroIntegrationConfig {

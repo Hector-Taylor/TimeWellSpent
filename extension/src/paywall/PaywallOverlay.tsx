@@ -29,7 +29,7 @@ type LibraryItem = {
   domain: string;
   title?: string;
   note?: string;
-  purpose: 'replace' | 'allow' | 'temptation';
+  purpose: 'replace' | 'allow' | 'temptation' | 'productive';
   price?: number;
 };
 
@@ -53,6 +53,7 @@ type StatusResponse = {
   library?: {
     items: LibraryItem[];
     replaceItems: LibraryItem[];
+    productiveItems: LibraryItem[];
     productiveDomains: string[];
     readingItems?: ReadingItem[];
   };
@@ -69,6 +70,7 @@ type Props = {
   domain: string;
   status: StatusResponse;
   reason?: string;
+  peek?: { allowed: boolean; isNewPage: boolean };
   onClose(): void;
 };
 
@@ -163,7 +165,9 @@ function playSoftChime() {
   }
 }
 
-export default function PaywallOverlay({ domain, status, reason, onClose }: Props) {
+const PEEK_EXIT_DISTANCE = 120;
+
+export default function PaywallOverlay({ domain, status, reason, peek, onClose }: Props) {
   const [selectedMinutes, setSelectedMinutes] = useState(15);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showEmergencyForm, setShowEmergencyForm] = useState(false);
@@ -179,9 +183,12 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
   const [ritualRemaining, setRitualRemaining] = useState(0);
   const [ritualRunning, setRitualRunning] = useState(false);
   const [ritualDone, setRitualDone] = useState(false);
+  const [peekActive, setPeekActive] = useState(false);
+  const [peekAnchor, setPeekAnchor] = useState<{ x: number; y: number } | null>(null);
 
   const ratePerMin = status.rate?.ratePerMin ?? status.session?.ratePerMin ?? 1;
   const emergencyPolicy = status.emergencyPolicy ?? 'balanced';
+  const peekAllowed = Boolean(peek?.allowed);
 
   const emergencyPolicyConfig = useMemo<EmergencyPolicyConfig>(() => {
     switch (emergencyPolicy) {
@@ -209,6 +216,52 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
     }
   };
 
+  useEffect(() => {
+    if (!peekAllowed && peekActive) {
+      setPeekActive(false);
+      setPeekAnchor(null);
+    }
+  }, [peekAllowed, peekActive]);
+
+  useEffect(() => {
+    if (!peekActive || !peekAnchor) return;
+    const handleMove = (event: MouseEvent) => {
+      const dx = event.clientX - peekAnchor.x;
+      const dy = event.clientY - peekAnchor.y;
+      if (Math.hypot(dx, dy) >= PEEK_EXIT_DISTANCE) {
+        setPeekActive(false);
+        setPeekAnchor(null);
+      }
+    };
+    window.addEventListener('mousemove', handleMove);
+    return () => window.removeEventListener('mousemove', handleMove);
+  }, [peekActive, peekAnchor]);
+
+  const handleTogglePeek = (event: { clientX: number; clientY: number }) => {
+    if (!peekAllowed) return;
+    if (peekActive) {
+      setPeekActive(false);
+      setPeekAnchor(null);
+      return;
+    }
+    setPeekAnchor({ x: event.clientX, y: event.clientY });
+    setPeekActive(true);
+  };
+
+  const peekToggle = peekAllowed ? (
+    <div className="tws-peek-controls">
+      <button
+        type="button"
+        className={`tws-peek-toggle ${peekActive ? 'active' : ''}`}
+        onClick={handleTogglePeek}
+        aria-pressed={peekActive}
+      >
+        {peekActive ? 'Hide peek' : 'Peek'}
+      </button>
+      {peekActive && <div className="tws-peek-hint">Move mouse to return</div>}
+    </div>
+  ) : null;
+
   const suggestionCandidates = useMemo<Suggestion[]>(() => {
     const candidates: Suggestion[] = [];
 
@@ -233,6 +286,22 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
           subtitle: item.note ? item.note : 'your replace pool',
           app: item.app ?? '',
           requiresDesktop: true
+        });
+      }
+    }
+
+    const productiveItems = status.library?.productiveItems ?? [];
+    for (const item of productiveItems) {
+      if (!item) continue;
+      if (item.kind === 'url') {
+        if (!item.url || item.domain === domain) continue;
+        candidates.push({
+          type: 'url',
+          id: `productive:${item.id}`,
+          libraryId: item.id,
+          title: item.title ?? item.domain,
+          subtitle: item.note ? item.note : 'productive library',
+          url: item.url
         });
       }
     }
@@ -314,7 +383,7 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
       if (dismissedIds[c.id]) return false;
       return true;
     });
-  }, [dismissedIds, domain, status.library?.productiveDomains, status.library?.replaceItems, status.library?.readingItems]);
+  }, [dismissedIds, domain, status.library?.productiveDomains, status.library?.productiveItems, status.library?.replaceItems, status.library?.readingItems]);
 
   const picks = useMemo(() => pickRandom(suggestionCandidates, 3, spinKey), [suggestionCandidates, spinKey]);
 
@@ -578,7 +647,8 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
 
   if (ritual) {
     return (
-      <div className="tws-paywall-overlay">
+      <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''}`}>
+        {peekToggle}
         <div className="tws-paywall-modal">
           <header className="tws-paywall-header">
             <div>
@@ -663,7 +733,8 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
 
   if (showEmergencyForm) {
     return (
-      <div className="tws-paywall-overlay">
+      <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''}`}>
+        {peekToggle}
         <div className="tws-paywall-modal">
           <header className="tws-paywall-header">
             <div>
@@ -722,9 +793,41 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
   const unlockPreview = unlock?.kind === 'url' && unlock.url ? previewFor(unlock.url) : null;
   const unlockThumb = unlockPreview?.imageUrl ?? null;
   const unlockIcon = unlock?.kind === 'url' && unlock.url ? unlockPreview?.iconUrl ?? faviconUrl(unlock.url) : null;
+  const productiveItems = useMemo(() => {
+    const items = status.library?.productiveItems ?? [];
+    return items.filter((item) => {
+      if (!item || item.kind !== 'url' || !item.url) return false;
+      return !dismissedIds[`productive:${item.id}`];
+    });
+  }, [dismissedIds, status.library?.productiveItems]);
+
+  const openProductiveItem = (item: LibraryItem) => {
+    if (!item || item.kind !== 'url' || !item.url) return;
+    handleOpenSuggestion({
+      type: 'url',
+      id: `productive:${item.id}`,
+      title: item.title ?? item.domain,
+      subtitle: item.note ?? undefined,
+      url: item.url,
+      libraryId: item.id
+    });
+  };
+
+  const markProductiveConsumed = (item: LibraryItem) => {
+    if (!item || item.kind !== 'url' || !item.url) return;
+    handleMarkConsumed({
+      type: 'url',
+      id: `productive:${item.id}`,
+      title: item.title ?? item.domain,
+      subtitle: item.note ?? undefined,
+      url: item.url,
+      libraryId: item.id
+    });
+  };
 
   return (
-    <div className="tws-paywall-overlay">
+    <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''}`}>
+      {peekToggle}
       <div className="tws-paywall-modal">
         <header className="tws-paywall-header">
           <div>
@@ -990,6 +1093,55 @@ export default function PaywallOverlay({ domain, status, reason, onClose }: Prop
                         <strong>{item.title}</strong>
                         <span>{item.subtitle ?? 'open an app'}</span>
                         <small>desktop</small>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          <section className="tws-paywall-option tws-library-shelf">
+            <div className="tws-option-header">
+              <div>
+                <h3>
+                  Productive library{' '}
+                  {productiveItems.length > 0 && <span className="tws-subtle">({productiveItems.length})</span>}
+                </h3>
+                <p className="tws-subtle">Open something you already tagged as productive.</p>
+              </div>
+            </div>
+            {productiveItems.length === 0 ? (
+              <p className="tws-subtle" style={{ margin: 0 }}>
+                No productive items yet. Right-click a page and choose “Productive” to add it.
+              </p>
+            ) : (
+              <div className="tws-library-scroll">
+                {productiveItems.map((item) => {
+                  const preview = previewFor(item.url ?? '');
+                  const title = preview?.title ?? item.title ?? item.domain;
+                  const subtitle = preview?.description ?? item.note ?? item.domain;
+                  const icon = item.url ? preview?.iconUrl ?? faviconUrl(item.url) : null;
+                  return (
+                    <div key={item.id} className="tws-library-item">
+                      <div className="tws-library-info">
+                        {icon ? (
+                          <img className="tws-library-favicon" src={icon} alt="" loading="lazy" />
+                        ) : (
+                          <div className="tws-library-favicon tws-library-favicon-placeholder" aria-hidden="true" />
+                        )}
+                        <div className="tws-library-meta">
+                          <strong>{title}</strong>
+                          <span>{subtitle}</span>
+                        </div>
+                      </div>
+                      <div className="tws-library-actions">
+                        <button className="tws-secondary" type="button" disabled={isProcessing} onClick={() => openProductiveItem(item)}>
+                          Open
+                        </button>
+                        <button className="tws-link" type="button" disabled={isProcessing} onClick={() => markProductiveConsumed(item)}>
+                          Done
+                        </button>
                       </div>
                     </div>
                   );

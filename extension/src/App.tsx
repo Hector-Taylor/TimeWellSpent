@@ -28,7 +28,7 @@ type StatusResponse = {
     domain: string;
     title?: string;
     note?: string;
-    purpose: 'replace' | 'allow' | 'temptation';
+    purpose: 'replace' | 'allow' | 'temptation' | 'productive';
     price?: number;
   } | null;
   library?: {
@@ -40,7 +40,7 @@ type StatusResponse = {
       domain: string;
       title?: string;
       note?: string;
-      purpose: 'replace' | 'allow' | 'temptation';
+      purpose: 'replace' | 'allow' | 'temptation' | 'productive';
       price?: number;
     }>;
   };
@@ -74,7 +74,7 @@ function App() {
   const [working, setWorking] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
 
-  const [libraryPurpose, setLibraryPurpose] = useState<'replace' | 'allow' | 'temptation'>('replace');
+  const [libraryPurpose, setLibraryPurpose] = useState<'replace' | 'allow' | 'temptation' | 'productive'>('replace');
   const [domainCategory, setDomainCategory] = useState<'productive' | 'neutral' | 'frivolous'>('frivolous');
   const [titleInput, setTitleInput] = useState('');
   const [titleTouched, setTitleTouched] = useState(false);
@@ -292,7 +292,7 @@ function App() {
         <section className="card">
           <h2>Save this page</h2>
           <div className="chip-row">
-            {(['replace', 'allow', 'temptation'] as const).map((purpose) => (
+            {(['replace', 'productive', 'allow', 'temptation'] as const).map((purpose) => (
               <button
                 key={purpose}
                 type="button"
@@ -303,7 +303,7 @@ function App() {
                 }}
                 disabled={working}
               >
-                {purpose === 'replace' ? 'replace' : purpose === 'allow' ? 'allow' : 'temptation'}
+                {purpose}
               </button>
             ))}
           </div>
@@ -354,7 +354,7 @@ function App() {
             Add to Library
           </button>
           <small className="hint">
-            Replace shows up in “Try this instead”. Priced Allow items appear under “Proceed anyway” when you land on that exact URL.
+            Replace shows up in “Try this instead”. Productive items count as productive time. Priced Allow items appear under “Proceed anyway” when you land on that exact URL.
           </small>
         </section>
       )}

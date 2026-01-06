@@ -22,6 +22,7 @@ import { logger } from '@shared/logger';
 import { AnalyticsService } from './analytics';
 import { EmergencyService } from './emergency';
 import { LibraryService } from './library';
+import { ConsumptionLogService } from './consumption';
 import { FriendsService } from './friends';
 import { ReadingService } from './reading';
 
@@ -37,6 +38,7 @@ export type BackendServices = {
   intentions: IntentionService;
   budgets: BudgetService;
   library: LibraryService;
+  consumption: ConsumptionLogService;
   reading: ReadingService;
   friends: FriendsService;
   handleActivity: (event: ActivityEvent & { idleSeconds?: number }, origin?: ActivityOrigin) => void;
@@ -59,19 +61,98 @@ export async function createBackend(database: Database): Promise<BackendServices
   const economy = new EconomyEngine(wallet, market, paywall, () => settings.getEmergencyReminderInterval());
   const emergency = new EmergencyService(settings, wallet, paywall);
   const activityTracker = new ActivityTracker(database);
+  const library = new LibraryService(database);
+  const consumption = new ConsumptionLogService(database);
+  const productiveOverrides = { urls: new Set<string>(), apps: new Set<string>() };
+
+  const normaliseProductiveUrl = (value: string) => {
+    try {
+      const parsed = new URL(value);
+      parsed.hash = '';
+      parsed.search = '';
+      let path = parsed.pathname;
+      if (path.length > 1 && path.endsWith('/')) {
+        path = path.slice(0, -1);
+      }
+      return `${parsed.origin}${path}`;
+    } catch {
+      return null;
+    }
+  };
+
+  const rebuildProductiveOverrides = () => {
+    productiveOverrides.urls.clear();
+    productiveOverrides.apps.clear();
+    for (const item of library.list()) {
+      if (item.purpose !== 'productive') continue;
+      if (item.kind === 'url' && item.url) {
+        const normalized = normaliseProductiveUrl(item.url);
+        if (normalized) productiveOverrides.urls.add(normalized);
+      } else if (item.kind === 'app') {
+        const name = (item.app ?? item.domain ?? '').trim().toLowerCase();
+        if (name) productiveOverrides.apps.add(name);
+      }
+    }
+  };
+
+  rebuildProductiveOverrides();
+  library.on('added', rebuildProductiveOverrides);
+  library.on('updated', rebuildProductiveOverrides);
+  library.on('removed', rebuildProductiveOverrides);
+
   const classifier = new ActivityClassifier(
     () => settings.getCategorisation(),
     () => settings.getIdleThreshold(),
-    () => settings.getFrivolousIdleThreshold()
+    () => settings.getFrivolousIdleThreshold(),
+    (event) => {
+      if (event.url) {
+        const normalized = normaliseProductiveUrl(event.url);
+        if (normalized && productiveOverrides.urls.has(normalized)) return 'productive';
+      }
+      const appName = (event.appName ?? '').toLowerCase();
+      if (appName) {
+        for (const name of productiveOverrides.apps) {
+          if (appName.includes(name)) return 'productive';
+        }
+      }
+      return null;
+    }
   );
   const activityPipeline = new ActivityPipeline(activityTracker, economy, classifier);
   const focus = new FocusService(database, wallet);
   const intentions = new IntentionService(database);
   const budgets = new BudgetService(database);
   const analytics = new AnalyticsService(database);
-  const library = new LibraryService(database);
   const reading = new ReadingService(settings);
   const friends = new FriendsService(settings, analytics);
+
+  library.on('consumed', ({ item, consumedAt }) => {
+    const title = item.title ?? item.domain;
+    consumption.record({
+      kind: 'library-item',
+      occurredAt: consumedAt,
+      title,
+      url: item.url ?? null,
+      domain: item.domain,
+      meta: { purpose: item.purpose }
+    });
+  });
+
+  economy.on('paywall-session-started', (session) => {
+    if (session.mode === 'emergency') return;
+    consumption.record({
+      kind: 'frivolous-session',
+      title: session.domain,
+      url: session.allowedUrl ?? null,
+      domain: session.domain,
+      meta: {
+        mode: session.mode,
+        purchasePrice: session.purchasePrice ?? null,
+        purchasedSeconds: session.purchasedSeconds ?? null,
+        allowedUrl: session.allowedUrl ?? null
+      }
+    });
+  });
 
   const app = express();
   const ws = expressWs(app);
@@ -387,7 +468,7 @@ export async function createBackend(database: Database): Promise<BackendServices
         app?: string;
         title?: string;
         note?: string;
-        purpose: 'replace' | 'allow' | 'temptation';
+        purpose: 'replace' | 'allow' | 'temptation' | 'productive';
         price?: number | null;
       };
       const item = library.add(payload);
@@ -406,7 +487,7 @@ export async function createBackend(database: Database): Promise<BackendServices
       const payload = req.body as {
         title?: string | null;
         note?: string | null;
-        purpose?: 'replace' | 'allow' | 'temptation';
+        purpose?: 'replace' | 'allow' | 'temptation' | 'productive';
         price?: number | null;
         consumedAt?: string | null;
       };
@@ -546,6 +627,7 @@ export async function createBackend(database: Database): Promise<BackendServices
   app.get('/extension/state', (_req, res) => {
     try {
       const categorisation = settings.getCategorisation();
+      const peekConfig = settings.getPeekConfig();
       const marketRates: Record<string, MarketRate> = {};
 
       for (const rate of market.listRates()) {
@@ -582,7 +664,9 @@ export async function createBackend(database: Database): Promise<BackendServices
           idleThreshold: settings.getIdleThreshold(),
           emergencyPolicy: settings.getEmergencyPolicy(),
           economyExchangeRate: settings.getEconomyExchangeRate(),
-          journal: settings.getJournalConfig()
+          journal: settings.getJournalConfig(),
+          peekEnabled: peekConfig.enabled,
+          peekAllowNewPages: peekConfig.allowOnNewPages
         },
         sessions: sessionsRecord
       });
@@ -747,6 +831,7 @@ export async function createBackend(database: Database): Promise<BackendServices
     intentions,
     budgets,
     library,
+    consumption,
     analytics,
     reading,
     friends,

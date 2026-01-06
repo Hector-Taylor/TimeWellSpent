@@ -11,6 +11,7 @@ const CONTEXT_MENU_IDS = {
     rootSave: 'tws-save',
     rootDomain: 'tws-domain',
     saveReplace: 'save-to-library-replace',
+    saveProductive: 'save-to-library-productive',
     saveAllow: 'save-to-library-allow',
     saveTemptation: 'save-to-library-temptation',
     savePriced: 'save-to-library-priced',
@@ -40,6 +41,15 @@ type RouletteOpen = {
 const rouletteByTabId = new Map<number, RouletteOpen>();
 const rouletteNotificationMap = new Map<string, RouletteOpen>();
 
+type TabPeekState = {
+    createdAt: number;
+    lastNavigationAt: number | null;
+    lastUrl: string | null;
+};
+
+const tabPeekState = new Map<number, TabPeekState>();
+const PEEK_NEW_PAGE_WINDOW_MS = 5000;
+
 type EmergencyPolicyConfig = {
     id: EmergencyPolicyId;
     durationSeconds: number;
@@ -60,6 +70,36 @@ function getEmergencyPolicyConfig(id: EmergencyPolicyId): EmergencyPolicyConfig 
         default:
             return { id: 'balanced', durationSeconds: 3 * 60, tokensPerDay: 2, cooldownSeconds: 30 * 60, urlLocked: true };
     }
+}
+
+function ensureTabPeekState(tabId: number) {
+    let entry = tabPeekState.get(tabId);
+    if (!entry) {
+        entry = { createdAt: Date.now(), lastNavigationAt: null, lastUrl: null };
+        tabPeekState.set(tabId, entry);
+    }
+    return entry;
+}
+
+function recordTabNavigation(tabId: number, url?: string) {
+    const entry = ensureTabPeekState(tabId);
+    entry.lastNavigationAt = Date.now();
+    entry.lastUrl = url ?? null;
+}
+
+function isNewPeekContext(tabId: number, source?: string) {
+    if (!source) return false;
+    const prefix = source.split(':')[0];
+    if (prefix === 'webNavigation' || prefix === 'onUpdated') return true;
+    if (prefix === 'onActivated') {
+        const entry = tabPeekState.get(tabId);
+        if (!entry) return false;
+        const now = Date.now();
+        const recentNav = entry.lastNavigationAt ? now - entry.lastNavigationAt < PEEK_NEW_PAGE_WINDOW_MS : false;
+        const recentCreate = entry.createdAt ? now - entry.createdAt < PEEK_NEW_PAGE_WINDOW_MS : false;
+        return recentNav || recentCreate;
+    }
+    return false;
 }
 
 function baseUrl(urlString: string): string | null {
@@ -88,6 +128,7 @@ storage.init().then(() => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+    tabPeekState.delete(tabId);
     const session = rouletteByTabId.get(tabId);
     if (!session) return;
     rouletteByTabId.delete(tabId);
@@ -240,7 +281,7 @@ function handleDesktopMessage(data: any) {
                     const tabDomain = new URL(tab.url).hostname.replace(/^www\./, '');
                     if (tabDomain === domain) {
                         console.log(`🚫 Immediately blocking ${domain} due to session end`);
-                        await showBlockScreen(tab.id, domain, reason);
+                        await showBlockScreen(tab.id, domain, reason, 'session-ended');
                     }
                 }
             });
@@ -260,7 +301,7 @@ function handleDesktopMessage(data: any) {
                     const tabDomain = new URL(tab.url).hostname.replace(/^www\./, '');
                     if (tabDomain === domain) {
                         console.log(`🚫 Immediately blocking ${domain} due to pause`);
-                        await showBlockScreen(tab.id, domain, 'paused');
+                        await showBlockScreen(tab.id, domain, 'paused', 'session-paused');
                     }
                 }
             });
@@ -289,6 +330,12 @@ function handleDesktopMessage(data: any) {
 // Tab Monitoring & Blocking
 // ============================================================================
 
+chrome.tabs.onCreated.addListener((tab) => {
+    if (typeof tab.id === 'number') {
+        ensureTabPeekState(tab.id);
+    }
+});
+
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
     const tab = await chrome.tabs.get(activeInfo.tabId);
     if (tab.url) {
@@ -298,6 +345,9 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    if (changeInfo.status === 'loading' && tab.url && tab.url.startsWith('http')) {
+        recordTabNavigation(tabId, tab.url);
+    }
     if ((changeInfo.status === 'loading' || changeInfo.status === 'complete') && tab.url) {
         await checkAndBlockUrl(tabId, tab.url, `onUpdated:${changeInfo.status}`);
     }
@@ -308,6 +358,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
 chrome.webNavigation.onCommitted.addListener(async (details) => {
     if (details.frameId !== 0) return; // Only main frame
+    recordTabNavigation(details.tabId, details.url);
     await checkAndBlockUrl(details.tabId, details.url, 'webNavigation:onCommitted');
 });
 
@@ -349,7 +400,7 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
             // No session (or invalid URL-locked session) - BLOCK!
             const reason = session?.allowedUrl ? 'url-locked' : undefined;
             console.log(`🚫 Blocking ${domain} (source: ${source})`);
-            await showBlockScreen(tabId, domain, reason);
+            await showBlockScreen(tabId, domain, reason, source);
         } else {
             // console.log(`✨ ${domain} - allowed (not frivolous)`);
         }
@@ -418,7 +469,7 @@ async function tickSessions() {
                 await storage.setSession(activeDomain, { ...session, paused: true });
             }
             if (activeTab.id) {
-                await showBlockScreen(activeTab.id, activeDomain, 'url-locked');
+                await showBlockScreen(activeTab.id, activeDomain, 'url-locked', 'session-url-locked');
             }
             return;
         }
@@ -432,7 +483,7 @@ async function tickSessions() {
                     await storage.setSession(activeDomain, { ...session, paused: true });
                 }
                 if (activeTab.id) {
-                    await showBlockScreen(activeTab.id, activeDomain, 'url-locked');
+                    await showBlockScreen(activeTab.id, activeDomain, 'url-locked', 'session-url-locked');
                 }
                 return;
             }
@@ -463,7 +514,7 @@ async function tickSessions() {
             });
             await storage.clearSession(activeDomain);
             if (activeTab.id) {
-                await showBlockScreen(activeTab.id, activeDomain, 'emergency-expired');
+                await showBlockScreen(activeTab.id, activeDomain, 'emergency-expired', 'session-expired');
             }
         } else {
             await storage.setSession(activeDomain, session);
@@ -492,7 +543,7 @@ async function tickSessions() {
             console.log(`❌ Insufficient funds for ${activeDomain}`);
             await storage.clearSession(activeDomain);
             if (activeTab.id) {
-                await showBlockScreen(activeTab.id, activeDomain, 'insufficient-funds');
+                await showBlockScreen(activeTab.id, activeDomain, 'insufficient-funds', 'session-insufficient-funds');
             }
         }
     } else {
@@ -505,7 +556,7 @@ async function tickSessions() {
             console.log(`⏰ Time's up for ${activeDomain}`);
             await storage.clearSession(activeDomain);
             if (activeTab.id) {
-                await showBlockScreen(activeTab.id, activeDomain, 'time-expired');
+                await showBlockScreen(activeTab.id, activeDomain, 'time-expired', 'session-expired');
             }
         } else {
             await storage.setSession(activeDomain, session);
@@ -621,7 +672,18 @@ async function ensureContentScript(tabId: number) {
     }
 }
 
-async function showBlockScreen(tabId: number, domain: string, reason?: string) {
+async function getPeekPayload(tabId: number, source?: string) {
+    const state = await storage.getState();
+    const enabled = state.settings?.peekEnabled !== false;
+    const allowOnNewPages = Boolean(state.settings?.peekAllowNewPages);
+    const isNewPage = isNewPeekContext(tabId, source);
+    return {
+        allowed: enabled && (allowOnNewPages || !isNewPage),
+        isNewPage
+    };
+}
+
+async function showBlockScreen(tabId: number, domain: string, reason?: string, source?: string) {
     await ensureContentScript(tabId);
 
     // Ping to give the content script a chance to attach
@@ -632,9 +694,10 @@ async function showBlockScreen(tabId: number, domain: string, reason?: string) {
     }
 
     try {
+        const peek = await getPeekPayload(tabId, source);
         await chrome.tabs.sendMessage(tabId, {
             type: 'BLOCK_SCREEN',
-            payload: { domain, reason }
+            payload: { domain, reason, peek }
         });
         console.log(`🔒 Block screen message sent to tab ${tabId} for ${domain}`);
     } catch (error) {
@@ -1068,6 +1131,12 @@ function setupContextMenus() {
             contexts: ['page', 'link']
         });
         chrome.contextMenus.create({
+            id: CONTEXT_MENU_IDS.saveProductive,
+            parentId: CONTEXT_MENU_IDS.rootSave,
+            title: 'Productive (counts as productive time)',
+            contexts: ['page', 'link']
+        });
+        chrome.contextMenus.create({
             id: CONTEXT_MENU_IDS.saveAllow,
             parentId: CONTEXT_MENU_IDS.rootSave,
             title: 'Allow (good link)',
@@ -1417,7 +1486,7 @@ async function handleUpsertLibraryItem(payload: { url?: string; purpose?: Librar
     const url = typeof payload?.url === 'string' ? payload.url.trim() : '';
     const purpose = payload?.purpose;
     if (!url) return { success: false, error: 'Missing URL' };
-    if (purpose !== 'replace' && purpose !== 'allow' && purpose !== 'temptation') {
+    if (purpose !== 'replace' && purpose !== 'allow' && purpose !== 'temptation' && purpose !== 'productive') {
         return { success: false, error: 'Invalid purpose' };
     }
     if (purpose !== 'allow' && typeof payload.price === 'number') {
@@ -1534,6 +1603,7 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
         library: {
             items: libraryItems,
             replaceItems: libraryItems.filter((item) => item.purpose === 'replace' && !item.consumedAt),
+            productiveItems: libraryItems.filter((item) => item.purpose === 'productive' && !item.consumedAt),
             productiveDomains: state.settings.productiveDomains ?? [],
             readingItems
         }
@@ -1781,7 +1851,7 @@ async function handleEndSession(payload: { domain: string }) {
     if (activeTab && activeTab.url && activeTab.id) {
         const tabDomain = new URL(activeTab.url).hostname.replace(/^www\./, '');
         if (tabDomain === payload.domain) {
-            await showBlockScreen(activeTab.id, payload.domain, 'ended');
+            await showBlockScreen(activeTab.id, payload.domain, 'ended', 'session-ended');
         }
     }
 
@@ -1894,12 +1964,14 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
     const isSave =
         itemId === CONTEXT_MENU_IDS.saveReplace ||
+        itemId === CONTEXT_MENU_IDS.saveProductive ||
         itemId === CONTEXT_MENU_IDS.saveAllow ||
         itemId === CONTEXT_MENU_IDS.saveTemptation ||
         itemId === CONTEXT_MENU_IDS.savePriced;
 
     const purposeForMenu = (id: string): LibraryPurpose | null => {
         if (id === CONTEXT_MENU_IDS.saveReplace) return 'replace';
+        if (id === CONTEXT_MENU_IDS.saveProductive) return 'productive';
         if (id === CONTEXT_MENU_IDS.saveAllow) return 'allow';
         if (id === CONTEXT_MENU_IDS.saveTemptation) return 'temptation';
         if (id === CONTEXT_MENU_IDS.savePriced) return 'allow';

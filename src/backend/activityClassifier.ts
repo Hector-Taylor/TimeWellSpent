@@ -11,7 +11,8 @@ export class ActivityClassifier {
   constructor(
     private readonly getConfig: () => CategorisationConfig,
     private readonly getIdleThreshold: () => number,
-    private readonly getFrivolousIdleThreshold: () => number
+    private readonly getFrivolousIdleThreshold: () => number,
+    private readonly resolveOverride?: (event: ActivityEvent & { idleSeconds?: number }) => ActivityCategory | null
   ) { }
 
   classify(event: ActivityEvent & { idleSeconds?: number }): ClassifiedActivity {
@@ -20,7 +21,8 @@ export class ActivityClassifier {
     const domain = event.domain?.toLowerCase() ?? null;
     const appName = event.appName;
 
-    const category = this.resolveCategory(domain, appName ?? '', config);
+    const override = this.resolveOverride ? this.resolveOverride(event) : null;
+    const category = override ?? this.resolveCategory(domain, appName ?? '', config);
     const baseThreshold = Math.max(1, this.getIdleThreshold() ?? DEFAULT_IDLE_THRESHOLD_SECONDS);
     const frivolousThreshold = Math.max(1, this.getFrivolousIdleThreshold() ?? DEFAULT_IDLE_THRESHOLD_SECONDS);
     const idleThreshold = category === 'frivolity' ? frivolousThreshold : baseThreshold;

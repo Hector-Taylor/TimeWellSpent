@@ -67,7 +67,9 @@ const api = {
     economyExchangeRate: () => electron.ipcRenderer.invoke("settings:economy-exchange-rate"),
     updateEconomyExchangeRate: (value) => electron.ipcRenderer.invoke("settings:update-economy-exchange-rate", value),
     journalConfig: () => electron.ipcRenderer.invoke("settings:journal-config"),
-    updateJournalConfig: (value) => electron.ipcRenderer.invoke("settings:update-journal-config", value)
+    updateJournalConfig: (value) => electron.ipcRenderer.invoke("settings:update-journal-config", value),
+    peekConfig: () => electron.ipcRenderer.invoke("settings:peek-config"),
+    updatePeekConfig: (value) => electron.ipcRenderer.invoke("settings:update-peek-config", value)
   },
   integrations: {
     zotero: {
@@ -82,6 +84,10 @@ const api = {
     update: (id, payload) => electron.ipcRenderer.invoke("library:update", { id, ...payload }),
     remove: (id) => electron.ipcRenderer.invoke("library:remove", { id }),
     findByUrl: (url) => electron.ipcRenderer.invoke("library:find-by-url", { url })
+  },
+  history: {
+    list: (day) => electron.ipcRenderer.invoke("history:list", { day }),
+    days: (rangeDays) => electron.ipcRenderer.invoke("history:days", { rangeDays })
   },
   analytics: {
     overview: (days) => electron.ipcRenderer.invoke("analytics:overview", { days }),

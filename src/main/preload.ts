@@ -69,7 +69,9 @@ const api: RendererApi = {
     economyExchangeRate: () => ipcRenderer.invoke('settings:economy-exchange-rate'),
     updateEconomyExchangeRate: (value) => ipcRenderer.invoke('settings:update-economy-exchange-rate', value),
     journalConfig: () => ipcRenderer.invoke('settings:journal-config'),
-    updateJournalConfig: (value) => ipcRenderer.invoke('settings:update-journal-config', value)
+    updateJournalConfig: (value) => ipcRenderer.invoke('settings:update-journal-config', value),
+    peekConfig: () => ipcRenderer.invoke('settings:peek-config'),
+    updatePeekConfig: (value) => ipcRenderer.invoke('settings:update-peek-config', value)
   },
   integrations: {
     zotero: {
@@ -84,6 +86,10 @@ const api: RendererApi = {
     update: (id, payload) => ipcRenderer.invoke('library:update', { id, ...payload }),
     remove: (id) => ipcRenderer.invoke('library:remove', { id }),
     findByUrl: (url) => ipcRenderer.invoke('library:find-by-url', { url })
+  },
+  history: {
+    list: (day) => ipcRenderer.invoke('history:list', { day }),
+    days: (rangeDays) => ipcRenderer.invoke('history:days', { rangeDays })
   },
   analytics: {
     overview: (days) => ipcRenderer.invoke('analytics:overview', { days }),

@@ -29,7 +29,7 @@ function toDomainFromUrl(url: string): string {
 }
 
 function ensurePurpose(purpose: unknown): LibraryPurpose {
-  if (purpose === 'replace' || purpose === 'allow' || purpose === 'temptation') return purpose;
+  if (purpose === 'replace' || purpose === 'allow' || purpose === 'temptation' || purpose === 'productive') return purpose;
   throw new Error('Invalid purpose');
 }
 
@@ -42,6 +42,7 @@ function purposeFromBucket(bucket: LibraryRow['bucket']): LibraryPurpose {
 function bucketFromPurpose(purpose: LibraryPurpose): LibraryRow['bucket'] {
   if (purpose === 'replace') return 'attractor';
   if (purpose === 'temptation') return 'frivolous';
+  if (purpose === 'productive') return 'productive';
   return 'productive';
 }
 
@@ -205,6 +206,9 @@ export class LibraryService extends EventEmitter {
       consumedAt: nextConsumedAt ?? undefined
     };
     this.emit('updated', item);
+    if (!existing.consumedAt && nextConsumedAt) {
+      this.emit('consumed', { item, consumedAt: nextConsumedAt });
+    }
     return item;
   }
 

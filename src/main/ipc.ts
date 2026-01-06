@@ -1,7 +1,7 @@
 import { BrowserWindow, ipcMain } from 'electron';
 import type { BackendServices } from '@backend/server';
 import type { Database } from '@backend/storage';
-import type { EmergencyPolicyId, JournalConfig, LibraryPurpose, ZoteroIntegrationConfig } from '@shared/types';
+import type { EmergencyPolicyId, JournalConfig, LibraryPurpose, PeekConfig, ZoteroIntegrationConfig } from '@shared/types';
 
 export type IpcContext = {
   backend: BackendServices;
@@ -120,6 +120,8 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('settings:update-economy-exchange-rate', (_event, value: number) => backend.settings.setEconomyExchangeRate(value));
   ipcMain.handle('settings:journal-config', () => backend.settings.getJournalConfig());
   ipcMain.handle('settings:update-journal-config', (_event, value: JournalConfig) => backend.settings.setJournalConfig(value));
+  ipcMain.handle('settings:peek-config', () => backend.settings.getPeekConfig());
+  ipcMain.handle('settings:update-peek-config', (_event, value: PeekConfig) => backend.settings.setPeekConfig(value));
 
   // Integrations
   ipcMain.handle('integrations:zotero-config', () => backend.reading.getZoteroIntegrationConfig());
@@ -145,6 +147,9 @@ export function createIpc(context: IpcContext) {
   );
   ipcMain.handle('library:remove', (_event, payload: { id: number }) => backend.library.remove(payload.id));
   ipcMain.handle('library:find-by-url', (_event, payload: { url: string }) => backend.library.getByUrl(payload.url));
+
+  ipcMain.handle('history:list', (_event, payload: { day: string }) => backend.consumption.listByDay(payload.day));
+  ipcMain.handle('history:days', (_event, payload: { rangeDays?: number }) => backend.consumption.listDays(payload.rangeDays ?? 30));
 
   // Friends (relay-backed feed)
   ipcMain.handle('friends:identity', () => backend.friends.getIdentity());

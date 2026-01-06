@@ -98,7 +98,7 @@ export type Intention = {
   completed: boolean;
 };
 
-export type LibraryPurpose = 'replace' | 'allow' | 'temptation';
+export type LibraryPurpose = 'replace' | 'allow' | 'temptation' | 'productive';
 
 export type LibraryItem = {
   id: number;
@@ -113,6 +113,24 @@ export type LibraryItem = {
   createdAt: string;
   lastUsedAt?: string;
   consumedAt?: string;
+};
+
+export type ConsumptionLogKind = 'library-item' | 'frivolous-session';
+
+export type ConsumptionLogEntry = {
+  id: number;
+  occurredAt: string;
+  day: string;
+  kind: ConsumptionLogKind;
+  title?: string;
+  url?: string;
+  domain?: string;
+  meta?: Record<string, unknown>;
+};
+
+export type ConsumptionDaySummary = {
+  day: string;
+  count: number;
 };
 
 export type Budget = {
@@ -231,6 +249,8 @@ export type RendererApi = {
     updateEconomyExchangeRate(value: number): Promise<void>;
     journalConfig(): Promise<JournalConfig>;
     updateJournalConfig(value: JournalConfig): Promise<void>;
+    peekConfig(): Promise<PeekConfig>;
+    updatePeekConfig(value: PeekConfig): Promise<void>;
   };
   integrations: {
     zotero: {
@@ -248,6 +268,10 @@ export type RendererApi = {
     ): Promise<LibraryItem>;
     remove(id: number): Promise<void>;
     findByUrl(url: string): Promise<LibraryItem | null>;
+  };
+  history: {
+    list(day: string): Promise<ConsumptionLogEntry[]>;
+    days(rangeDays?: number): Promise<ConsumptionDaySummary[]>;
   };
   analytics: {
     overview(days?: number): Promise<AnalyticsOverview>;
@@ -289,6 +313,11 @@ export type ZoteroCollection = {
 export type JournalConfig = {
   url: string | null;
   minutes: number;
+};
+
+export type PeekConfig = {
+  enabled: boolean;
+  allowOnNewPages: boolean;
 };
 
 // ============================================================================

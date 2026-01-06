@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import type { EmergencyPolicyId, JournalConfig, RendererApi, ZoteroCollection, ZoteroIntegrationConfig, ZoteroIntegrationMode } from '@shared/types';
+import type { EmergencyPolicyId, JournalConfig, PeekConfig, RendererApi, ZoteroCollection, ZoteroIntegrationConfig, ZoteroIntegrationMode } from '@shared/types';
 
 interface SettingsProps {
   api: RendererApi;
@@ -16,6 +16,8 @@ export default function Settings({ api }: SettingsProps) {
   const [emergencyReminderInterval, setEmergencyReminderInterval] = useState(300);
   const [journalUrl, setJournalUrl] = useState('');
   const [journalMinutes, setJournalMinutes] = useState(10);
+  const [peekEnabled, setPeekEnabled] = useState(true);
+  const [peekAllowNewPages, setPeekAllowNewPages] = useState(false);
 
   const [zoteroConfig, setZoteroConfig] = useState<ZoteroIntegrationConfig>({
     mode: 'recent',
@@ -33,6 +35,10 @@ export default function Settings({ api }: SettingsProps) {
     api.settings.journalConfig().then((cfg: JournalConfig) => {
       setJournalUrl(cfg.url ?? '');
       setJournalMinutes(cfg.minutes ?? 10);
+    }).catch(() => { });
+    api.settings.peekConfig().then((cfg: PeekConfig) => {
+      setPeekEnabled(cfg.enabled);
+      setPeekAllowNewPages(cfg.allowOnNewPages);
     }).catch(() => { });
     api.integrations.zotero.config().then(setZoteroConfig).catch(() => { });
   }, [api.settings, api.integrations.zotero]);
@@ -66,6 +72,7 @@ export default function Settings({ api }: SettingsProps) {
       await api.settings.updateEmergencyPolicy(emergencyPolicy);
       await api.settings.updateEmergencyReminderInterval(emergencyReminderInterval);
       await api.settings.updateJournalConfig({ url: journalUrl.trim() ? journalUrl.trim() : null, minutes: journalMinutes });
+      await api.settings.updatePeekConfig({ enabled: peekEnabled, allowOnNewPages: peekAllowNewPages });
       await api.integrations.zotero.updateConfig(zoteroConfig);
       setSaved(true);
       window.setTimeout(() => setSaved(false), 2000);
@@ -139,6 +146,32 @@ export default function Settings({ api }: SettingsProps) {
             onChange={(e) => setEmergencyReminderInterval(Number(e.target.value))}
           />
           <p className="subtle">How often to nudge you during an emergency session.</p>
+        </label>
+
+        <label style={{ gridColumn: '1 / -1' }}>
+          Paywall peek
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 8 }}>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', margin: 0 }}>
+              <input
+                type="checkbox"
+                checked={peekEnabled}
+                onChange={(e) => setPeekEnabled(e.target.checked)}
+              />
+              <span className="subtle">Enable peek</span>
+            </label>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', margin: 0, opacity: peekEnabled ? 1 : 0.6 }}>
+              <input
+                type="checkbox"
+                checked={peekAllowNewPages}
+                onChange={(e) => setPeekAllowNewPages(e.target.checked)}
+                disabled={!peekEnabled}
+              />
+              <span className="subtle">Allow peek on newly opened pages</span>
+            </label>
+          </div>
+          <p className="subtle" style={{ marginTop: 8 }}>
+            Peek briefly shows a blocked page until you move the mouse. When disabled for new pages, peek only works on already open tabs.
+          </p>
         </label>
 
         <label style={{ gridColumn: '1 / -1' }}>

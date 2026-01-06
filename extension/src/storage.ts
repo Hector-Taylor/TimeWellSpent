@@ -10,7 +10,7 @@ export interface MarketRate {
     hourlyModifiers?: number[];
 }
 
-export type LibraryPurpose = 'replace' | 'allow' | 'temptation';
+export type LibraryPurpose = 'replace' | 'allow' | 'temptation' | 'productive';
 
 export interface LibraryItem {
     id: number;
@@ -67,6 +67,8 @@ export interface ExtensionState {
         emergencyPolicy?: 'off' | 'gentle' | 'balanced' | 'strict';
         economyExchangeRate?: number;
         journal?: { url: string | null; minutes: number };
+        peekEnabled?: boolean;
+        peekAllowNewPages?: boolean;
     };
     pendingCategorisation?: {
         productiveDomains: string[];
@@ -149,7 +151,9 @@ const DEFAULT_STATE: ExtensionState = {
         idleThreshold: 15,
         emergencyPolicy: 'balanced',
         economyExchangeRate: 5 / 3,
-        journal: { url: null, minutes: 10 }
+        journal: { url: null, minutes: 10 },
+        peekEnabled: true,
+        peekAllowNewPages: false
     },
     pendingCategorisation: null,
     sessions: {},
@@ -195,6 +199,12 @@ class ExtensionStorage {
         }
         if (typeof this.state.settings.economyExchangeRate !== 'number') {
             this.state.settings.economyExchangeRate = 5 / 3;
+        }
+        if (typeof this.state.settings.peekEnabled !== 'boolean') {
+            this.state.settings.peekEnabled = true;
+        }
+        if (typeof this.state.settings.peekAllowNewPages !== 'boolean') {
+            this.state.settings.peekAllowNewPages = false;
         }
         if (!this.state.settings.journal || typeof this.state.settings.journal !== 'object') {
             this.state.settings.journal = { url: null, minutes: 10 };
@@ -262,7 +272,7 @@ class ExtensionStorage {
                 .map((item: any) => {
                     const bucket = item.bucket;
                     const purpose: LibraryPurpose =
-                        item.purpose === 'replace' || item.purpose === 'allow' || item.purpose === 'temptation'
+                        item.purpose === 'replace' || item.purpose === 'allow' || item.purpose === 'temptation' || item.purpose === 'productive'
                             ? item.purpose
                             : bucket === 'attractor'
                                 ? 'replace'

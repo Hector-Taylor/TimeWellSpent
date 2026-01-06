@@ -101,11 +101,23 @@ export class Database {
         consumed_at TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS consumption_log (
+        id INTEGER PRIMARY KEY,
+        occurred_at TEXT NOT NULL,
+        day TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        title TEXT,
+        url TEXT,
+        domain TEXT,
+        meta TEXT
+      );
+
       CREATE INDEX IF NOT EXISTS idx_activities_started_at ON activities(started_at);
       CREATE INDEX IF NOT EXISTS idx_activities_domain ON activities(domain);
       CREATE INDEX IF NOT EXISTS idx_transactions_ts ON transactions(ts);
       CREATE INDEX IF NOT EXISTS idx_library_items_bucket ON library_items(bucket);
       CREATE INDEX IF NOT EXISTS idx_library_items_domain ON library_items(domain);
+      CREATE INDEX IF NOT EXISTS idx_consumption_log_day ON consumption_log(day);
 
       -- Granular behavioral events captured by extension
       CREATE TABLE IF NOT EXISTS behavior_events (

@@ -38852,6 +38852,18 @@ class SettingsService {
     }
     this.setJson("journalConfig", { url: url2 ? url2 : null, minutes });
   }
+  getPeekConfig() {
+    const raw = this.getJson("peekConfig");
+    const enabled = typeof (raw == null ? void 0 : raw.enabled) === "boolean" ? raw.enabled : true;
+    const allowOnNewPages = typeof (raw == null ? void 0 : raw.allowOnNewPages) === "boolean" ? raw.allowOnNewPages : false;
+    return { enabled, allowOnNewPages };
+  }
+  setPeekConfig(value) {
+    this.setJson("peekConfig", {
+      enabled: Boolean(value == null ? void 0 : value.enabled),
+      allowOnNewPages: Boolean(value == null ? void 0 : value.allowOnNewPages)
+    });
+  }
   getZoteroIntegrationConfig() {
     const raw = this.getJson("zoteroIntegration");
     const mode = (raw == null ? void 0 : raw.mode) === "collection" || (raw == null ? void 0 : raw.mode) === "recent" ? raw.mode : "recent";
@@ -39668,17 +39680,19 @@ class BudgetService {
   }
 }
 class ActivityClassifier {
-  constructor(getConfig, getIdleThreshold, getFrivolousIdleThreshold) {
+  constructor(getConfig, getIdleThreshold, getFrivolousIdleThreshold, resolveOverride) {
     this.getConfig = getConfig;
     this.getIdleThreshold = getIdleThreshold;
     this.getFrivolousIdleThreshold = getFrivolousIdleThreshold;
+    this.resolveOverride = resolveOverride;
   }
   classify(event) {
     var _a;
     const config = this.getConfig() ?? DEFAULT_CATEGORISATION;
     const domain = ((_a = event.domain) == null ? void 0 : _a.toLowerCase()) ?? null;
     const appName = event.appName;
-    const category = this.resolveCategory(domain, appName ?? "", config);
+    const override = this.resolveOverride ? this.resolveOverride(event) : null;
+    const category = override ?? this.resolveCategory(domain, appName ?? "", config);
     const baseThreshold = Math.max(1, this.getIdleThreshold() ?? DEFAULT_IDLE_THRESHOLD_SECONDS);
     const frivolousThreshold = Math.max(1, this.getFrivolousIdleThreshold() ?? DEFAULT_IDLE_THRESHOLD_SECONDS);
     const idleThreshold = category === "frivolity" ? frivolousThreshold : baseThreshold;
@@ -40309,7 +40323,7 @@ function toDomainFromUrl(url2) {
   }
 }
 function ensurePurpose(purpose) {
-  if (purpose === "replace" || purpose === "allow" || purpose === "temptation") return purpose;
+  if (purpose === "replace" || purpose === "allow" || purpose === "temptation" || purpose === "productive") return purpose;
   throw new Error("Invalid purpose");
 }
 function purposeFromBucket(bucket) {
@@ -40320,6 +40334,7 @@ function purposeFromBucket(bucket) {
 function bucketFromPurpose(purpose) {
   if (purpose === "replace") return "attractor";
   if (purpose === "temptation") return "frivolous";
+  if (purpose === "productive") return "productive";
   return "productive";
 }
 function ensurePrice(value) {
@@ -40458,6 +40473,9 @@ class LibraryService extends node_events.EventEmitter {
       consumedAt: nextConsumedAt ?? void 0
     };
     this.emit("updated", item);
+    if (!existing.consumedAt && nextConsumedAt) {
+      this.emit("consumed", { item, consumedAt: nextConsumedAt });
+    }
     return item;
   }
   remove(id) {
@@ -40467,6 +40485,59 @@ class LibraryService extends node_events.EventEmitter {
   markUsed(id) {
     const now = (/* @__PURE__ */ new Date()).toISOString();
     this.markUsedStmt.run(now, id);
+  }
+}
+class ConsumptionLogService {
+  constructor(database) {
+    this.database = database;
+    this.db = this.database.connection;
+    this.insertStmt = this.db.prepare(
+      "INSERT INTO consumption_log(occurred_at, day, kind, title, url, domain, meta) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    );
+    this.listByDayStmt = this.db.prepare(
+      "SELECT id, occurred_at, day, kind, title, url, domain, meta FROM consumption_log WHERE day = ? ORDER BY occurred_at DESC"
+    );
+    this.listDaysStmt = this.db.prepare(
+      "SELECT day, COUNT(*) as count FROM consumption_log WHERE day >= ? GROUP BY day ORDER BY day DESC"
+    );
+  }
+  formatDay(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+  record(payload) {
+    const occurredAt = payload.occurredAt ?? (/* @__PURE__ */ new Date()).toISOString();
+    const day = this.formatDay(new Date(occurredAt));
+    this.insertStmt.run(
+      occurredAt,
+      day,
+      payload.kind,
+      payload.title ?? null,
+      payload.url ?? null,
+      payload.domain ?? null,
+      payload.meta ? JSON.stringify(payload.meta) : null
+    );
+  }
+  listByDay(day) {
+    const rows = this.listByDayStmt.all(day);
+    return rows.map((row) => ({
+      id: row.id,
+      occurredAt: row.occurred_at,
+      day: row.day,
+      kind: row.kind,
+      title: row.title ?? void 0,
+      url: row.url ?? void 0,
+      domain: row.domain ?? void 0,
+      meta: row.meta ? JSON.parse(row.meta) : void 0
+    }));
+  }
+  listDays(rangeDays = 30) {
+    const safeRange = Math.max(1, Math.min(365, Math.round(rangeDays)));
+    const since = this.formatDay(new Date(Date.now() - safeRange * 24 * 60 * 60 * 1e3));
+    const rows = this.listDaysStmt.all(since);
+    return rows.map((row) => ({ day: row.day, count: row.count }));
   }
 }
 function randomToken(bytes2 = 24) {
@@ -41181,19 +41252,92 @@ async function createBackend(database) {
   const economy = new EconomyEngine(wallet, market, paywall, () => settings.getEmergencyReminderInterval());
   const emergency = new EmergencyService(settings, wallet, paywall);
   const activityTracker = new ActivityTracker(database);
+  const library = new LibraryService(database);
+  const consumption = new ConsumptionLogService(database);
+  const productiveOverrides = { urls: /* @__PURE__ */ new Set(), apps: /* @__PURE__ */ new Set() };
+  const normaliseProductiveUrl = (value) => {
+    try {
+      const parsed = new URL(value);
+      parsed.hash = "";
+      parsed.search = "";
+      let path22 = parsed.pathname;
+      if (path22.length > 1 && path22.endsWith("/")) {
+        path22 = path22.slice(0, -1);
+      }
+      return `${parsed.origin}${path22}`;
+    } catch {
+      return null;
+    }
+  };
+  const rebuildProductiveOverrides = () => {
+    productiveOverrides.urls.clear();
+    productiveOverrides.apps.clear();
+    for (const item of library.list()) {
+      if (item.purpose !== "productive") continue;
+      if (item.kind === "url" && item.url) {
+        const normalized = normaliseProductiveUrl(item.url);
+        if (normalized) productiveOverrides.urls.add(normalized);
+      } else if (item.kind === "app") {
+        const name = (item.app ?? item.domain ?? "").trim().toLowerCase();
+        if (name) productiveOverrides.apps.add(name);
+      }
+    }
+  };
+  rebuildProductiveOverrides();
+  library.on("added", rebuildProductiveOverrides);
+  library.on("updated", rebuildProductiveOverrides);
+  library.on("removed", rebuildProductiveOverrides);
   const classifier = new ActivityClassifier(
     () => settings.getCategorisation(),
     () => settings.getIdleThreshold(),
-    () => settings.getFrivolousIdleThreshold()
+    () => settings.getFrivolousIdleThreshold(),
+    (event) => {
+      if (event.url) {
+        const normalized = normaliseProductiveUrl(event.url);
+        if (normalized && productiveOverrides.urls.has(normalized)) return "productive";
+      }
+      const appName = (event.appName ?? "").toLowerCase();
+      if (appName) {
+        for (const name of productiveOverrides.apps) {
+          if (appName.includes(name)) return "productive";
+        }
+      }
+      return null;
+    }
   );
   const activityPipeline = new ActivityPipeline(activityTracker, economy, classifier);
   const focus = new FocusService(database, wallet);
   const intentions = new IntentionService(database);
   const budgets = new BudgetService(database);
   const analytics = new AnalyticsService(database);
-  const library = new LibraryService(database);
   const reading = new ReadingService(settings);
   const friends = new FriendsService(settings, analytics);
+  library.on("consumed", ({ item, consumedAt }) => {
+    const title = item.title ?? item.domain;
+    consumption.record({
+      kind: "library-item",
+      occurredAt: consumedAt,
+      title,
+      url: item.url ?? null,
+      domain: item.domain,
+      meta: { purpose: item.purpose }
+    });
+  });
+  economy.on("paywall-session-started", (session) => {
+    if (session.mode === "emergency") return;
+    consumption.record({
+      kind: "frivolous-session",
+      title: session.domain,
+      url: session.allowedUrl ?? null,
+      domain: session.domain,
+      meta: {
+        mode: session.mode,
+        purchasePrice: session.purchasePrice ?? null,
+        purchasedSeconds: session.purchasedSeconds ?? null,
+        allowedUrl: session.allowedUrl ?? null
+      }
+    });
+  });
   const app = express$1();
   const ws2 = expressWs$1(app);
   const clients = /* @__PURE__ */ new Set();
@@ -41587,6 +41731,7 @@ async function createBackend(database) {
   app.get("/extension/state", (_req, res2) => {
     try {
       const categorisation = settings.getCategorisation();
+      const peekConfig = settings.getPeekConfig();
       const marketRates = {};
       for (const rate of market.listRates()) {
         marketRates[rate.domain] = rate;
@@ -41620,7 +41765,9 @@ async function createBackend(database) {
           idleThreshold: settings.getIdleThreshold(),
           emergencyPolicy: settings.getEmergencyPolicy(),
           economyExchangeRate: settings.getEconomyExchangeRate(),
-          journal: settings.getJournalConfig()
+          journal: settings.getJournalConfig(),
+          peekEnabled: peekConfig.enabled,
+          peekAllowNewPages: peekConfig.allowOnNewPages
         },
         sessions: sessionsRecord
       });
@@ -41773,6 +41920,7 @@ async function createBackend(database) {
     intentions,
     budgets,
     library,
+    consumption,
     analytics,
     reading,
     friends,
@@ -41877,11 +42025,23 @@ class Database {
         consumed_at TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS consumption_log (
+        id INTEGER PRIMARY KEY,
+        occurred_at TEXT NOT NULL,
+        day TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        title TEXT,
+        url TEXT,
+        domain TEXT,
+        meta TEXT
+      );
+
       CREATE INDEX IF NOT EXISTS idx_activities_started_at ON activities(started_at);
       CREATE INDEX IF NOT EXISTS idx_activities_domain ON activities(domain);
       CREATE INDEX IF NOT EXISTS idx_transactions_ts ON transactions(ts);
       CREATE INDEX IF NOT EXISTS idx_library_items_bucket ON library_items(bucket);
       CREATE INDEX IF NOT EXISTS idx_library_items_domain ON library_items(domain);
+      CREATE INDEX IF NOT EXISTS idx_consumption_log_day ON consumption_log(day);
 
       -- Granular behavioral events captured by extension
       CREATE TABLE IF NOT EXISTS behavior_events (
@@ -42528,6 +42688,8 @@ function createIpc(context) {
   electron.ipcMain.handle("settings:update-economy-exchange-rate", (_event, value) => backend.settings.setEconomyExchangeRate(value));
   electron.ipcMain.handle("settings:journal-config", () => backend.settings.getJournalConfig());
   electron.ipcMain.handle("settings:update-journal-config", (_event, value) => backend.settings.setJournalConfig(value));
+  electron.ipcMain.handle("settings:peek-config", () => backend.settings.getPeekConfig());
+  electron.ipcMain.handle("settings:update-peek-config", (_event, value) => backend.settings.setPeekConfig(value));
   electron.ipcMain.handle("integrations:zotero-config", () => backend.reading.getZoteroIntegrationConfig());
   electron.ipcMain.handle("integrations:update-zotero-config", (_event, value) => backend.reading.setZoteroIntegrationConfig(value));
   electron.ipcMain.handle("integrations:zotero-collections", async () => backend.reading.listZoteroCollections());
@@ -42549,6 +42711,8 @@ function createIpc(context) {
   );
   electron.ipcMain.handle("library:remove", (_event, payload) => backend.library.remove(payload.id));
   electron.ipcMain.handle("library:find-by-url", (_event, payload) => backend.library.getByUrl(payload.url));
+  electron.ipcMain.handle("history:list", (_event, payload) => backend.consumption.listByDay(payload.day));
+  electron.ipcMain.handle("history:days", (_event, payload) => backend.consumption.listDays(payload.rangeDays ?? 30));
   electron.ipcMain.handle("friends:identity", () => backend.friends.getIdentity());
   electron.ipcMain.handle("friends:enable", async (_event, payload) => backend.friends.enable({ relayUrl: payload.relayUrl }));
   electron.ipcMain.handle("friends:disable", () => backend.friends.disable());

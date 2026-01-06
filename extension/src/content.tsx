@@ -7,6 +7,7 @@ type BlockMessage = {
   payload: {
     domain: string;
     reason?: string;
+    peek?: { allowed: boolean; isNewPage: boolean };
   };
 };
 
@@ -43,12 +44,12 @@ chrome.runtime.onMessage.addListener((message: BlockMessage | { type: 'TWS_PING'
     return;
   }
   if (message.type === 'BLOCK_SCREEN') {
-    mountOverlay(message.payload.domain, message.payload.reason);
+    mountOverlay(message.payload.domain, message.payload.reason, message.payload.peek);
   }
   return true;
 });
 
-async function mountOverlay(domain: string, reason?: string) {
+async function mountOverlay(domain: string, reason?: string, peek?: { allowed: boolean; isNewPage: boolean }) {
   // Check for existing shadow host
   const existingHost = document.getElementById('tws-shadow-host');
   if (existingHost) existingHost.remove();
@@ -92,6 +93,7 @@ async function mountOverlay(domain: string, reason?: string) {
       domain={domain}
       status={status}
       reason={reason}
+      peek={peek}
       onClose={() => {
         host.remove();
         document.body.style.overflow = '';
