@@ -81,7 +81,12 @@ export interface ExtensionState {
     pendingLibrarySync: Record<string, PendingLibrarySync>;
     nextLibraryTempId: number;
     lastDesktopSync: number; // timestamp of last successful sync with desktop
+    lastFrivolityAt: number | null;
     consumedReading: Record<string, number>;
+    rotMode: {
+        enabled: boolean;
+        startedAt: number | null;
+    };
     emergency: {
         usage: {
             day: string;
@@ -161,7 +166,12 @@ const DEFAULT_STATE: ExtensionState = {
     pendingLibrarySync: {},
     nextLibraryTempId: -1,
     lastDesktopSync: 0,
+    lastFrivolityAt: null,
     consumedReading: {},
+    rotMode: {
+        enabled: false,
+        startedAt: null
+    },
     emergency: {
         usage: {
             day: new Date().toISOString().slice(0, 10),
@@ -220,8 +230,19 @@ class ExtensionStorage {
         if (!this.state.consumedReading) {
             this.state.consumedReading = {};
         }
+        if (this.state.lastFrivolityAt === undefined) {
+            this.state.lastFrivolityAt = null;
+        }
         if (this.state.pendingCategorisation === undefined) {
             this.state.pendingCategorisation = null;
+        }
+        if (!this.state.rotMode || typeof this.state.rotMode !== 'object') {
+            this.state.rotMode = { enabled: false, startedAt: null };
+        } else {
+            const rotAny = this.state.rotMode as any;
+            const enabled = typeof rotAny.enabled === 'boolean' ? rotAny.enabled : false;
+            const startedAt = typeof rotAny.startedAt === 'number' ? rotAny.startedAt : null;
+            this.state.rotMode = { enabled, startedAt };
         }
 
         const stateAny = this.state as any;
@@ -404,6 +425,22 @@ class ExtensionStorage {
         return this.state!.settings.idleThreshold ?? 15;
     }
 
+    async getRotMode() {
+        if (!this.state) await this.init();
+        return this.state!.rotMode;
+    }
+
+    async setRotMode(enabled: boolean) {
+        if (!this.state) await this.init();
+        const next = Boolean(enabled);
+        this.state!.rotMode = {
+            enabled: next,
+            startedAt: next ? Date.now() : null
+        };
+        await this.save();
+        return this.state!.rotMode;
+    }
+
     async getSession(domain: string): Promise<PaywallSession | null> {
         if (!this.state) await this.init();
         return this.state!.sessions[domain] || null;
@@ -497,6 +534,9 @@ class ExtensionStorage {
             const items = desktopState.libraryItems ?? [];
             this.state!.libraryItems = this.mergeLibraryItemsWithPending(items);
         }
+        if (desktopState.lastFrivolityAt !== undefined) {
+            this.state!.lastFrivolityAt = desktopState.lastFrivolityAt as number | null;
+        }
 
         this.ensureStateDefaults();
         if (this.state!.pendingCategorisation) {
@@ -563,6 +603,17 @@ class ExtensionStorage {
     async getLastSyncTime(): Promise<number> {
         if (!this.state) await this.init();
         return this.state!.lastDesktopSync;
+    }
+
+    async getLastFrivolityAt(): Promise<number | null> {
+        if (!this.state) await this.init();
+        return this.state!.lastFrivolityAt ?? null;
+    }
+
+    async setLastFrivolityAt(value: number | null): Promise<void> {
+        if (!this.state) await this.init();
+        this.state!.lastFrivolityAt = typeof value === 'number' ? value : null;
+        await this.save();
     }
 
     async getLibraryItems(): Promise<LibraryItem[]> {

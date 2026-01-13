@@ -4,6 +4,7 @@ import './App.css';
 type ConnectionState = {
   desktopConnected: boolean;
   lastSync: number;
+  lastFrivolityAt: number | null;
   sessions: Record<string, {
     domain: string;
     mode: 'metered' | 'pack' | 'emergency' | 'store';
@@ -73,6 +74,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [now, setNow] = useState(Date.now());
 
   const [libraryPurpose, setLibraryPurpose] = useState<'replace' | 'allow' | 'temptation' | 'productive'>('replace');
   const [domainCategory, setDomainCategory] = useState<'productive' | 'neutral' | 'frivolous'>('frivolous');
@@ -98,6 +100,11 @@ function App() {
   useEffect(() => {
     refreshState().finally(() => setLoading(false));
   }, [refreshState]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -157,6 +164,15 @@ function App() {
   const refundEstimate = session?.mode === 'pack' && session.purchasePrice && session.purchasedSeconds && session.purchasedSeconds > 0
     ? Math.round((session.remainingSeconds / session.purchasedSeconds) * session.purchasePrice)
     : null;
+
+  const lastFrivolityAt = connection?.lastFrivolityAt ?? null;
+  const lastFrivolityAgeMs = lastFrivolityAt ? Math.max(0, now - lastFrivolityAt) : null;
+  const streakTargetMs = 72 * 60 * 60 * 1000;
+  const streakProgress = lastFrivolityAgeMs ? Math.min(1, lastFrivolityAgeMs / streakTargetMs) : 0;
+  const streakHue = Math.round(20 + 30 * streakProgress);
+  const streakLight = Math.round(48 + 18 * streakProgress);
+  const streakColor = lastFrivolityAgeMs ? `hsl(${streakHue} 70% ${streakLight}%)` : 'rgba(200, 149, 108, 0.7)';
+  const streakLabel = !connection ? 'Loading...' : lastFrivolityAt === null ? 'No frivolity logged' : formatDuration(lastFrivolityAgeMs ?? 0);
 
   async function addToLibrary() {
     if (!activeTab) return;
@@ -258,6 +274,31 @@ function App() {
         <span className="pill">{status?.balance ?? 0} f-coins</span>
         <span className="pill ghost">Last sync {connection?.lastSync ? formatTimeSince(connection.lastSync) : 'never'}</span>
       </div>
+
+      <section
+        className={`card streak-card ${streakProgress >= 1 ? 'streak-max' : ''}`}
+        style={{
+          ['--streak-color' as string]: streakColor,
+          ['--streak-progress' as string]: `${Math.round(streakProgress * 100)}%`
+        }}
+      >
+        <div className="streak-header">
+          <span className="eyebrow">Recovery timer</span>
+          <span className="pill ghost">Goal: 3 days</span>
+        </div>
+        <h2>Time since last frivolity</h2>
+        <div className="streak-time">
+          {streakLabel}
+        </div>
+        <div className="streak-meta">
+          <span className="hint">
+            {lastFrivolityAt ? `Last spend ${new Date(lastFrivolityAt).toLocaleString()}` : 'No paid sessions yet.'}
+          </span>
+        </div>
+        <div className="streak-bar" aria-hidden>
+          <span />
+        </div>
+      </section>
 
       {activeTab ? (
         <section className="card preview-card">
@@ -463,6 +504,15 @@ function formatTimeSince(timestamp: number): string {
 
 function formatMinutes(seconds: number) {
   return `${Math.max(1, Math.round(seconds / 60))} min`;
+}
+
+function formatDuration(ms: number) {
+  const totalMinutes = Math.max(0, Math.floor(ms / 60000));
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  return `${hours}h ${minutes}m`;
 }
 
 export default App;

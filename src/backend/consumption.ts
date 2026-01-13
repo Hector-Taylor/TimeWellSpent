@@ -18,6 +18,7 @@ export class ConsumptionLogService {
   private insertStmt: Statement;
   private listByDayStmt: Statement;
   private listDaysStmt: Statement;
+  private latestByKindStmt: Statement;
 
   constructor(private database: Database) {
     this.insertStmt = this.db.prepare(
@@ -28,6 +29,9 @@ export class ConsumptionLogService {
     );
     this.listDaysStmt = this.db.prepare(
       'SELECT day, COUNT(*) as count FROM consumption_log WHERE day >= ? GROUP BY day ORDER BY day DESC'
+    );
+    this.latestByKindStmt = this.db.prepare(
+      'SELECT id, occurred_at, day, kind, title, url, domain, meta FROM consumption_log WHERE kind = ? ORDER BY occurred_at DESC LIMIT 1'
     );
   }
 
@@ -78,5 +82,20 @@ export class ConsumptionLogService {
     const since = this.formatDay(new Date(Date.now() - safeRange * 24 * 60 * 60 * 1000));
     const rows = this.listDaysStmt.all(since) as Array<{ day: string; count: number }>;
     return rows.map((row) => ({ day: row.day, count: row.count }));
+  }
+
+  latestByKind(kind: ConsumptionLogKind): ConsumptionLogEntry | null {
+    const row = this.latestByKindStmt.get(kind) as ConsumptionLogRow | undefined;
+    if (!row) return null;
+    return {
+      id: row.id,
+      occurredAt: row.occurred_at,
+      day: row.day,
+      kind: row.kind,
+      title: row.title ?? undefined,
+      url: row.url ?? undefined,
+      domain: row.domain ?? undefined,
+      meta: row.meta ? (JSON.parse(row.meta) as Record<string, unknown>) : undefined
+    };
   }
 }

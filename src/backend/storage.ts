@@ -21,6 +21,16 @@ export class Database {
     this.initialise();
   }
 
+  /**
+   * Execute a function inside a database transaction.
+   * If the function throws, the transaction is rolled back.
+   * If the function completes, the transaction is committed.
+   */
+  transaction<T>(fn: () => T): T {
+    const txn = this.driver.transaction(fn);
+    return txn();
+  }
+
   private initialise() {
     const ddl = `
       CREATE TABLE IF NOT EXISTS activities (

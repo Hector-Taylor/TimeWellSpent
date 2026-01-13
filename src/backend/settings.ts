@@ -109,6 +109,46 @@ export class SettingsService {
     this.setJson('economyExchangeRate', n);
   }
 
+  // Economy earning rates
+  getProductiveRatePerMin(): number {
+    const val = this.getJson<number>('productiveRatePerMin');
+    return typeof val === 'number' && Number.isFinite(val) && val >= 1 && val <= 50 ? val : 5;
+  }
+
+  setProductiveRatePerMin(value: number) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 1 || n > 50) {
+      throw new Error('Invalid rate (must be 1-50)');
+    }
+    this.setJson('productiveRatePerMin', n);
+  }
+
+  getNeutralRatePerMin(): number {
+    const val = this.getJson<number>('neutralRatePerMin');
+    return typeof val === 'number' && Number.isFinite(val) && val >= 0 && val <= 50 ? val : 3;
+  }
+
+  setNeutralRatePerMin(value: number) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0 || n > 50) {
+      throw new Error('Invalid rate (must be 0-50)');
+    }
+    this.setJson('neutralRatePerMin', n);
+  }
+
+  getSpendIntervalSeconds(): number {
+    const val = this.getJson<number>('spendIntervalSeconds');
+    return typeof val === 'number' && Number.isFinite(val) && val >= 5 && val <= 60 ? val : 15;
+  }
+
+  setSpendIntervalSeconds(value: number) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 5 || n > 60) {
+      throw new Error('Invalid interval (must be 5-60)');
+    }
+    this.setJson('spendIntervalSeconds', n);
+  }
+
   getJournalConfig(): JournalConfig {
     const raw = this.getJson<JournalConfig>('journalConfig');
     const minutes = typeof raw?.minutes === 'number' && Number.isFinite(raw.minutes) ? Math.max(1, Math.min(180, Math.round(raw.minutes))) : 10;

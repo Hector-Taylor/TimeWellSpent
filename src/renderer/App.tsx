@@ -17,6 +17,8 @@ import type {
 const api: RendererApi = window.twsp;
 
 type View = 'dashboard' | 'library' | 'domains' | 'analytics' | 'economy' | 'settings' | 'friends';
+const VIEW_LIST: View[] = ['dashboard', 'library', 'domains', 'analytics', 'economy', 'settings', 'friends'];
+const isView = (value: string): value is View => VIEW_LIST.includes(value as View);
 
 export default function App() {
   const [view, setView] = useState<View>('dashboard');
@@ -35,6 +37,18 @@ export default function App() {
     api.wallet.get().then(setWallet);
     api.market.list().then(setMarketRates);
     api.economy.state().then(setEconomyState);
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = api.events.on<{ view?: string }>('ui:navigate', (payload) => {
+      const next = payload?.view;
+      if (typeof next === 'string' && isView(next)) {
+        setView(next);
+      }
+    });
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
   const extensionStatusRef = useRef(extensionStatus);
@@ -180,7 +194,6 @@ export default function App() {
             api={api}
             wallet={wallet}
             economy={economyState}
-            rates={marketRates}
           />
         )}
         {view === 'analytics' && (

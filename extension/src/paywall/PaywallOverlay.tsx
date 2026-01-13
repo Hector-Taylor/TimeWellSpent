@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 type LinkPreview = {
   url: string;
@@ -31,6 +31,31 @@ type LibraryItem = {
   note?: string;
   purpose: 'replace' | 'allow' | 'temptation' | 'productive';
   price?: number;
+  createdAt?: string;
+  lastUsedAt?: string;
+  consumedAt?: string;
+};
+
+type FeedEntry = {
+  id: string;
+  entryType: 'library' | 'reading';
+  contentType: 'url' | 'app' | 'reading';
+  title: string;
+  subtitle: string;
+  meta: string;
+  updatedAt: number;
+  url?: string;
+  app?: string;
+  domain?: string;
+  libraryId?: number;
+  purpose?: LibraryItem['purpose'];
+  readingId?: string;
+  source?: ReadingItem['source'];
+  action?: ReadingItem['action'];
+  thumbDataUrl?: string;
+  iconDataUrl?: string;
+  progress?: number;
+  requiresDesktop?: boolean;
 };
 
 type StatusResponse = {
@@ -60,6 +85,7 @@ type StatusResponse = {
   lastSync: number | null;
   desktopConnected: boolean;
   emergencyPolicy?: 'off' | 'gentle' | 'balanced' | 'strict';
+  rotMode?: { enabled: boolean; startedAt: number | null };
   emergency?: {
     lastEnded: { domain: string; justification?: string; endedAt: number } | null;
     reviewStats: { total: number; kept: number; notKept: number };
@@ -124,6 +150,36 @@ function pickRandom<T>(items: T[], count: number, seed: number) {
   return copy.slice(0, Math.min(count, copy.length));
 }
 
+function hashString(value: string) {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash << 5) - hash + value.charCodeAt(i);
+    hash |= 0;
+  }
+  return hash >>> 0;
+}
+
+function seededJitter(seed: number, value: string) {
+  let state = (hashString(value) ^ seed) >>> 0;
+  state = (state * 1_664_525 + 1_013_904_223) >>> 0;
+  return state / 0xffff_ffff;
+}
+
+function formatPurpose(purpose?: LibraryItem['purpose']) {
+  switch (purpose) {
+    case 'productive':
+      return 'productive';
+    case 'replace':
+      return 'replace';
+    case 'temptation':
+      return 'temptation';
+    case 'allow':
+      return 'allow';
+    default:
+      return 'saved';
+  }
+}
+
 function formatClock(seconds: number) {
   const clamped = Math.max(0, Math.floor(seconds));
   const m = Math.floor(clamped / 60);
@@ -166,6 +222,15 @@ function playSoftChime() {
 }
 
 const PEEK_EXIT_DISTANCE = 120;
+const NAV_ITEMS = [
+  { id: 'dashboard', label: 'Dashboard' },
+  { id: 'library', label: 'Library' },
+  { id: 'domains', label: 'Domains' },
+  { id: 'settings', label: 'Settings' },
+  { id: 'analytics', label: 'Analytics' },
+  { id: 'economy', label: 'Economy' },
+  { id: 'friends', label: 'Friends' }
+];
 
 export default function PaywallOverlay({ domain, status, reason, peek, onClose }: Props) {
   const [selectedMinutes, setSelectedMinutes] = useState(15);
@@ -176,6 +241,11 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const [reviewed, setReviewed] = useState(false);
   const [spinKey, setSpinKey] = useState(0);
   const [proceedOpen, setProceedOpen] = useState(reason === 'insufficient-funds');
+  const [feedView, setFeedView] = useState<'for-you' | 'feed'>('for-you');
+  const [feedSeed, setFeedSeed] = useState(0);
+  const [feedLens, setFeedLens] = useState<'balanced' | 'fresh' | 'wild'>('balanced');
+  const [feedVotes, setFeedVotes] = useState<Record<string, number>>({});
+  const [visibleCount, setVisibleCount] = useState(8);
   const [linkPreviews, setLinkPreviews] = useState<Record<string, LinkPreview | null>>({});
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [dismissedIds, setDismissedIds] = useState<Record<string, true>>({});
@@ -185,6 +255,9 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const [ritualDone, setRitualDone] = useState(false);
   const [peekActive, setPeekActive] = useState(false);
   const [peekAnchor, setPeekAnchor] = useState<{ x: number; y: number } | null>(null);
+  const feedSentinelRef = useRef<HTMLDivElement | null>(null);
+  const [rotModeEnabled, setRotModeEnabled] = useState(status.rotMode?.enabled ?? false);
+  const [rotModeBusy, setRotModeBusy] = useState(false);
 
   const ratePerMin = status.rate?.ratePerMin ?? status.session?.ratePerMin ?? 1;
   const emergencyPolicy = status.emergencyPolicy ?? 'balanced';
@@ -206,15 +279,25 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
 
   const faviconUrl = (url: string) => `chrome://favicon2/?size=64&url=${encodeURIComponent(url)}`;
 
-  const previewFor = (url: string) => {
+  const normalizePreviewUrl = (url: string) => {
     try {
       const parsed = new URL(url);
       parsed.hash = '';
-      return linkPreviews[parsed.toString()] ?? null;
+      return parsed.toString();
     } catch {
       return null;
     }
   };
+
+  const previewFor = (url: string) => {
+    const normalized = normalizePreviewUrl(url);
+    if (!normalized) return null;
+    return linkPreviews[normalized] ?? null;
+  };
+
+  useEffect(() => {
+    setRotModeEnabled(status.rotMode?.enabled ?? false);
+  }, [status.rotMode?.enabled]);
 
   useEffect(() => {
     if (!peekAllowed && peekActive) {
@@ -488,7 +571,18 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
         return;
       }
 
-      setDismissedIds((cur) => ({ ...cur, [item.id]: true }));
+      setDismissedIds((cur) => {
+        const next: Record<string, true> = { ...cur, [item.id]: true };
+        if (item.type === 'url' && typeof item.libraryId === 'number') {
+          next[`lib:${item.libraryId}`] = true;
+          next[`productive:${item.libraryId}`] = true;
+          next[`library:${item.libraryId}`] = true;
+        }
+        if (item.type === 'desktop' && item.readingId) {
+          next[`reading:${item.readingId}`] = true;
+        }
+        return next;
+      });
       setMenuOpenId(null);
       setSpinKey((k) => k + 1);
     } catch (e) {
@@ -825,454 +919,941 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     });
   };
 
+  const feedEntries = useMemo<FeedEntry[]>(() => {
+    const entries: FeedEntry[] = [];
+    const libraryItems = status.library?.items ?? [];
+    for (const item of libraryItems) {
+      if (!item || item.consumedAt) continue;
+      const dismissed =
+        dismissedIds[`library:${item.id}`] ||
+        dismissedIds[`lib:${item.id}`] ||
+        dismissedIds[`productive:${item.id}`];
+      if (dismissed) continue;
+      const title = item.title ?? item.app ?? item.domain ?? 'Saved item';
+      const subtitle = item.note ?? (item.kind === 'app' ? 'Desktop app' : item.domain);
+      const createdAt = item.lastUsedAt ?? item.createdAt ?? '';
+      const parsedTime = createdAt ? Date.parse(createdAt) : 0;
+      const updatedAt = Number.isFinite(parsedTime) ? parsedTime : 0;
+      entries.push({
+        id: `library:${item.id}`,
+        entryType: 'library',
+        contentType: item.kind,
+        title,
+        subtitle,
+        meta: item.kind === 'app' ? 'app' : formatPurpose(item.purpose),
+        updatedAt,
+        url: item.url,
+        app: item.app,
+        domain: item.domain,
+        libraryId: item.id,
+        purpose: item.purpose
+      });
+    }
+
+    const readingItems = status.library?.readingItems ?? [];
+    for (const item of readingItems) {
+      if (!item || !item.id || dismissedIds[`reading:${item.id}`]) continue;
+      entries.push({
+        id: `reading:${item.id}`,
+        entryType: 'reading',
+        contentType: 'reading',
+        title: item.title ?? (item.source === 'zotero' ? 'Zotero' : 'Reading'),
+        subtitle: item.subtitle ?? (item.source === 'zotero' ? 'Zotero reading' : 'Books'),
+        meta: item.source === 'zotero' ? 'zotero' : 'books',
+        updatedAt: item.updatedAt ?? 0,
+        readingId: item.id,
+        source: item.source,
+        action: item.action,
+        thumbDataUrl: item.thumbDataUrl,
+        iconDataUrl: item.iconDataUrl,
+        progress: item.progress,
+        requiresDesktop: true
+      });
+    }
+    return entries;
+  }, [dismissedIds, status.library?.items, status.library?.readingItems]);
+
+  const feedSorted = useMemo(() => {
+    const weights =
+      feedLens === 'fresh'
+        ? { recency: 1.1, random: 0.4, vote: 0.8 }
+        : feedLens === 'wild'
+          ? { recency: 0.4, random: 1.2, vote: 0.6 }
+          : { recency: 0.7, random: 0.7, vote: 1 };
+    const now = Date.now();
+    return [...feedEntries].sort((a, b) => {
+      const score = (entry: FeedEntry) => {
+        const vote = feedVotes[entry.id] ?? 0;
+        const jitter = seededJitter(feedSeed, entry.id);
+        const ageMs = entry.updatedAt ? Math.max(0, now - entry.updatedAt) : 1000 * 60 * 60 * 24 * 30;
+        const recency = Math.exp(-ageMs / (1000 * 60 * 60 * 24 * 10));
+        return vote * weights.vote + jitter * weights.random + recency * weights.recency;
+      };
+      return score(b) - score(a);
+    });
+  }, [feedEntries, feedLens, feedSeed, feedVotes]);
+
+  const visibleFeedItems = useMemo(() => {
+    return feedSorted.slice(0, Math.min(visibleCount, feedSorted.length));
+  }, [feedSorted, visibleCount]);
+
+  useEffect(() => {
+    if (feedView !== 'feed') return;
+    setVisibleCount(Math.min(8, feedSorted.length || 0));
+  }, [feedSeed, feedSorted.length, feedView]);
+
+  const handleFeedVote = (id: string, vote: -1 | 1) => {
+    setFeedVotes((cur) => {
+      const current = cur[id] ?? 0;
+      const next = current === vote ? 0 : vote;
+      return { ...cur, [id]: next };
+    });
+  };
+
+  const handleOpenFeedItem = (item: FeedEntry) => {
+    if (item.entryType === 'reading' && item.action && item.readingId) {
+      handleOpenSuggestion({
+        type: 'desktop',
+        id: item.id,
+        source: item.source ?? 'zotero',
+        readingId: item.readingId,
+        title: item.title,
+        subtitle: item.subtitle,
+        action: item.action,
+        thumbDataUrl: item.thumbDataUrl,
+        iconDataUrl: item.iconDataUrl,
+        progress: item.progress,
+        requiresDesktop: true
+      });
+      return;
+    }
+
+    if (item.contentType === 'app' && item.app) {
+      handleOpenSuggestion({
+        type: 'app',
+        id: item.id,
+        title: item.title,
+        subtitle: item.subtitle,
+        app: item.app,
+        requiresDesktop: true
+      });
+      return;
+    }
+
+    if (item.url) {
+      handleOpenSuggestion({
+        type: 'url',
+        id: item.id,
+        title: item.title,
+        subtitle: item.subtitle,
+        url: item.url,
+        libraryId: item.libraryId
+      });
+    }
+  };
+
+  const handleFeedDone = (item: FeedEntry) => {
+    if (item.entryType === 'reading' && item.readingId) {
+      handleMarkConsumed({
+        type: 'desktop',
+        id: item.id,
+        source: item.source ?? 'zotero',
+        readingId: item.readingId,
+        title: item.title,
+        subtitle: item.subtitle,
+        action: item.action ?? { kind: 'deeplink' },
+        requiresDesktop: true
+      });
+      return;
+    }
+
+    if (item.entryType === 'library' && item.libraryId && item.url) {
+      handleMarkConsumed({
+        type: 'url',
+        id: item.id,
+        title: item.title,
+        subtitle: item.subtitle,
+        url: item.url,
+        libraryId: item.libraryId
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (feedView !== 'feed') return;
+    const target = feedSentinelRef.current;
+    if (!target) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setVisibleCount((count) => Math.min(count + 6, feedSorted.length));
+        }
+      },
+      { rootMargin: '320px 0px' }
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [feedView, feedSorted.length]);
+
+  useEffect(() => {
+    if (feedView !== 'feed') return;
+    const urls = visibleFeedItems
+      .map((item) => item.url)
+      .filter((url): url is string => Boolean(url));
+    if (!urls.length) return;
+    const deduped = [...new Set(urls)];
+    const missing = deduped.filter((url) => {
+      const normalized = normalizePreviewUrl(url);
+      if (!normalized) return false;
+      return !(normalized in linkPreviews);
+    });
+    if (!missing.length) return;
+
+    chrome.runtime
+      .sendMessage({ type: 'GET_LINK_PREVIEWS', payload: { urls: missing } })
+      .then((result) => {
+        if (!result?.success || !result.previews) return;
+        setLinkPreviews((cur) => ({ ...cur, ...(result.previews as Record<string, LinkPreview | null>) }));
+      })
+      .catch(() => {});
+  }, [feedView, linkPreviews, visibleFeedItems]);
+
+  const navActive = feedView === 'feed' ? 'library' : 'dashboard';
+  const feedLensOptions = [
+    { id: 'balanced', label: 'Balanced' },
+    { id: 'fresh', label: 'Fresh' },
+    { id: 'wild', label: 'Wild' }
+  ] as const;
+  const feedHasMore = visibleCount < feedSorted.length;
+  const navDisabled = !status.desktopConnected;
+
+  const handleNavigate = (view: string) => {
+    chrome.runtime
+      .sendMessage({ type: 'OPEN_DESKTOP_VIEW', payload: { view } })
+      .then((result) => {
+        if (!result?.success) {
+          setError(result?.error ? String(result.error) : 'Failed to open desktop view');
+        }
+      })
+      .catch((err) => {
+        setError((err as Error).message);
+      });
+  };
+
+  const handleRotModeToggle = async () => {
+    if (rotModeBusy) return;
+    const next = !rotModeEnabled;
+    setRotModeBusy(true);
+    setError(null);
+    try {
+      if (next && status.balance < 1) {
+        throw new Error('Need at least 1 f-coin to start rot mode.');
+      }
+      const result = await chrome.runtime.sendMessage({ type: 'SET_ROT_MODE', payload: { enabled: next } });
+      if (!result?.success) {
+        throw new Error(result?.error ? String(result.error) : 'Failed to update rot mode');
+      }
+      setRotModeEnabled(next);
+      if (next) {
+        await handleStartMetered();
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRotModeBusy(false);
+    }
+  };
+
   return (
     <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''}`}>
       {peekToggle}
-      <div className="tws-paywall-modal">
-        <header className="tws-paywall-header">
-          <div>
-            <p className="tws-eyebrow">TimeWellSpent</p>
-            <h2>{domain}</h2>
-            <p className="tws-subtle">{heading}</p>
+      <div className="tws-paywall-shell">
+        <aside className="tws-paywall-sidebar">
+          <div className="tws-sidebar-brand">
+            <div className="tws-logo">TWS</div>
+            <div>
+              <div className="tws-brand-name">TimeWellSpent</div>
+              <div className="tws-brand-tag">attention on purpose</div>
+            </div>
           </div>
-          <div className="tws-wallet-badge">
-            <span>Balance</span>
-            <strong>{status.balance} f-coins</strong>
+          <nav className="tws-sidebar-nav" aria-label="TimeWellSpent">
+            {NAV_ITEMS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={item.id === navActive ? 'active' : ''}
+                aria-current={item.id === navActive ? 'page' : undefined}
+                disabled={navDisabled}
+                title={navDisabled ? 'Desktop app is offline' : 'Open in desktop app'}
+                onClick={() => handleNavigate(item.id)}
+              >
+                <span className="tws-nav-dot" aria-hidden="true" />
+                {item.label}
+              </button>
+            ))}
+          </nav>
+          <div className="tws-sidebar-footer">
+            <div className="tws-sidebar-badge">
+              <span>Balance</span>
+              <strong>{status.balance} f-coins</strong>
+            </div>
+            <p className="tws-subtle" style={{ margin: 0 }}>
+              This is your feed, tuned for what matters.
+            </p>
           </div>
-        </header>
+        </aside>
 
-        <div className="tws-paywall-body">
-          {error && <p className="tws-error-text" style={{ marginBottom: 0 }}>{error}</p>}
-
-          {reason === 'emergency-expired' && !reviewed && (
-            <section className="tws-paywall-option" style={{ borderColor: '#d07f00' }}>
-              <div className="tws-option-header">
-                <h3>Emergency ended</h3>
-                <p className="tws-subtle">
-                  Quick check-in: did you do the thing you came for?
-                  {status.emergency?.lastEnded?.domain === domain && status.emergency.lastEnded.justification
-                    ? ` (“${status.emergency.lastEnded.justification}”)`
-                    : ''}
-                </p>
-              </div>
-              <div className="tws-option-action">
-                <button className="tws-secondary" disabled={isProcessing} onClick={() => handleEmergencyReview('not-kept')}>
-                  Not really
-                </button>
-                <button className="tws-primary" disabled={isProcessing} onClick={() => handleEmergencyReview('kept')}>
-                  Yes
-                </button>
-              </div>
-            </section>
-          )}
-
-          <section className="tws-paywall-option tws-attractors">
-            <div className="tws-option-header tws-attractors-header">
-              <div>
-                <h3>Try this instead</h3>
-                <p className="tws-subtle">
-                  You’re not here because this site is irresistible. You’re here because something else mattered — pick it.
-                </p>
-              </div>
-              <button className="tws-link" type="button" disabled={isProcessing} onClick={() => setSpinKey((k) => k + 1)}>
-                Spin
+        <main className="tws-paywall-main">
+          <header className="tws-paywall-topbar">
+            <div>
+              <p className="tws-eyebrow">TimeWellSpent</p>
+              <h2>{domain}</h2>
+              <p className="tws-subtle">{heading}</p>
+            </div>
+            <div className="tws-feed-toggle" role="tablist" aria-label="Feed view">
+              <button
+                type="button"
+                className={feedView === 'for-you' ? 'active' : ''}
+                onClick={() => setFeedView('for-you')}
+                aria-pressed={feedView === 'for-you'}
+              >
+                For you
+              </button>
+              <button
+                type="button"
+                className={feedView === 'feed' ? 'active' : ''}
+                onClick={() => setFeedView('feed')}
+                aria-pressed={feedView === 'feed'}
+              >
+                Feed
               </button>
             </div>
+          </header>
 
-            {picks.length === 0 ? (
-              <p className="tws-subtle" style={{ margin: 0 }}>
-                Your Replace pool is empty. Save a few links with right-click → “Save to TimeWellSpent” → “Replace”.
-              </p>
-            ) : (
-              <div className="tws-attractors-grid">
-                {picks.map((item) => {
-                  const cardDisabled =
-                    isProcessing ||
-                    (item.type === 'desktop' && item.requiresDesktop && !status.desktopConnected) ||
-                    (item.type === 'app' && item.requiresDesktop && !status.desktopConnected);
+          <div className="tws-paywall-content">
+            {error && <p className="tws-error-text" style={{ marginBottom: 0 }}>{error}</p>}
 
-                  if (item.type === 'url') {
-                    const preview = previewFor(item.url);
-                    const thumb = preview?.imageUrl ?? null;
-                    const icon = preview?.iconUrl ?? faviconUrl(item.url);
-                    return (
-                      <div
-                        key={item.id}
-                        className="tws-attractor-card"
-                        onClick={() => {
-                          if (cardDisabled) return;
-                          handleOpenSuggestion(item);
-                        }}
-                        role="button"
-                        tabIndex={cardDisabled ? -1 : 0}
-                        aria-disabled={cardDisabled}
-                        onKeyDown={(e) => {
-                          if (cardDisabled) return;
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            handleOpenSuggestion(item);
-                          }
-                        }}
-                      >
-                        <div className="tws-attractor-thumb">
-                          {thumb ? (
-                            <img className="tws-attractor-thumb-img" src={thumb} alt="" loading="lazy" />
-                          ) : (
-                            <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
-                          )}
-                          {typeof item.libraryId === 'number' && (
-                            <button
-                              type="button"
-                              className="tws-card-menu-trigger"
-                              aria-label="More"
-                              disabled={isProcessing}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setMenuOpenId((cur) => (cur === item.id ? null : item.id));
-                              }}
-                            >
-                              ⋯
-                            </button>
-                          )}
-                          {menuOpenId === item.id && typeof item.libraryId === 'number' && (
-                            <div className="tws-card-menu" role="menu" onClick={(e) => e.stopPropagation()}>
-                              <button
-                                type="button"
-                                className="tws-card-menu-item"
-                                disabled={isProcessing}
-                                onClick={() => handleMarkConsumed(item)}
-                              >
-                                Already consumed
-                              </button>
-                            </div>
-                          )}
-                          <img className="tws-attractor-favicon" src={icon} alt="" loading="lazy" />
-                        </div>
-                        <div className="tws-attractor-meta">
-                          <strong>{preview?.title ?? item.title}</strong>
-                          <span>{preview?.description ?? item.subtitle ?? 'saved in your replace pool'}</span>
-                          <small>{new URL(item.url).hostname.replace(/^www\\./, '')}</small>
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  if (item.type === 'desktop') {
-                    const progressPct =
-                      item.source === 'zotero' && typeof item.progress === 'number'
-                        ? Math.round(Math.max(0, Math.min(1, item.progress)) * 100)
-                        : null;
-                    return (
-                      <div
-                        key={item.id}
-                        className="tws-attractor-card"
-                        onClick={() => {
-                          if (cardDisabled) return;
-                          handleOpenSuggestion(item);
-                        }}
-                        title={item.requiresDesktop && !status.desktopConnected ? 'Requires desktop app' : undefined}
-                        role="button"
-                        tabIndex={cardDisabled ? -1 : 0}
-                        aria-disabled={cardDisabled}
-                        onKeyDown={(e) => {
-                          if (cardDisabled) return;
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            handleOpenSuggestion(item);
-                          }
-                        }}
-                      >
-                        <div className="tws-attractor-thumb">
-                          {item.thumbDataUrl ? (
-                            <img className="tws-attractor-thumb-img" src={item.thumbDataUrl} alt="" loading="lazy" />
-                          ) : (
-                            <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
-                          )}
-                          {progressPct !== null && (
-                            <div className="tws-progress-bar" aria-hidden="true">
-                              <div className="tws-progress-fill" style={{ width: `${progressPct}%` }} />
-                            </div>
-                          )}
-                          <button
-                            type="button"
-                            className="tws-card-menu-trigger"
-                            aria-label="More"
-                            disabled={isProcessing}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setMenuOpenId((cur) => (cur === item.id ? null : item.id));
-                            }}
-                          >
-                            ⋯
-                          </button>
-                          {menuOpenId === item.id && (
-                            <div className="tws-card-menu" role="menu" onClick={(e) => e.stopPropagation()}>
-                              <button
-                                type="button"
-                                className="tws-card-menu-item"
-                                disabled={isProcessing}
-                                onClick={() => handleMarkConsumed(item)}
-                              >
-                                Already consumed
-                              </button>
-                            </div>
-                          )}
-                          {item.iconDataUrl ? (
-                            <img className="tws-attractor-favicon" src={item.iconDataUrl} alt="" loading="lazy" />
-                          ) : (
-                            <div className="tws-attractor-favicon" aria-hidden="true" />
-                          )}
-                        </div>
-                        <div className="tws-attractor-meta">
-                          <strong>{item.title}</strong>
-                          <span>{item.subtitle ?? 'reading suggestion'}</span>
-                          <small>desktop</small>
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  if (item.type === 'ritual') {
-                    return (
-                      <div
-                        key={item.id}
-                        className="tws-attractor-card"
-                        onClick={() => {
-                          if (cardDisabled) return;
-                          handleOpenSuggestion(item);
-                        }}
-                        role="button"
-                        tabIndex={cardDisabled ? -1 : 0}
-                        aria-disabled={cardDisabled}
-                        onKeyDown={(e) => {
-                          if (cardDisabled) return;
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            handleOpenSuggestion(item);
-                          }
-                        }}
-                      >
-                        <div className="tws-attractor-thumb tws-attractor-thumb-ritual">
-                          <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
-                          <div className="tws-attractor-app-badge">Ritual</div>
-                        </div>
-                        <div className="tws-attractor-meta">
-                          <strong>{item.title}</strong>
-                          <span>{item.subtitle ?? 'a small reset'}</span>
-                          <small>{item.ritual === 'meditation' ? `${item.minutes}m` : 'journal'}</small>
-                        </div>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div
-                      key={item.id}
-                      className="tws-attractor-card"
-                      onClick={() => {
-                        if (cardDisabled) return;
-                        handleOpenSuggestion(item);
-                      }}
-                      title={item.requiresDesktop && !status.desktopConnected ? 'Requires desktop app' : undefined}
-                      role="button"
-                      tabIndex={cardDisabled ? -1 : 0}
-                      aria-disabled={cardDisabled}
-                      onKeyDown={(e) => {
-                        if (cardDisabled) return;
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          handleOpenSuggestion(item);
-                        }
-                      }}
-                    >
-                      <div className="tws-attractor-thumb tws-attractor-thumb-app">
-                        <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
-                        <div className="tws-attractor-app-badge">App</div>
-                      </div>
-                      <div className="tws-attractor-meta">
-                        <strong>{item.title}</strong>
-                        <span>{item.subtitle ?? 'open an app'}</span>
-                        <small>desktop</small>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+            {reason === 'emergency-expired' && !reviewed && (
+              <section className="tws-paywall-option" style={{ borderColor: '#d07f00' }}>
+                <div className="tws-option-header">
+                  <h3>Emergency ended</h3>
+                  <p className="tws-subtle">
+                    Quick check-in: did you do the thing you came for?
+                    {status.emergency?.lastEnded?.domain === domain && status.emergency.lastEnded.justification
+                      ? ` ("${status.emergency.lastEnded.justification}")`
+                      : ''}
+                  </p>
+                </div>
+                <div className="tws-option-action">
+                  <button className="tws-secondary" disabled={isProcessing} onClick={() => handleEmergencyReview('not-kept')}>
+                    Not really
+                  </button>
+                  <button className="tws-primary" disabled={isProcessing} onClick={() => handleEmergencyReview('kept')}>
+                    Yes
+                  </button>
+                </div>
+              </section>
             )}
-          </section>
 
-          <section className="tws-paywall-option tws-library-shelf">
-            <div className="tws-option-header">
-              <div>
-                <h3>
-                  Productive library{' '}
-                  {productiveItems.length > 0 && <span className="tws-subtle">({productiveItems.length})</span>}
-                </h3>
-                <p className="tws-subtle">Open something you already tagged as productive.</p>
-              </div>
-            </div>
-            {productiveItems.length === 0 ? (
-              <p className="tws-subtle" style={{ margin: 0 }}>
-                No productive items yet. Right-click a page and choose “Productive” to add it.
-              </p>
-            ) : (
-              <div className="tws-library-scroll">
-                {productiveItems.map((item) => {
-                  const preview = previewFor(item.url ?? '');
-                  const title = preview?.title ?? item.title ?? item.domain;
-                  const subtitle = preview?.description ?? item.note ?? item.domain;
-                  const icon = item.url ? preview?.iconUrl ?? faviconUrl(item.url) : null;
-                  return (
-                    <div key={item.id} className="tws-library-item">
-                      <div className="tws-library-info">
-                        {icon ? (
-                          <img className="tws-library-favicon" src={icon} alt="" loading="lazy" />
-                        ) : (
-                          <div className="tws-library-favicon tws-library-favicon-placeholder" aria-hidden="true" />
-                        )}
-                        <div className="tws-library-meta">
-                          <strong>{title}</strong>
-                          <span>{subtitle}</span>
-                        </div>
-                      </div>
-                      <div className="tws-library-actions">
-                        <button className="tws-secondary" type="button" disabled={isProcessing} onClick={() => openProductiveItem(item)}>
-                          Open
-                        </button>
-                        <button className="tws-link" type="button" disabled={isProcessing} onClick={() => markProductiveConsumed(item)}>
-                          Done
-                        </button>
-                      </div>
+            {feedView === 'for-you' ? (
+              <div className="tws-bins">
+                <section className="tws-paywall-option tws-attractors">
+                  <div className="tws-option-header tws-attractors-header">
+                    <div>
+                      <h3>Gentle redirection</h3>
+                      <p className="tws-subtle">
+                        You are not here because this site is irresistible. You are here because something else mattered - pick it.
+                      </p>
                     </div>
-                  );
-                })}
-              </div>
-            )}
-          </section>
-
-          <details className="tws-details" open={proceedOpen} onToggle={(e) => setProceedOpen((e.target as HTMLDetailsElement).open)}>
-            <summary>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                <strong>Proceed anyway</strong>
-                <span>Timebox recommended • metered and emergency are intentionally harder.</span>
-              </div>
-              <span>{proceedOpen ? '−' : '+'}</span>
-            </summary>
-            <div className="tws-details-body">
-              {unlock && (
-                <section className="tws-paywall-option" style={{ margin: 0 }}>
-                  <div className="tws-option-header">
-                    <h3>Unlock your saved item</h3>
-                    <p className="tws-subtle">Pay once for this exact page, then leave when you’re done.</p>
-                  </div>
-
-                  {unlock.url && (
-                    <div className="tws-attractors-grid" style={{ gridTemplateColumns: '1fr', marginBottom: 12 }}>
-                      <button type="button" className="tws-attractor-card" disabled style={{ cursor: 'default' }}>
-                        <div className="tws-attractor-thumb">
-                          {unlockThumb ? (
-                            <img className="tws-attractor-thumb-img" src={unlockThumb} alt="" loading="lazy" />
-                          ) : (
-                            <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
-                          )}
-                          {unlockIcon && <img className="tws-attractor-favicon" src={unlockIcon} alt="" loading="lazy" />}
-                          <div className="tws-price-pill">
-                            {unlock.price}
-                            <span>f-coins</span>
-                          </div>
-                        </div>
-                        <div className="tws-attractor-meta">
-                          <strong>{unlockPreview?.title ?? unlock.title ?? unlock.domain}</strong>
-                          <span>{unlockPreview?.description ?? 'Saved one-time unlock'}</span>
-                          <small>{unlock.domain}</small>
-                        </div>
-                      </button>
-                    </div>
-                  )}
-
-                  <div className="tws-option-action">
-                    <div className="tws-price-tag">
-                      <strong>{unlock.price}</strong>
-                      <small>f-coins</small>
-                    </div>
-                    <button className="tws-primary" onClick={handleUnlockSavedItem} disabled={isProcessing || status.balance < unlock.price}>
-                      Unlock now
+                    <button className="tws-link" type="button" disabled={isProcessing} onClick={() => setSpinKey((k) => k + 1)}>
+                      Spin
                     </button>
                   </div>
-                  {status.balance < unlock.price && (
-                    <p className="tws-error-text" style={{ marginTop: 8 }}>
-                      Need {unlock.price - status.balance} more f-coins
+
+                  {picks.length === 0 ? (
+                    <p className="tws-subtle" style={{ margin: 0 }}>
+                      Your Replace pool is empty. Save a few links with right-click &rarr; "Save to TimeWellSpent" &rarr; "Replace".
                     </p>
+                  ) : (
+                    <div className="tws-attractors-grid">
+                      {picks.map((item) => {
+                        const cardDisabled =
+                          isProcessing ||
+                          (item.type === 'desktop' && item.requiresDesktop && !status.desktopConnected) ||
+                          (item.type === 'app' && item.requiresDesktop && !status.desktopConnected);
+
+                        if (item.type === 'url') {
+                          const preview = previewFor(item.url);
+                          const thumb = preview?.imageUrl ?? null;
+                          const icon = preview?.iconUrl ?? faviconUrl(item.url);
+                          return (
+                            <div
+                              key={item.id}
+                              className="tws-attractor-card"
+                              onClick={() => {
+                                if (cardDisabled) return;
+                                handleOpenSuggestion(item);
+                              }}
+                              role="button"
+                              tabIndex={cardDisabled ? -1 : 0}
+                              aria-disabled={cardDisabled}
+                              onKeyDown={(e) => {
+                                if (cardDisabled) return;
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  handleOpenSuggestion(item);
+                                }
+                              }}
+                            >
+                              <div className="tws-attractor-thumb">
+                                {thumb ? (
+                                  <img className="tws-attractor-thumb-img" src={thumb} alt="" loading="lazy" />
+                                ) : (
+                                  <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
+                                )}
+                                {typeof item.libraryId === 'number' && (
+                                  <button
+                                    type="button"
+                                    className="tws-card-menu-trigger"
+                                    aria-label="More"
+                                    disabled={isProcessing}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setMenuOpenId((cur) => (cur === item.id ? null : item.id));
+                                    }}
+                                  >
+                                    ⋯
+                                  </button>
+                                )}
+                                {menuOpenId === item.id && typeof item.libraryId === 'number' && (
+                                  <div className="tws-card-menu" role="menu" onClick={(e) => e.stopPropagation()}>
+                                    <button
+                                      type="button"
+                                      className="tws-card-menu-item"
+                                      disabled={isProcessing}
+                                      onClick={() => handleMarkConsumed(item)}
+                                    >
+                                      Already consumed
+                                    </button>
+                                  </div>
+                                )}
+                                <img className="tws-attractor-favicon" src={icon} alt="" loading="lazy" />
+                              </div>
+                              <div className="tws-attractor-meta">
+                                <strong>{preview?.title ?? item.title}</strong>
+                                <span>{preview?.description ?? item.subtitle ?? 'saved in your replace pool'}</span>
+                                <small>{new URL(item.url).hostname.replace(/^www\\./, '')}</small>
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        if (item.type === 'desktop') {
+                          const progressPct =
+                            item.source === 'zotero' && typeof item.progress === 'number'
+                              ? Math.round(Math.max(0, Math.min(1, item.progress)) * 100)
+                              : null;
+                          return (
+                            <div
+                              key={item.id}
+                              className="tws-attractor-card"
+                              onClick={() => {
+                                if (cardDisabled) return;
+                                handleOpenSuggestion(item);
+                              }}
+                              title={item.requiresDesktop && !status.desktopConnected ? 'Requires desktop app' : undefined}
+                              role="button"
+                              tabIndex={cardDisabled ? -1 : 0}
+                              aria-disabled={cardDisabled}
+                              onKeyDown={(e) => {
+                                if (cardDisabled) return;
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  handleOpenSuggestion(item);
+                                }
+                              }}
+                            >
+                              <div className="tws-attractor-thumb">
+                                {item.thumbDataUrl ? (
+                                  <img className="tws-attractor-thumb-img" src={item.thumbDataUrl} alt="" loading="lazy" />
+                                ) : (
+                                  <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
+                                )}
+                                {progressPct !== null && (
+                                  <div className="tws-progress-bar" aria-hidden="true">
+                                    <div className="tws-progress-fill" style={{ width: `${progressPct}%` }} />
+                                  </div>
+                                )}
+                                <button
+                                  type="button"
+                                  className="tws-card-menu-trigger"
+                                  aria-label="More"
+                                  disabled={isProcessing}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setMenuOpenId((cur) => (cur === item.id ? null : item.id));
+                                  }}
+                                >
+                                  ⋯
+                                </button>
+                                {menuOpenId === item.id && (
+                                  <div className="tws-card-menu" role="menu" onClick={(e) => e.stopPropagation()}>
+                                    <button
+                                      type="button"
+                                      className="tws-card-menu-item"
+                                      disabled={isProcessing}
+                                      onClick={() => handleMarkConsumed(item)}
+                                    >
+                                      Already consumed
+                                    </button>
+                                  </div>
+                                )}
+                                {item.iconDataUrl ? (
+                                  <img className="tws-attractor-favicon" src={item.iconDataUrl} alt="" loading="lazy" />
+                                ) : (
+                                  <div className="tws-attractor-favicon" aria-hidden="true" />
+                                )}
+                              </div>
+                              <div className="tws-attractor-meta">
+                                <strong>{item.title}</strong>
+                                <span>{item.subtitle ?? 'reading suggestion'}</span>
+                                <small>desktop</small>
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        if (item.type === 'ritual') {
+                          return (
+                            <div
+                              key={item.id}
+                              className="tws-attractor-card"
+                              onClick={() => {
+                                if (cardDisabled) return;
+                                handleOpenSuggestion(item);
+                              }}
+                              role="button"
+                              tabIndex={cardDisabled ? -1 : 0}
+                              aria-disabled={cardDisabled}
+                              onKeyDown={(e) => {
+                                if (cardDisabled) return;
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  handleOpenSuggestion(item);
+                                }
+                              }}
+                            >
+                              <div className="tws-attractor-thumb tws-attractor-thumb-ritual">
+                                <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
+                                <div className="tws-attractor-app-badge">Ritual</div>
+                              </div>
+                              <div className="tws-attractor-meta">
+                                <strong>{item.title}</strong>
+                                <span>{item.subtitle ?? 'a small reset'}</span>
+                                <small>{item.ritual === 'meditation' ? `${item.minutes}m` : 'journal'}</small>
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div
+                            key={item.id}
+                            className="tws-attractor-card"
+                            onClick={() => {
+                              if (cardDisabled) return;
+                              handleOpenSuggestion(item);
+                            }}
+                            title={item.requiresDesktop && !status.desktopConnected ? 'Requires desktop app' : undefined}
+                            role="button"
+                            tabIndex={cardDisabled ? -1 : 0}
+                            aria-disabled={cardDisabled}
+                            onKeyDown={(e) => {
+                              if (cardDisabled) return;
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                handleOpenSuggestion(item);
+                              }
+                            }}
+                          >
+                            <div className="tws-attractor-thumb tws-attractor-thumb-app">
+                              <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
+                              <div className="tws-attractor-app-badge">App</div>
+                            </div>
+                            <div className="tws-attractor-meta">
+                              <strong>{item.title}</strong>
+                              <span>{item.subtitle ?? 'open an app'}</span>
+                              <small>desktop</small>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
                 </section>
-              )}
 
-              <section className="tws-paywall-option" style={{ margin: 0 }}>
-                <div className="tws-option-header">
-                  <h3>Timeboxed session (recommended)</h3>
-                  <p className="tws-subtle">Commit to a fixed time and leave when it ends.</p>
-                </div>
-
-                <div className="tws-slider-container">
-                  <div className="tws-slider-labels">
-                    <span>{selectedMinutes} minutes</span>
-                    <span className="tws-subtle-info">timebox</span>
-                    <strong>{sliderPrice} f-coins</strong>
+                <section className="tws-paywall-option tws-library-shelf">
+                  <div className="tws-option-header">
+                    <div>
+                      <h3>
+                        Productive library{' '}
+                        {productiveItems.length > 0 && <span className="tws-subtle">({productiveItems.length})</span>}
+                      </h3>
+                      <p className="tws-subtle">Open something you already tagged as productive.</p>
+                    </div>
                   </div>
-                  <input
-                    type="range"
-                    min={sliderBounds.min}
-                    max={sliderBounds.max}
-                    step={sliderBounds.step}
-                    value={selectedMinutes}
-                    onChange={(e) => setSelectedMinutes(snapMinutes(Number(e.target.value)))}
-                  />
-                  <div className="tws-slider-scale">
-                    <small>{sliderBounds.min}m</small>
-                    <small>{sliderBounds.max}m</small>
-                  </div>
-                </div>
-
-                <div className="tws-option-action">
-                  <button className="tws-primary" onClick={handleBuyPack} disabled={!sliderAffordable || isProcessing}>
-                    Proceed for {sliderPrice} f-coins
-                  </button>
-                  {!sliderAffordable && (
-                    <p className="tws-error-text">Need {sliderPrice - status.balance} more f-coins</p>
+                  {productiveItems.length === 0 ? (
+                    <p className="tws-subtle" style={{ margin: 0 }}>
+                      No productive items yet. Right-click a page and choose "Productive" to add it.
+                    </p>
+                  ) : (
+                    <div className="tws-library-scroll">
+                      {productiveItems.map((item) => {
+                        const preview = previewFor(item.url ?? '');
+                        const title = preview?.title ?? item.title ?? item.domain;
+                        const subtitle = preview?.description ?? item.note ?? item.domain;
+                        const icon = item.url ? preview?.iconUrl ?? faviconUrl(item.url) : null;
+                        return (
+                          <div key={item.id} className="tws-library-item">
+                            <div className="tws-library-info">
+                              {icon ? (
+                                <img className="tws-library-favicon" src={icon} alt="" loading="lazy" />
+                              ) : (
+                                <div className="tws-library-favicon tws-library-favicon-placeholder" aria-hidden="true" />
+                              )}
+                              <div className="tws-library-meta">
+                                <strong>{title}</strong>
+                                <span>{subtitle}</span>
+                              </div>
+                            </div>
+                            <div className="tws-library-actions">
+                              <button className="tws-secondary" type="button" disabled={isProcessing} onClick={() => openProductiveItem(item)}>
+                                Open
+                              </button>
+                              <button className="tws-link" type="button" disabled={isProcessing} onClick={() => markProductiveConsumed(item)}>
+                                Done
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
-                </div>
-              </section>
-
-              <section className="tws-paywall-option" style={{ margin: 0 }}>
-                <div className="tws-option-header">
-                  <h3>Metered</h3>
-                  <p className="tws-subtle">Charges continuously while you stay. Use only if you trust yourself.</p>
-                </div>
-                <div className="tws-option-action">
-                  <div className="tws-price-tag">
-                    <strong>{formatCoins(ratePerMin)}</strong>
-                    <small>f-coins / min</small>
+                </section>
+              </div>
+            ) : (
+              <div className="tws-feed">
+                <div className="tws-feed-toolbar">
+                  <div className="tws-feed-lens">
+                    <span className="tws-feed-label">Surface</span>
+                    <div className="tws-feed-lens-group">
+                      {feedLensOptions.map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          className={feedLens === option.id ? 'active' : ''}
+                          onClick={() => setFeedLens(option.id)}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  <button className="tws-secondary" onClick={handleStartMetered} disabled={status.balance < 1 || isProcessing}>
-                    Proceed metered
+                  <button
+                    className="tws-secondary tws-compact"
+                    type="button"
+                    onClick={() => setFeedSeed((seed) => seed + 1)}
+                    disabled={isProcessing}
+                  >
+                    Shuffle
                   </button>
                 </div>
-              </section>
-
-              <div className="tws-emergency-link">
-                {emergencyPolicy === 'off' ? (
-                  <button disabled title="Emergency access is disabled in Settings.">
-                    Emergency disabled
-                  </button>
+                {feedSorted.length === 0 ? (
+                  <p className="tws-subtle" style={{ margin: 0 }}>
+                    Your library is empty. Save a few pages to see them here.
+                  </p>
                 ) : (
-                  <button onClick={() => { setReviewed(false); setShowEmergencyForm(true); }}>
-                    I need it (Emergency)
-                  </button>
+                  <div className="tws-feed-list">
+                    {visibleFeedItems.map((item, index) => {
+                      const preview = item.url ? previewFor(item.url) : null;
+                      const title = preview?.title ?? item.title ?? item.domain ?? item.app ?? 'Saved item';
+                      const subtitle = preview?.description ?? item.subtitle ?? 'Saved for later.';
+                      const thumb = item.thumbDataUrl ?? preview?.imageUrl ?? null;
+                      const icon = item.iconDataUrl ?? (item.url ? preview?.iconUrl ?? faviconUrl(item.url) : null);
+                      const disabled = isProcessing || (item.requiresDesktop && !status.desktopConnected);
+                      const vote = feedVotes[item.id] ?? 0;
+                      const coverSeed = item.domain ?? item.app ?? title ?? item.meta ?? item.id;
+                      const coverHue = hashString(coverSeed) % 360;
+                      const coverStyle = { '--cover-hue': `${coverHue}` } as CSSProperties;
+                      const coverInitial = (title ?? 'T').trim().charAt(0).toUpperCase() || 'T';
+                      const metaLine = item.domain
+                        ? item.domain.replace(/^www\\./, '')
+                        : item.app
+                          ? item.app
+                          : item.source === 'zotero'
+                            ? 'Zotero'
+                            : item.source === 'books'
+                              ? 'Books'
+                              : '';
+                      const progressPct =
+                        item.contentType === 'reading' && typeof item.progress === 'number'
+                          ? Math.round(Math.max(0, Math.min(1, item.progress)) * 100)
+                          : null;
+                      const canMarkDone = item.entryType === 'reading' || (item.entryType === 'library' && item.contentType === 'url');
+
+                      return (
+                        <article
+                          key={item.id}
+                          className={`tws-feed-card ${disabled ? 'disabled' : ''}`}
+                          style={{ animationDelay: `${index * 60}ms` }}
+                        >
+                          <div className="tws-feed-avatar">
+                            {icon ? (
+                              <img src={icon} alt="" loading="lazy" />
+                            ) : (
+                              <div className="tws-feed-avatar-fallback" aria-hidden="true" />
+                            )}
+                          </div>
+                          <div className="tws-feed-body">
+                            <div className="tws-feed-header">
+                              <div className="tws-feed-title">
+                                <strong>{title}</strong>
+                                <span className="tws-feed-chip">{item.meta}</span>
+                              </div>
+                              <button
+                                className="tws-feed-open"
+                                type="button"
+                                disabled={disabled}
+                                title={disabled ? 'Requires desktop app' : undefined}
+                                onClick={() => handleOpenFeedItem(item)}
+                              >
+                                Open
+                              </button>
+                            </div>
+                            <p className="tws-feed-subtitle">{subtitle}</p>
+                            <div className="tws-feed-thumb" style={coverStyle}>
+                              {thumb && (
+                                <img
+                                  src={thumb}
+                                  alt=""
+                                  loading="lazy"
+                                  referrerPolicy="no-referrer"
+                                  onLoad={(event) => event.currentTarget.setAttribute('data-loaded', 'true')}
+                                  onError={(event) => {
+                                    event.currentTarget.removeAttribute('data-loaded');
+                                    event.currentTarget.style.display = 'none';
+                                  }}
+                                />
+                              )}
+                              <div className="tws-feed-cover">
+                                <div className="tws-feed-cover-initial">{coverInitial}</div>
+                                <div className="tws-feed-cover-meta">
+                                  <span>{item.meta}</span>
+                                  <strong>{title}</strong>
+                                </div>
+                              </div>
+                            </div>
+                            {progressPct !== null && (
+                              <div className="tws-feed-progress" aria-hidden="true">
+                                <div className="tws-feed-progress-fill" style={{ width: `${progressPct}%` }} />
+                              </div>
+                            )}
+                            {metaLine && <div className="tws-feed-meta-line">{metaLine}</div>}
+                            <div className="tws-feed-actions">
+                              <button
+                                type="button"
+                                className={`tws-feed-react ${vote === 1 ? 'active' : ''}`}
+                                onClick={() => handleFeedVote(item.id, 1)}
+                                disabled={isProcessing}
+                              >
+                                Like
+                              </button>
+                              <button
+                                type="button"
+                                className={`tws-feed-react ${vote === -1 ? 'active' : ''}`}
+                                onClick={() => handleFeedVote(item.id, -1)}
+                                disabled={isProcessing}
+                              >
+                                Dislike
+                              </button>
+                              {canMarkDone && (
+                                <button
+                                  type="button"
+                                  className="tws-feed-ghost"
+                                  onClick={() => handleFeedDone(item)}
+                                  disabled={isProcessing}
+                                >
+                                  Done
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </article>
+                      );
+                    })}
+                    <div ref={feedSentinelRef} className="tws-feed-sentinel">
+                      {feedHasMore ? 'Loading more...' : 'End of your library'}
+                    </div>
+                  </div>
                 )}
               </div>
+            )}
+          </div>
+        </main>
+
+        <aside className="tws-paywall-rail">
+          <div className="tws-rail-card">
+            <div className="tws-rail-row">
+              <span className="tws-rail-label">Rate</span>
+              <strong>{formatCoins(ratePerMin)} f-coins/min</strong>
             </div>
-          </details>
-        </div>
+            <p className="tws-subtle" style={{ margin: 0 }}>
+              Proceed only when it matches your intention.
+            </p>
+          </div>
+
+          <div className="tws-rail-card tws-rot-card">
+            <div className="tws-rot-header">
+              <strong>Rot mode</strong>
+              <button
+                type="button"
+                className={`tws-rot-toggle ${rotModeEnabled ? 'active' : ''}`}
+                onClick={handleRotModeToggle}
+                disabled={rotModeBusy || isProcessing}
+              >
+                {rotModeEnabled ? 'On' : 'Off'}
+              </button>
+            </div>
+            <p className="tws-subtle" style={{ margin: 0 }}>
+              Opens all frivolous domains, metered and paused when you leave.
+            </p>
+          </div>
+
+          <div className="tws-proceed-dock">
+            <details className="tws-details" open={proceedOpen} onToggle={(e) => setProceedOpen((e.target as HTMLDetailsElement).open)}>
+              <summary>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <strong>Proceed anyway</strong>
+                  <span>Timebox recommended - metered and emergency are intentionally harder.</span>
+                </div>
+                <span>{proceedOpen ? '-' : '+'}</span>
+              </summary>
+              <div className="tws-details-body">
+                {unlock && (
+                  <section className="tws-paywall-option" style={{ margin: 0 }}>
+                    <div className="tws-option-header">
+                      <h3>Unlock your saved item</h3>
+                      <p className="tws-subtle">Pay once for this exact page, then leave when you are done.</p>
+                    </div>
+
+                    {unlock.url && (
+                      <div className="tws-attractors-grid" style={{ gridTemplateColumns: '1fr', marginBottom: 12 }}>
+                        <button type="button" className="tws-attractor-card" disabled style={{ cursor: 'default' }}>
+                          <div className="tws-attractor-thumb">
+                            {unlockThumb ? (
+                              <img className="tws-attractor-thumb-img" src={unlockThumb} alt="" loading="lazy" />
+                            ) : (
+                              <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
+                            )}
+                            {unlockIcon && <img className="tws-attractor-favicon" src={unlockIcon} alt="" loading="lazy" />}
+                            <div className="tws-price-pill">
+                              {unlock.price}
+                              <span>f-coins</span>
+                            </div>
+                          </div>
+                          <div className="tws-attractor-meta">
+                            <strong>{unlockPreview?.title ?? unlock.title ?? unlock.domain}</strong>
+                            <span>{unlockPreview?.description ?? 'Saved one-time unlock'}</span>
+                            <small>{unlock.domain}</small>
+                          </div>
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="tws-option-action">
+                      <div className="tws-price-tag">
+                        <strong>{unlock.price}</strong>
+                        <small>f-coins</small>
+                      </div>
+                      <button className="tws-primary" onClick={handleUnlockSavedItem} disabled={isProcessing || status.balance < unlock.price}>
+                        Unlock now
+                      </button>
+                    </div>
+                    {status.balance < unlock.price && (
+                      <p className="tws-error-text" style={{ marginTop: 8 }}>
+                        Need {unlock.price - status.balance} more f-coins
+                      </p>
+                    )}
+                  </section>
+                )}
+
+                <section className="tws-paywall-option" style={{ margin: 0 }}>
+                  <div className="tws-option-header">
+                    <h3>Timeboxed session (recommended)</h3>
+                    <p className="tws-subtle">Commit to a fixed time and leave when it ends.</p>
+                  </div>
+
+                  <div className="tws-slider-container">
+                    <div className="tws-slider-labels">
+                      <span>{selectedMinutes} minutes</span>
+                      <span className="tws-subtle-info">timebox</span>
+                      <strong>{sliderPrice} f-coins</strong>
+                    </div>
+                    <input
+                      type="range"
+                      min={sliderBounds.min}
+                      max={sliderBounds.max}
+                      step={sliderBounds.step}
+                      value={selectedMinutes}
+                      onChange={(e) => setSelectedMinutes(snapMinutes(Number(e.target.value)))}
+                    />
+                    <div className="tws-slider-scale">
+                      <small>{sliderBounds.min}m</small>
+                      <small>{sliderBounds.max}m</small>
+                    </div>
+                  </div>
+
+                  <div className="tws-option-action">
+                    <button className="tws-primary" onClick={handleBuyPack} disabled={!sliderAffordable || isProcessing}>
+                      Proceed for {sliderPrice} f-coins
+                    </button>
+                    {!sliderAffordable && (
+                      <p className="tws-error-text">Need {sliderPrice - status.balance} more f-coins</p>
+                    )}
+                  </div>
+                </section>
+
+                <section className="tws-paywall-option" style={{ margin: 0 }}>
+                  <div className="tws-option-header">
+                    <h3>Metered</h3>
+                    <p className="tws-subtle">Charges continuously while you stay. Use only if you trust yourself.</p>
+                  </div>
+                  <div className="tws-option-action">
+                    <div className="tws-price-tag">
+                      <strong>{formatCoins(ratePerMin)}</strong>
+                      <small>f-coins / min</small>
+                    </div>
+                    <button className="tws-secondary" onClick={handleStartMetered} disabled={status.balance < 1 || isProcessing}>
+                      Proceed metered
+                    </button>
+                  </div>
+                </section>
+
+                <div className="tws-emergency-link">
+                  {emergencyPolicy === 'off' ? (
+                    <button disabled title="Emergency access is disabled in Settings.">
+                      Emergency disabled
+                    </button>
+                  ) : (
+                    <button onClick={() => { setReviewed(false); setShowEmergencyForm(true); }}>
+                      I need it (Emergency)
+                    </button>
+                  )}
+                </div>
+              </div>
+            </details>
+          </div>
+        </aside>
       </div>
     </div>
   );

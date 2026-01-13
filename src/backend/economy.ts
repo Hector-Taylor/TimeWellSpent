@@ -6,9 +6,18 @@ import type { PaywallManager } from './paywall';
 import { logger } from '@shared/logger';
 import type { ClassifiedActivity } from './activityClassifier';
 
-const PRODUCTIVE_RATE_PER_MIN = 5;
-const NEUTRAL_RATE_PER_MIN = 3;
-const SPEND_INTERVAL_SECONDS = 15;
+export type EconomyRateGetters = {
+  getProductiveRatePerMin: () => number;
+  getNeutralRatePerMin: () => number;
+  getSpendIntervalSeconds: () => number;
+};
+
+// Defaults if no settings provided
+const DEFAULT_RATES: EconomyRateGetters = {
+  getProductiveRatePerMin: () => 5,
+  getNeutralRatePerMin: () => 3,
+  getSpendIntervalSeconds: () => 15
+};
 
 export type EconomyState = {
   activeCategory: ActivityCategory | 'idle' | null;
@@ -30,16 +39,19 @@ export class EconomyEngine extends EventEmitter {
   };
   private earnTimer: NodeJS.Timeout;
   private spendTimer: NodeJS.Timeout;
+  private rates: EconomyRateGetters;
 
   constructor(
     private wallet: WalletManager,
     private market: MarketService,
     private paywall: PaywallManager,
-    private getReminderInterval: () => number = () => 300
+    private getReminderInterval: () => number = () => 300,
+    rates?: EconomyRateGetters
   ) {
     super();
+    this.rates = rates ?? DEFAULT_RATES;
     this.earnTimer = setInterval(() => this.tickEarn(), 60_000);
-    this.spendTimer = setInterval(() => this.tickSpend(), SPEND_INTERVAL_SECONDS * 1000);
+    this.spendTimer = setInterval(() => this.tickSpend(), this.rates.getSpendIntervalSeconds() * 1000);
 
     this.paywall.on('session-ended', (payload) => {
       this.emit('paywall-session-ended', payload);
@@ -115,7 +127,7 @@ export class EconomyEngine extends EventEmitter {
       return; // stale
     }
 
-    let rate = this.state.activeCategory === 'productive' ? PRODUCTIVE_RATE_PER_MIN : NEUTRAL_RATE_PER_MIN;
+    let rate = this.state.activeCategory === 'productive' ? this.rates.getProductiveRatePerMin() : this.rates.getNeutralRatePerMin();
 
     // Check for specific market rate overrides
     const identifier = this.state.activeDomain || this.state.activeApp;
@@ -146,7 +158,7 @@ export class EconomyEngine extends EventEmitter {
   private tickSpend() {
     const activeDomain = this.state.activeCategory === 'idle' ? null : this.state.activeDomain;
     const activeUrl = this.state.activeCategory === 'idle' ? null : this.state.activeUrl;
-    this.paywall.tick(SPEND_INTERVAL_SECONDS, activeDomain, activeUrl, this.getReminderInterval());
+    this.paywall.tick(this.rates.getSpendIntervalSeconds(), activeDomain, activeUrl, this.getReminderInterval());
   }
 
   private ensureRate(domain: string): MarketRate {

@@ -40,11 +40,11 @@ const require$$0$9 = require("crypto");
 const require$$1$4 = require("https");
 const require$$4$2 = require("tls");
 const node_events = require("node:events");
-const node_child_process = require("node:child_process");
 const crypto$1 = require("node:crypto");
 const fs$3 = require("node:fs/promises");
 const os = require("node:os");
 const node_util = require("node:util");
+const node_child_process = require("node:child_process");
 const DatabaseDriver = require("better-sqlite3");
 var commonjsGlobal = typeof globalThis !== "undefined" ? globalThis : typeof window !== "undefined" ? window : typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : {};
 function getDefaultExportFromCjs(x) {
@@ -23943,7 +23943,7 @@ var objectInspect = function inspect_(obj, options, depth, seen) {
     var ys = arrObjKeys(obj, inspect2);
     var isPlainObject = gPO ? gPO(obj) === Object.prototype : obj instanceof Object || obj.constructor === Object;
     var protoTag = obj instanceof Object ? "" : "null prototype";
-    var stringTag = !isPlainObject && toStringTag && Object(obj) === obj && toStringTag in obj ? $slice.call(toStr(obj), 8, -1) : protoTag ? "Object" : "";
+    var stringTag = !isPlainObject && toStringTag && Object(obj) === obj && toStringTag in obj ? $slice.call(toStr$1(obj), 8, -1) : protoTag ? "Object" : "";
     var constructorTag = isPlainObject || typeof obj.constructor !== "function" ? "" : obj.constructor.name ? obj.constructor.name + " " : "";
     var tag = constructorTag + (stringTag || protoTag ? "[" + $join.call($concat$1.call([], stringTag || [], protoTag || []), ": ") + "] " : "");
     if (ys.length === 0) {
@@ -23968,25 +23968,25 @@ function canTrustToString(obj) {
   return !toStringTag || !(typeof obj === "object" && (toStringTag in obj || typeof obj[toStringTag] !== "undefined"));
 }
 function isArray$3(obj) {
-  return toStr(obj) === "[object Array]" && canTrustToString(obj);
+  return toStr$1(obj) === "[object Array]" && canTrustToString(obj);
 }
 function isDate$1(obj) {
-  return toStr(obj) === "[object Date]" && canTrustToString(obj);
+  return toStr$1(obj) === "[object Date]" && canTrustToString(obj);
 }
 function isRegExp$1(obj) {
-  return toStr(obj) === "[object RegExp]" && canTrustToString(obj);
+  return toStr$1(obj) === "[object RegExp]" && canTrustToString(obj);
 }
 function isError(obj) {
-  return toStr(obj) === "[object Error]" && canTrustToString(obj);
+  return toStr$1(obj) === "[object Error]" && canTrustToString(obj);
 }
 function isString(obj) {
-  return toStr(obj) === "[object String]" && canTrustToString(obj);
+  return toStr$1(obj) === "[object String]" && canTrustToString(obj);
 }
 function isNumber(obj) {
-  return toStr(obj) === "[object Number]" && canTrustToString(obj);
+  return toStr$1(obj) === "[object Number]" && canTrustToString(obj);
 }
 function isBoolean(obj) {
-  return toStr(obj) === "[object Boolean]" && canTrustToString(obj);
+  return toStr$1(obj) === "[object Boolean]" && canTrustToString(obj);
 }
 function isSymbol(obj) {
   if (hasShammedSymbols) {
@@ -24022,7 +24022,7 @@ var hasOwn$1 = Object.prototype.hasOwnProperty || function(key) {
 function has$3(obj, key) {
   return hasOwn$1.call(obj, key);
 }
-function toStr(obj) {
+function toStr$1(obj) {
   return objectToString.call(obj);
 }
 function nameOf(f) {
@@ -24331,7 +24331,7 @@ var syntax = SyntaxError;
 var uri = URIError;
 var abs$1 = Math.abs;
 var floor$1 = Math.floor;
-var max$1 = Math.max;
+var max$2 = Math.max;
 var min$1 = Math.min;
 var pow$1 = Math.pow;
 var round$1 = Math.round;
@@ -24460,99 +24460,78 @@ function requireObject_getPrototypeOf() {
   Object_getPrototypeOf = $Object2.getPrototypeOf || null;
   return Object_getPrototypeOf;
 }
-var implementation;
-var hasRequiredImplementation;
-function requireImplementation() {
-  if (hasRequiredImplementation) return implementation;
-  hasRequiredImplementation = 1;
-  var ERROR_MESSAGE = "Function.prototype.bind called on incompatible ";
-  var toStr2 = Object.prototype.toString;
-  var max2 = Math.max;
-  var funcType = "[object Function]";
-  var concatty = function concatty2(a, b) {
-    var arr = [];
-    for (var i = 0; i < a.length; i += 1) {
-      arr[i] = a[i];
+var ERROR_MESSAGE = "Function.prototype.bind called on incompatible ";
+var toStr = Object.prototype.toString;
+var max$1 = Math.max;
+var funcType = "[object Function]";
+var concatty = function concatty2(a, b) {
+  var arr = [];
+  for (var i = 0; i < a.length; i += 1) {
+    arr[i] = a[i];
+  }
+  for (var j = 0; j < b.length; j += 1) {
+    arr[j + a.length] = b[j];
+  }
+  return arr;
+};
+var slicy = function slicy2(arrLike, offset) {
+  var arr = [];
+  for (var i = offset, j = 0; i < arrLike.length; i += 1, j += 1) {
+    arr[j] = arrLike[i];
+  }
+  return arr;
+};
+var joiny = function(arr, joiner) {
+  var str = "";
+  for (var i = 0; i < arr.length; i += 1) {
+    str += arr[i];
+    if (i + 1 < arr.length) {
+      str += joiner;
     }
-    for (var j = 0; j < b.length; j += 1) {
-      arr[j + a.length] = b[j];
-    }
-    return arr;
-  };
-  var slicy = function slicy2(arrLike, offset) {
-    var arr = [];
-    for (var i = offset, j = 0; i < arrLike.length; i += 1, j += 1) {
-      arr[j] = arrLike[i];
-    }
-    return arr;
-  };
-  var joiny = function(arr, joiner) {
-    var str = "";
-    for (var i = 0; i < arr.length; i += 1) {
-      str += arr[i];
-      if (i + 1 < arr.length) {
-        str += joiner;
-      }
-    }
-    return str;
-  };
-  implementation = function bind2(that) {
-    var target = this;
-    if (typeof target !== "function" || toStr2.apply(target) !== funcType) {
-      throw new TypeError(ERROR_MESSAGE + target);
-    }
-    var args = slicy(arguments, 1);
-    var bound;
-    var binder = function() {
-      if (this instanceof bound) {
-        var result = target.apply(
-          this,
-          concatty(args, arguments)
-        );
-        if (Object(result) === result) {
-          return result;
-        }
-        return this;
-      }
-      return target.apply(
-        that,
+  }
+  return str;
+};
+var implementation$1 = function bind(that) {
+  var target = this;
+  if (typeof target !== "function" || toStr.apply(target) !== funcType) {
+    throw new TypeError(ERROR_MESSAGE + target);
+  }
+  var args = slicy(arguments, 1);
+  var bound;
+  var binder = function() {
+    if (this instanceof bound) {
+      var result = target.apply(
+        this,
         concatty(args, arguments)
       );
-    };
-    var boundLength = max2(0, target.length - args.length);
-    var boundArgs = [];
-    for (var i = 0; i < boundLength; i++) {
-      boundArgs[i] = "$" + i;
+      if (Object(result) === result) {
+        return result;
+      }
+      return this;
     }
-    bound = Function("binder", "return function (" + joiny(boundArgs, ",") + "){ return binder.apply(this,arguments); }")(binder);
-    if (target.prototype) {
-      var Empty = function Empty2() {
-      };
-      Empty.prototype = target.prototype;
-      bound.prototype = new Empty();
-      Empty.prototype = null;
-    }
-    return bound;
+    return target.apply(
+      that,
+      concatty(args, arguments)
+    );
   };
-  return implementation;
-}
-var functionBind;
-var hasRequiredFunctionBind;
-function requireFunctionBind() {
-  if (hasRequiredFunctionBind) return functionBind;
-  hasRequiredFunctionBind = 1;
-  var implementation2 = requireImplementation();
-  functionBind = Function.prototype.bind || implementation2;
-  return functionBind;
-}
-var functionCall;
-var hasRequiredFunctionCall;
-function requireFunctionCall() {
-  if (hasRequiredFunctionCall) return functionCall;
-  hasRequiredFunctionCall = 1;
-  functionCall = Function.prototype.call;
-  return functionCall;
-}
+  var boundLength = max$1(0, target.length - args.length);
+  var boundArgs = [];
+  for (var i = 0; i < boundLength; i++) {
+    boundArgs[i] = "$" + i;
+  }
+  bound = Function("binder", "return function (" + joiny(boundArgs, ",") + "){ return binder.apply(this,arguments); }")(binder);
+  if (target.prototype) {
+    var Empty = function Empty2() {
+    };
+    Empty.prototype = target.prototype;
+    bound.prototype = new Empty();
+    Empty.prototype = null;
+  }
+  return bound;
+};
+var implementation = implementation$1;
+var functionBind = Function.prototype.bind || implementation;
+var functionCall = Function.prototype.call;
 var functionApply;
 var hasRequiredFunctionApply;
 function requireFunctionApply() {
@@ -24562,14 +24541,14 @@ function requireFunctionApply() {
   return functionApply;
 }
 var reflectApply = typeof Reflect !== "undefined" && Reflect && Reflect.apply;
-var bind$2 = requireFunctionBind();
+var bind$2 = functionBind;
 var $apply$1 = requireFunctionApply();
-var $call$2 = requireFunctionCall();
+var $call$2 = functionCall;
 var $reflectApply = reflectApply;
 var actualApply = $reflectApply || bind$2.call($call$2, $apply$1);
-var bind$1 = requireFunctionBind();
+var bind$1 = functionBind;
 var $TypeError$4 = type;
-var $call$1 = requireFunctionCall();
+var $call$1 = functionCall;
 var $actualApply = actualApply;
 var callBindApplyHelpers = function callBindBasic(args) {
   if (args.length < 1 || typeof args[0] !== "function") {
@@ -24635,8 +24614,8 @@ function requireHasown() {
   hasRequiredHasown = 1;
   var call = Function.prototype.call;
   var $hasOwn = Object.prototype.hasOwnProperty;
-  var bind2 = requireFunctionBind();
-  hasown = bind2.call(call, $hasOwn);
+  var bind3 = functionBind;
+  hasown = bind3.call(call, $hasOwn);
   return hasown;
 }
 var undefined$1;
@@ -24650,7 +24629,7 @@ var $TypeError$3 = type;
 var $URIError = uri;
 var abs = abs$1;
 var floor = floor$1;
-var max = max$1;
+var max = max$2;
 var min = min$1;
 var pow = pow$1;
 var round = round$1;
@@ -24684,7 +24663,7 @@ var getProto = requireGetProto();
 var $ObjectGPO = requireObject_getPrototypeOf();
 var $ReflectGPO = requireReflect_getPrototypeOf();
 var $apply = requireFunctionApply();
-var $call = requireFunctionCall();
+var $call = functionCall;
 var needsEval = {};
 var TypedArray = typeof Uint8Array === "undefined" || !getProto ? undefined$1 : getProto(Uint8Array);
 var INTRINSICS = {
@@ -24855,13 +24834,13 @@ var LEGACY_ALIASES = {
   "%WeakMapPrototype%": ["WeakMap", "prototype"],
   "%WeakSetPrototype%": ["WeakSet", "prototype"]
 };
-var bind = requireFunctionBind();
+var bind2 = functionBind;
 var hasOwn = requireHasown();
-var $concat = bind.call($call, Array.prototype.concat);
-var $spliceApply = bind.call($apply, Array.prototype.splice);
-var $replace = bind.call($call, String.prototype.replace);
-var $strSlice = bind.call($call, String.prototype.slice);
-var $exec = bind.call($call, RegExp.prototype.exec);
+var $concat = bind2.call($call, Array.prototype.concat);
+var $spliceApply = bind2.call($apply, Array.prototype.splice);
+var $replace = bind2.call($call, String.prototype.replace);
+var $strSlice = bind2.call($call, String.prototype.slice);
+var $exec = bind2.call($call, RegExp.prototype.exec);
 var rePropName = /[^%.[\]]+|\[(?:(-?\d+(?:\.\d+)?)|(["'])((?:(?!\2)[^\\]|\\.)*?)\2)\]|(?=(?:\.|\[\])(?:\.|\[\]|%$))/g;
 var reEscapeChar = /\\(\\)?/g;
 var stringToPath = function stringToPath2(string) {
@@ -38831,6 +38810,40 @@ class SettingsService {
     }
     this.setJson("economyExchangeRate", n);
   }
+  // Economy earning rates
+  getProductiveRatePerMin() {
+    const val = this.getJson("productiveRatePerMin");
+    return typeof val === "number" && Number.isFinite(val) && val >= 1 && val <= 50 ? val : 5;
+  }
+  setProductiveRatePerMin(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 1 || n > 50) {
+      throw new Error("Invalid rate (must be 1-50)");
+    }
+    this.setJson("productiveRatePerMin", n);
+  }
+  getNeutralRatePerMin() {
+    const val = this.getJson("neutralRatePerMin");
+    return typeof val === "number" && Number.isFinite(val) && val >= 0 && val <= 50 ? val : 3;
+  }
+  setNeutralRatePerMin(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0 || n > 50) {
+      throw new Error("Invalid rate (must be 0-50)");
+    }
+    this.setJson("neutralRatePerMin", n);
+  }
+  getSpendIntervalSeconds() {
+    const val = this.getJson("spendIntervalSeconds");
+    return typeof val === "number" && Number.isFinite(val) && val >= 5 && val <= 60 ? val : 15;
+  }
+  setSpendIntervalSeconds(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 5 || n > 60) {
+      throw new Error("Invalid interval (must be 5-60)");
+    }
+    this.setJson("spendIntervalSeconds", n);
+  }
   getJournalConfig() {
     const raw = this.getJson("journalConfig");
     const minutes = typeof (raw == null ? void 0 : raw.minutes) === "number" && Number.isFinite(raw.minutes) ? Math.max(1, Math.min(180, Math.round(raw.minutes))) : 10;
@@ -39372,11 +39385,13 @@ class PaywallManager extends node_events.EventEmitter {
     }
   }
 }
-const PRODUCTIVE_RATE_PER_MIN = 5;
-const NEUTRAL_RATE_PER_MIN = 3;
-const SPEND_INTERVAL_SECONDS = 15;
+const DEFAULT_RATES = {
+  getProductiveRatePerMin: () => 5,
+  getNeutralRatePerMin: () => 3,
+  getSpendIntervalSeconds: () => 15
+};
 class EconomyEngine extends node_events.EventEmitter {
-  constructor(wallet, market, paywall, getReminderInterval = () => 300) {
+  constructor(wallet, market, paywall, getReminderInterval = () => 300, rates) {
     super();
     this.wallet = wallet;
     this.market = market;
@@ -39390,8 +39405,9 @@ class EconomyEngine extends node_events.EventEmitter {
       lastUpdated: null,
       neutralClockedIn: false
     };
+    this.rates = rates ?? DEFAULT_RATES;
     this.earnTimer = setInterval(() => this.tickEarn(), 6e4);
-    this.spendTimer = setInterval(() => this.tickSpend(), SPEND_INTERVAL_SECONDS * 1e3);
+    this.spendTimer = setInterval(() => this.tickSpend(), this.rates.getSpendIntervalSeconds() * 1e3);
     this.paywall.on("session-ended", (payload) => {
       this.emit("paywall-session-ended", payload);
     });
@@ -39450,7 +39466,7 @@ class EconomyEngine extends node_events.EventEmitter {
     if (!this.state.lastUpdated || Date.now() - this.state.lastUpdated > 6e4 * 5) {
       return;
     }
-    let rate = this.state.activeCategory === "productive" ? PRODUCTIVE_RATE_PER_MIN : NEUTRAL_RATE_PER_MIN;
+    let rate = this.state.activeCategory === "productive" ? this.rates.getProductiveRatePerMin() : this.rates.getNeutralRatePerMin();
     const identifier = this.state.activeDomain || this.state.activeApp;
     if (identifier) {
       const marketRate = this.market.getRate(identifier);
@@ -39477,7 +39493,7 @@ class EconomyEngine extends node_events.EventEmitter {
   tickSpend() {
     const activeDomain = this.state.activeCategory === "idle" ? null : this.state.activeDomain;
     const activeUrl = this.state.activeCategory === "idle" ? null : this.state.activeUrl;
-    this.paywall.tick(SPEND_INTERVAL_SECONDS, activeDomain, activeUrl, this.getReminderInterval());
+    this.paywall.tick(this.rates.getSpendIntervalSeconds(), activeDomain, activeUrl, this.getReminderInterval());
   }
   ensureRate(domain) {
     let rate = this.market.getRate(domain);
@@ -40500,6 +40516,9 @@ class ConsumptionLogService {
     this.listDaysStmt = this.db.prepare(
       "SELECT day, COUNT(*) as count FROM consumption_log WHERE day >= ? GROUP BY day ORDER BY day DESC"
     );
+    this.latestByKindStmt = this.db.prepare(
+      "SELECT id, occurred_at, day, kind, title, url, domain, meta FROM consumption_log WHERE kind = ? ORDER BY occurred_at DESC LIMIT 1"
+    );
   }
   formatDay(date) {
     const year = date.getFullYear();
@@ -40538,6 +40557,20 @@ class ConsumptionLogService {
     const since = this.formatDay(new Date(Date.now() - safeRange * 24 * 60 * 60 * 1e3));
     const rows = this.listDaysStmt.all(since);
     return rows.map((row) => ({ day: row.day, count: row.count }));
+  }
+  latestByKind(kind) {
+    const row = this.latestByKindStmt.get(kind);
+    if (!row) return null;
+    return {
+      id: row.id,
+      occurredAt: row.occurred_at,
+      day: row.day,
+      kind: row.kind,
+      title: row.title ?? void 0,
+      url: row.url ?? void 0,
+      domain: row.domain ?? void 0,
+      meta: row.meta ? JSON.parse(row.meta) : void 0
+    };
   }
 }
 function randomToken(bytes2 = 24) {
@@ -41243,124 +41276,12 @@ class ReadingService {
     return results;
   }
 }
-const PORT = 17600;
-async function createBackend(database) {
-  const wallet = new WalletManager(database);
-  const market = new MarketService(database);
-  const settings = new SettingsService(database);
-  const paywall = new PaywallManager(wallet, market);
-  const economy = new EconomyEngine(wallet, market, paywall, () => settings.getEmergencyReminderInterval());
-  const emergency = new EmergencyService(settings, wallet, paywall);
-  const activityTracker = new ActivityTracker(database);
-  const library = new LibraryService(database);
-  const consumption = new ConsumptionLogService(database);
-  const productiveOverrides = { urls: /* @__PURE__ */ new Set(), apps: /* @__PURE__ */ new Set() };
-  const normaliseProductiveUrl = (value) => {
-    try {
-      const parsed = new URL(value);
-      parsed.hash = "";
-      parsed.search = "";
-      let path22 = parsed.pathname;
-      if (path22.length > 1 && path22.endsWith("/")) {
-        path22 = path22.slice(0, -1);
-      }
-      return `${parsed.origin}${path22}`;
-    } catch {
-      return null;
-    }
-  };
-  const rebuildProductiveOverrides = () => {
-    productiveOverrides.urls.clear();
-    productiveOverrides.apps.clear();
-    for (const item of library.list()) {
-      if (item.purpose !== "productive") continue;
-      if (item.kind === "url" && item.url) {
-        const normalized = normaliseProductiveUrl(item.url);
-        if (normalized) productiveOverrides.urls.add(normalized);
-      } else if (item.kind === "app") {
-        const name = (item.app ?? item.domain ?? "").trim().toLowerCase();
-        if (name) productiveOverrides.apps.add(name);
-      }
-    }
-  };
-  rebuildProductiveOverrides();
-  library.on("added", rebuildProductiveOverrides);
-  library.on("updated", rebuildProductiveOverrides);
-  library.on("removed", rebuildProductiveOverrides);
-  const classifier = new ActivityClassifier(
-    () => settings.getCategorisation(),
-    () => settings.getIdleThreshold(),
-    () => settings.getFrivolousIdleThreshold(),
-    (event) => {
-      if (event.url) {
-        const normalized = normaliseProductiveUrl(event.url);
-        if (normalized && productiveOverrides.urls.has(normalized)) return "productive";
-      }
-      const appName = (event.appName ?? "").toLowerCase();
-      if (appName) {
-        for (const name of productiveOverrides.apps) {
-          if (appName.includes(name)) return "productive";
-        }
-      }
-      return null;
-    }
-  );
-  const activityPipeline = new ActivityPipeline(activityTracker, economy, classifier);
-  const focus = new FocusService(database, wallet);
-  const intentions = new IntentionService(database);
-  const budgets = new BudgetService(database);
-  const analytics = new AnalyticsService(database);
-  const reading = new ReadingService(settings);
-  const friends = new FriendsService(settings, analytics);
-  library.on("consumed", ({ item, consumedAt }) => {
-    const title = item.title ?? item.domain;
-    consumption.record({
-      kind: "library-item",
-      occurredAt: consumedAt,
-      title,
-      url: item.url ?? null,
-      domain: item.domain,
-      meta: { purpose: item.purpose }
-    });
-  });
-  economy.on("paywall-session-started", (session) => {
-    if (session.mode === "emergency") return;
-    consumption.record({
-      kind: "frivolous-session",
-      title: session.domain,
-      url: session.allowedUrl ?? null,
-      domain: session.domain,
-      meta: {
-        mode: session.mode,
-        purchasePrice: session.purchasePrice ?? null,
-        purchasedSeconds: session.purchasedSeconds ?? null,
-        allowedUrl: session.allowedUrl ?? null
-      }
-    });
-  });
-  const app = express$1();
-  const ws2 = expressWs$1(app);
-  const clients = /* @__PURE__ */ new Set();
-  const extensionEvents = new node_events.EventEmitter();
-  let lastExtensionSeen = null;
-  app.use(express$1.json());
-  const broadcastMarketRates = () => {
-    const record = market.listRates().reduce((acc, rate) => {
-      acc[rate.domain] = rate;
-      return acc;
-    }, {});
-    broadcast({ type: "market-update", payload: record });
-  };
-  market.on("update", () => {
-    broadcastMarketRates();
-  });
-  app.get("/health", (_req, res2) => {
-    res2.json({ status: "ok" });
-  });
-  app.get("/wallet", (_req, res2) => {
+function createWalletRoutes(wallet) {
+  const router2 = express.Router();
+  router2.get("/", (_req, res2) => {
     res2.json(wallet.getSnapshot());
   });
-  app.post("/wallet/earn", (req2, res2) => {
+  router2.post("/earn", (req2, res2) => {
     try {
       const { amount, meta } = req2.body ?? {};
       const snapshot = wallet.earn(Number(amount), meta);
@@ -41369,7 +41290,7 @@ async function createBackend(database) {
       res2.status(400).json({ error: error3.message });
     }
   });
-  app.post("/wallet/spend", (req2, res2) => {
+  router2.post("/spend", (req2, res2) => {
     try {
       const { amount, meta } = req2.body ?? {};
       const snapshot = wallet.spend(Number(amount), meta);
@@ -41378,15 +41299,22 @@ async function createBackend(database) {
       res2.status(400).json({ error: error3.message });
     }
   });
-  app.get("/market", (_req, res2) => {
+  return router2;
+}
+function createMarketRoutes(ctx) {
+  const router2 = express.Router();
+  const { market, paywall, broadcastMarketRates } = ctx;
+  router2.get("/", (_req, res2) => {
     res2.json(market.listRates());
   });
-  app.post("/market", (req2, res2) => {
+  router2.post("/", (req2, res2) => {
     try {
       const rate = req2.body;
       const session = paywall.getSession(rate.domain);
       if (session) {
-        return res2.status(409).json({ error: `Cannot change exchange rate for ${rate.domain} while a session is active.` });
+        return res2.status(409).json({
+          error: `Cannot change exchange rate for ${rate.domain} while a session is active.`
+        });
       }
       market.upsertRate(rate);
       broadcastMarketRates();
@@ -41395,7 +41323,12 @@ async function createBackend(database) {
       res2.status(400).json({ error: error3.message });
     }
   });
-  app.post("/paywall/metered", (req2, res2) => {
+  return router2;
+}
+function createPaywallRoutes(ctx) {
+  const router2 = express.Router();
+  const { economy, paywall, wallet, market, emergency } = ctx;
+  router2.post("/metered", (req2, res2) => {
     try {
       const { domain } = req2.body;
       const session = economy.startPayAsYouGo(domain);
@@ -41404,7 +41337,7 @@ async function createBackend(database) {
       res2.status(400).json({ error: error3.message });
     }
   });
-  app.post("/paywall/packs", (req2, res2) => {
+  router2.post("/packs", (req2, res2) => {
     try {
       const { domain, minutes } = req2.body;
       const session = economy.buyPack(domain, minutes);
@@ -41413,7 +41346,7 @@ async function createBackend(database) {
       res2.status(400).json({ error: error3.message });
     }
   });
-  app.post("/paywall/emergency", (req2, res2) => {
+  router2.post("/emergency", (req2, res2) => {
     try {
       const { domain, justification, url: url2 } = req2.body;
       const session = emergency.start(domain, justification, { url: url2 });
@@ -41436,14 +41369,14 @@ async function createBackend(database) {
       res2.status(400).json({ error: error3.message });
     }
   };
-  app.post("/paywall/store", startStoreSession);
-  app.post("/paywall/start-store-fallback", startStoreSession);
-  app.get("/paywall/status", (req2, res2) => {
+  router2.post("/store", startStoreSession);
+  router2.post("/start-store-fallback", startStoreSession);
+  router2.get("/status", (req2, res2) => {
     const domain = String(req2.query.domain ?? "");
     const session = paywall.getSession(domain);
     res2.json({ session, wallet: wallet.getSnapshot(), rates: market.getRate(domain) });
   });
-  app.post("/paywall/emergency-review", (req2, res2) => {
+  router2.post("/emergency-review", (req2, res2) => {
     try {
       const { outcome } = req2.body;
       if (outcome !== "kept" && outcome !== "not-kept") {
@@ -41455,7 +41388,293 @@ async function createBackend(database) {
       res2.status(400).json({ error: error3.message });
     }
   });
-  app.post("/actions/open", (req2, res2) => {
+  router2.post("/cancel", (req2, res2) => {
+    try {
+      const { domain } = req2.body;
+      const session = paywall.cancelPack(domain);
+      res2.json({ session });
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
+  });
+  router2.post("/end", (req2, res2) => {
+    try {
+      const { domain } = req2.body;
+      const session = paywall.endSession(domain, "manual-end", { refundUnused: true });
+      if (!session) {
+        return res2.status(404).json({ error: "No active session for that domain" });
+      }
+      res2.json({ session });
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
+  });
+  return router2;
+}
+function createActivitiesRoutes(activityTracker) {
+  const router2 = express.Router();
+  router2.get("/recent", (req2, res2) => {
+    const limit2 = Number(req2.query.limit ?? 50);
+    res2.json(activityTracker.getRecent(limit2));
+  });
+  router2.get("/summary", (req2, res2) => {
+    const windowHours = Number(req2.query.windowHours ?? 24);
+    res2.json(activityTracker.getSummary(windowHours));
+  });
+  return router2;
+}
+function createIntentionsRoutes(intentions) {
+  const router2 = express.Router();
+  router2.get("/", (req2, res2) => {
+    const date = String(req2.query.date ?? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10));
+    res2.json(intentions.list(date));
+  });
+  router2.post("/", (req2, res2) => {
+    try {
+      const { date, text } = req2.body;
+      const record = intentions.add({ date, text });
+      res2.json(record);
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
+  });
+  router2.post("/toggle", (req2, res2) => {
+    const { id, completed } = req2.body;
+    intentions.toggle(id, completed);
+    res2.json({ ok: true });
+  });
+  router2.delete("/:id", (req2, res2) => {
+    intentions.remove(Number(req2.params.id));
+    res2.json({ ok: true });
+  });
+  return router2;
+}
+function createBudgetsRoutes(budgets) {
+  const router2 = express.Router();
+  router2.get("/", (_req, res2) => {
+    res2.json(budgets.list());
+  });
+  router2.post("/", (req2, res2) => {
+    try {
+      const record = budgets.add(req2.body);
+      res2.json(record);
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
+  });
+  router2.delete("/:id", (req2, res2) => {
+    budgets.remove(Number(req2.params.id));
+    res2.json({ ok: true });
+  });
+  return router2;
+}
+function createLibraryRoutes(library) {
+  const router2 = express.Router();
+  router2.get("/", (_req, res2) => {
+    res2.json(library.list());
+  });
+  router2.post("/", (req2, res2) => {
+    try {
+      const payload = req2.body;
+      const item = library.add(payload);
+      res2.json(item);
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
+  });
+  router2.patch("/:id", (req2, res2) => {
+    try {
+      const id = Number(req2.params.id);
+      if (!Number.isFinite(id)) {
+        throw new Error("Invalid library item id");
+      }
+      const payload = req2.body;
+      const item = library.update(id, payload);
+      res2.json(item);
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
+  });
+  router2.delete("/:id", (req2, res2) => {
+    library.remove(Number(req2.params.id));
+    res2.json({ ok: true });
+  });
+  router2.get("/check", (req2, res2) => {
+    const url2 = String(req2.query.url ?? "");
+    const item = library.getByUrl(url2);
+    res2.json({ item });
+  });
+  return router2;
+}
+function createAnalyticsRoutes(analytics) {
+  const router2 = express.Router();
+  router2.get("/overview", (req2, res2) => {
+    const days = Number(req2.query.days ?? 7);
+    res2.json(analytics.getOverview(days));
+  });
+  router2.get("/time-of-day", (req2, res2) => {
+    const days = Number(req2.query.days ?? 7);
+    res2.json(analytics.getTimeOfDayAnalysis(days));
+  });
+  router2.get("/patterns", (req2, res2) => {
+    const days = Number(req2.query.days ?? 30);
+    res2.json(analytics.getBehavioralPatterns(days));
+  });
+  router2.get("/engagement/:domain", (req2, res2) => {
+    const domain = req2.params.domain;
+    const days = Number(req2.query.days ?? 7);
+    res2.json(analytics.getEngagementMetrics(domain, days));
+  });
+  router2.get("/trends", (req2, res2) => {
+    const granularity = req2.query.granularity || "day";
+    res2.json(analytics.getTrends(granularity));
+  });
+  router2.post("/behavior-events", (req2, res2) => {
+    try {
+      const events = req2.body.events;
+      if (!Array.isArray(events)) {
+        return res2.status(400).json({ error: "events must be an array" });
+      }
+      analytics.ingestBehaviorEvents(events);
+      res2.json({ ok: true, count: events.length });
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
+  });
+  return router2;
+}
+function createSettingsRoutes(ctx) {
+  const router2 = express.Router();
+  const { settings } = ctx;
+  router2.get("/idle-threshold", (_req, res2) => {
+    res2.json({ threshold: settings.getIdleThreshold() });
+  });
+  router2.post("/idle-threshold", (req2, res2) => {
+    const { threshold } = req2.body;
+    settings.setIdleThreshold(Number(threshold));
+    res2.json({ ok: true });
+  });
+  router2.get("/frivolous-idle-threshold", (_req, res2) => {
+    res2.json({ threshold: settings.getFrivolousIdleThreshold() });
+  });
+  router2.post("/frivolous-idle-threshold", (req2, res2) => {
+    const { threshold } = req2.body;
+    settings.setFrivolousIdleThreshold(Number(threshold));
+    res2.json({ ok: true });
+  });
+  router2.get("/categorisation", (_req, res2) => {
+    res2.json(settings.getCategorisation());
+  });
+  router2.post("/categorisation", (req2, res2) => {
+    try {
+      const payload = req2.body;
+      const next = {
+        productive: Array.isArray(payload.productive) ? payload.productive : [],
+        neutral: Array.isArray(payload.neutral) ? payload.neutral : [],
+        frivolity: Array.isArray(payload.frivolity) ? payload.frivolity : []
+      };
+      settings.setCategorisation(next);
+      res2.json({ ok: true });
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
+  });
+  router2.get("/emergency-reminder-interval", (_req, res2) => {
+    res2.json({ interval: settings.getEmergencyReminderInterval() });
+  });
+  router2.post("/emergency-reminder-interval", (req2, res2) => {
+    const { interval } = req2.body;
+    settings.setEmergencyReminderInterval(Number(interval));
+    res2.json({ ok: true });
+  });
+  router2.get("/economy-rates", (_req, res2) => {
+    res2.json({
+      productiveRatePerMin: settings.getProductiveRatePerMin(),
+      neutralRatePerMin: settings.getNeutralRatePerMin(),
+      spendIntervalSeconds: settings.getSpendIntervalSeconds()
+    });
+  });
+  router2.post("/economy-rates", (req2, res2) => {
+    try {
+      const { productiveRatePerMin, neutralRatePerMin, spendIntervalSeconds } = req2.body;
+      if (productiveRatePerMin !== void 0) {
+        settings.setProductiveRatePerMin(productiveRatePerMin);
+      }
+      if (neutralRatePerMin !== void 0) {
+        settings.setNeutralRatePerMin(neutralRatePerMin);
+      }
+      if (spendIntervalSeconds !== void 0) {
+        settings.setSpendIntervalSeconds(spendIntervalSeconds);
+      }
+      res2.json({ ok: true });
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
+  });
+  return router2;
+}
+function createExtensionSyncRoutes(ctx) {
+  const router2 = express.Router();
+  const { settings, market, wallet, paywall, library, consumption } = ctx;
+  router2.get("/state", (_req, res2) => {
+    try {
+      const categorisation = settings.getCategorisation();
+      const peekConfig = settings.getPeekConfig();
+      const marketRates = {};
+      for (const rate of market.listRates()) {
+        marketRates[rate.domain] = rate;
+      }
+      const sessionsRecord = paywall.listSessions().reduce((acc, session) => {
+        acc[session.domain] = {
+          domain: session.domain,
+          mode: session.mode,
+          ratePerMin: session.ratePerMin,
+          remainingSeconds: session.remainingSeconds,
+          paused: session.paused,
+          purchasePrice: session.purchasePrice,
+          purchasedSeconds: session.purchasedSeconds,
+          justification: session.justification,
+          lastReminder: session.lastReminder,
+          allowedUrl: session.allowedUrl
+        };
+        return acc;
+      }, {});
+      res2.json({
+        wallet: {
+          balance: wallet.getSnapshot().balance,
+          lastSynced: Date.now()
+        },
+        marketRates,
+        libraryItems: library.list(),
+        lastFrivolityAt: (() => {
+          const latest = consumption.latestByKind("frivolous-session");
+          if (!latest) return null;
+          const ts = Date.parse(latest.occurredAt);
+          return Number.isFinite(ts) ? ts : null;
+        })(),
+        settings: {
+          frivolityDomains: categorisation.frivolity,
+          productiveDomains: categorisation.productive,
+          neutralDomains: categorisation.neutral,
+          idleThreshold: settings.getIdleThreshold(),
+          emergencyPolicy: settings.getEmergencyPolicy(),
+          economyExchangeRate: settings.getEconomyExchangeRate(),
+          journal: settings.getJournalConfig(),
+          peekEnabled: peekConfig.enabled,
+          peekAllowNewPages: peekConfig.allowOnNewPages
+        },
+        sessions: sessionsRecord
+      });
+    } catch (error3) {
+      res2.status(500).json({ error: error3.message });
+    }
+  });
+  return router2;
+}
+function createActionsRoutes(ctx) {
+  const router2 = express.Router();
+  const { settings } = ctx;
+  router2.post("/open", (req2, res2) => {
     try {
       const body = req2.body ?? {};
       const kind = String(body.kind ?? "");
@@ -41544,7 +41763,27 @@ async function createBackend(database) {
       res2.status(400).json({ error: error3.message });
     }
   });
-  app.get("/integrations/reading", async (req2, res2) => {
+  return router2;
+}
+function createUiRoutes(uiEvents) {
+  const router2 = express.Router();
+  router2.post("/navigate", (req2, res2) => {
+    var _a;
+    try {
+      const view2 = String(((_a = req2.body) == null ? void 0 : _a.view) ?? "").trim();
+      const allowed = /* @__PURE__ */ new Set(["dashboard", "library", "domains", "settings", "analytics", "economy", "friends"]);
+      if (!allowed.has(view2)) throw new Error("Invalid view");
+      uiEvents.emit("navigate", { view: view2 });
+      res2.json({ ok: true });
+    } catch (error3) {
+      res2.status(400).json({ error: error3.message });
+    }
+  });
+  return router2;
+}
+function createIntegrationsRoutes(reading) {
+  const router2 = express.Router();
+  router2.get("/reading", async (req2, res2) => {
     try {
       const limit2 = Number(req2.query.limit ?? 12);
       const clamped = Number.isFinite(limit2) ? Math.max(1, Math.min(24, limit2)) : 12;
@@ -41554,342 +41793,292 @@ async function createBackend(database) {
       res2.status(500).json({ error: error3.message });
     }
   });
-  app.get("/activities/recent", (req2, res2) => {
-    const limit2 = Number(req2.query.limit ?? 50);
-    res2.json(activityTracker.getRecent(limit2));
-  });
-  app.get("/activities/summary", (req2, res2) => {
-    const windowHours = Number(req2.query.windowHours ?? 24);
-    res2.json(activityTracker.getSummary(windowHours));
-  });
-  app.get("/intentions", (req2, res2) => {
-    const date = String(req2.query.date ?? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10));
-    res2.json(intentions.list(date));
-  });
-  app.post("/intentions", (req2, res2) => {
-    try {
-      const { date, text } = req2.body;
-      const record = intentions.add({ date, text });
-      res2.json(record);
-    } catch (error3) {
-      res2.status(400).json({ error: error3.message });
-    }
-  });
-  app.post("/intentions/toggle", (req2, res2) => {
-    const { id, completed } = req2.body;
-    intentions.toggle(id, completed);
-    res2.json({ ok: true });
-  });
-  app.delete("/intentions/:id", (req2, res2) => {
-    intentions.remove(Number(req2.params.id));
-    res2.json({ ok: true });
-  });
-  app.get("/budgets", (_req, res2) => {
-    res2.json(budgets.list());
-  });
-  app.post("/budgets", (req2, res2) => {
-    try {
-      const record = budgets.add(req2.body);
-      res2.json(record);
-    } catch (error3) {
-      res2.status(400).json({ error: error3.message });
-    }
-  });
-  app.delete("/budgets/:id", (req2, res2) => {
-    budgets.remove(Number(req2.params.id));
-    res2.json({ ok: true });
-  });
-  app.get("/library", (_req, res2) => {
-    res2.json(library.list());
-  });
-  app.post("/library", (req2, res2) => {
-    try {
-      const payload = req2.body;
-      const item = library.add(payload);
-      res2.json(item);
-    } catch (error3) {
-      res2.status(400).json({ error: error3.message });
-    }
-  });
-  app.patch("/library/:id", (req2, res2) => {
-    try {
-      const id = Number(req2.params.id);
-      if (!Number.isFinite(id)) {
-        throw new Error("Invalid library item id");
-      }
-      const payload = req2.body;
-      const item = library.update(id, payload);
-      res2.json(item);
-    } catch (error3) {
-      res2.status(400).json({ error: error3.message });
-    }
-  });
-  app.delete("/library/:id", (req2, res2) => {
-    library.remove(Number(req2.params.id));
-    res2.json({ ok: true });
-  });
-  app.get("/library/check", (req2, res2) => {
-    const url2 = String(req2.query.url ?? "");
-    const item = library.getByUrl(url2);
-    res2.json({ item });
-  });
-  app.get("/analytics/overview", (req2, res2) => {
-    const days = Number(req2.query.days ?? 7);
-    res2.json(analytics.getOverview(days));
-  });
-  app.get("/analytics/time-of-day", (req2, res2) => {
-    const days = Number(req2.query.days ?? 7);
-    res2.json(analytics.getTimeOfDayAnalysis(days));
-  });
-  app.get("/analytics/patterns", (req2, res2) => {
-    const days = Number(req2.query.days ?? 30);
-    res2.json(analytics.getBehavioralPatterns(days));
-  });
-  app.get("/analytics/engagement/:domain", (req2, res2) => {
-    const domain = req2.params.domain;
-    const days = Number(req2.query.days ?? 7);
-    res2.json(analytics.getEngagementMetrics(domain, days));
-  });
-  app.get("/analytics/trends", (req2, res2) => {
-    const granularity = req2.query.granularity || "day";
-    res2.json(analytics.getTrends(granularity));
-  });
-  app.post("/analytics/behavior-events", (req2, res2) => {
-    try {
-      const events = req2.body.events;
-      if (!Array.isArray(events)) {
-        return res2.status(400).json({ error: "events must be an array" });
-      }
-      analytics.ingestBehaviorEvents(events);
-      res2.json({ ok: true, count: events.length });
-    } catch (error3) {
-      res2.status(400).json({ error: error3.message });
-    }
-  });
-  app.post("/paywall/cancel", (req2, res2) => {
-    try {
-      const { domain } = req2.body;
-      const session = paywall.cancelPack(domain);
-      res2.json({ session });
-    } catch (error3) {
-      res2.status(400).json({ error: error3.message });
-    }
-  });
-  app.post("/paywall/end", (req2, res2) => {
-    try {
-      const { domain } = req2.body;
-      const session = paywall.endSession(domain, "manual-end", { refundUnused: true });
-      if (!session) {
-        return res2.status(404).json({ error: "No active session for that domain" });
-      }
-      res2.json({ session });
-    } catch (error3) {
-      res2.status(400).json({ error: error3.message });
-    }
-  });
-  app.get("/settings/idle-threshold", (_req, res2) => {
-    res2.json({ threshold: settings.getIdleThreshold() });
-  });
-  app.get("/settings/categorisation", (_req, res2) => {
-    res2.json(settings.getCategorisation());
-  });
-  app.post("/settings/categorisation", (req2, res2) => {
-    try {
-      const payload = req2.body;
-      const next = {
-        productive: Array.isArray(payload.productive) ? payload.productive : [],
-        neutral: Array.isArray(payload.neutral) ? payload.neutral : [],
-        frivolity: Array.isArray(payload.frivolity) ? payload.frivolity : []
-      };
-      settings.setCategorisation(next);
-      res2.json({ ok: true });
-    } catch (error3) {
-      res2.status(400).json({ error: error3.message });
-    }
-  });
-  app.post("/settings/idle-threshold", (req2, res2) => {
-    const { threshold } = req2.body;
-    settings.setIdleThreshold(Number(threshold));
-    res2.json({ ok: true });
-  });
-  app.get("/settings/frivolous-idle-threshold", (_req, res2) => {
-    res2.json({ threshold: settings.getFrivolousIdleThreshold() });
-  });
-  app.post("/settings/frivolous-idle-threshold", (req2, res2) => {
-    const { threshold } = req2.body;
-    settings.setFrivolousIdleThreshold(Number(threshold));
-    res2.json({ ok: true });
-  });
-  app.get("/settings/emergency-reminder-interval", (_req, res2) => {
-    res2.json({ interval: settings.getEmergencyReminderInterval() });
-  });
-  app.post("/settings/emergency-reminder-interval", (req2, res2) => {
-    const { interval } = req2.body;
-    settings.setEmergencyReminderInterval(Number(interval));
-    res2.json({ ok: true });
-  });
-  app.get("/extension/state", (_req, res2) => {
-    try {
-      const categorisation = settings.getCategorisation();
-      const peekConfig = settings.getPeekConfig();
-      const marketRates = {};
-      for (const rate of market.listRates()) {
-        marketRates[rate.domain] = rate;
-      }
-      const sessionsRecord = paywall.listSessions().reduce((acc, session) => {
-        acc[session.domain] = {
-          domain: session.domain,
-          mode: session.mode,
-          ratePerMin: session.ratePerMin,
-          remainingSeconds: session.remainingSeconds,
-          paused: session.paused,
-          purchasePrice: session.purchasePrice,
-          purchasedSeconds: session.purchasedSeconds,
-          justification: session.justification,
-          lastReminder: session.lastReminder,
-          allowedUrl: session.allowedUrl
-        };
-        return acc;
-      }, {});
-      res2.json({
-        wallet: {
-          balance: wallet.getSnapshot().balance,
-          lastSynced: Date.now()
-        },
-        marketRates,
-        libraryItems: library.list(),
-        settings: {
-          frivolityDomains: categorisation.frivolity,
-          productiveDomains: categorisation.productive,
-          neutralDomains: categorisation.neutral,
-          idleThreshold: settings.getIdleThreshold(),
-          emergencyPolicy: settings.getEmergencyPolicy(),
-          economyExchangeRate: settings.getEconomyExchangeRate(),
-          journal: settings.getJournalConfig(),
-          peekEnabled: peekConfig.enabled,
-          peekAllowNewPages: peekConfig.allowOnNewPages
-        },
-        sessions: sessionsRecord
-      });
-    } catch (error3) {
-      res2.status(500).json({ error: error3.message });
-    }
-  });
-  ws2.app.ws("/events", (socket) => {
-    clients.add(socket);
-    lastExtensionSeen = Date.now();
-    extensionEvents.emit("status", { connected: true, lastSeen: lastExtensionSeen });
-    logger.info("WS client connected", clients.size);
-    socket.on("message", (msg) => {
-      var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
-      try {
-        const data = JSON.parse(msg);
-        if (data.type === "activity" && data.payload) {
-          logger.info("Received activity from extension:", data.payload.domain);
-          handleActivity({
-            timestamp: new Date(data.payload.timestamp),
-            source: data.payload.source,
-            appName: data.payload.appName,
-            bundleId: data.payload.bundleId,
-            windowTitle: data.payload.windowTitle,
-            url: data.payload.url,
-            domain: data.payload.domain,
-            idleSeconds: data.payload.idleSeconds || 0
-          }, "extension");
-        } else if (data.type === "paywall:start-metered" && ((_a = data.payload) == null ? void 0 : _a.domain)) {
-          try {
-            const session = economy.startPayAsYouGo(String(data.payload.domain));
-            broadcast({ type: "paywall-session-started", payload: session });
-          } catch (error3) {
-            logger.error("Failed to start metered from extension", error3);
-            socket.send(JSON.stringify({ type: "error", payload: { message: error3.message } }));
-          }
-        } else if (data.type === "paywall:buy-pack" && ((_b = data.payload) == null ? void 0 : _b.domain) && ((_c = data.payload) == null ? void 0 : _c.minutes)) {
-          try {
-            const session = economy.buyPack(String(data.payload.domain), Number(data.payload.minutes));
-            broadcast({ type: "paywall-session-started", payload: session });
-          } catch (error3) {
-            logger.error("Failed to buy pack from extension", error3);
-            socket.send(JSON.stringify({ type: "error", payload: { message: error3.message } }));
-          }
-        } else if (data.type === "paywall:pause" && ((_d = data.payload) == null ? void 0 : _d.domain)) {
-          paywall.pause(String(data.payload.domain));
-          broadcast({ type: "paywall-session-paused", payload: { domain: data.payload.domain, reason: "manual" } });
-        } else if (data.type === "paywall:resume" && ((_e = data.payload) == null ? void 0 : _e.domain)) {
-          paywall.resume(String(data.payload.domain));
-          broadcast({ type: "paywall-session-resumed", payload: { domain: data.payload.domain } });
-        } else if (data.type === "paywall:end" && ((_f = data.payload) == null ? void 0 : _f.domain)) {
-          const session = paywall.endSession(String(data.payload.domain), "manual-end", { refundUnused: true });
-          if (!session) {
-            socket.send(JSON.stringify({ type: "error", payload: { message: "No active session to end" } }));
-          }
-        } else if (data.type === "paywall:start-emergency" && ((_g = data.payload) == null ? void 0 : _g.domain) && ((_h = data.payload) == null ? void 0 : _h.justification)) {
-          try {
-            const session = emergency.start(String(data.payload.domain), String(data.payload.justification), {
-              url: data.payload.url ? String(data.payload.url) : void 0
-            });
-            broadcast({ type: "paywall-session-started", payload: session });
-          } catch (error3) {
-            logger.error("Failed to start emergency from extension", error3);
-            socket.send(JSON.stringify({ type: "error", payload: { message: error3.message } }));
-          }
-        } else if (data.type === "paywall:emergency-review" && ((_i = data.payload) == null ? void 0 : _i.outcome)) {
-          try {
-            const outcome = String(data.payload.outcome);
-            if (outcome !== "kept" && outcome !== "not-kept") throw new Error("Invalid outcome");
-            const stats = emergency.recordReview(outcome);
-            socket.send(JSON.stringify({ type: "emergency-review-recorded", payload: stats }));
-          } catch (error3) {
-            socket.send(JSON.stringify({ type: "error", payload: { message: error3.message } }));
-          }
-        } else if (data.type === "paywall:start-store" && ((_j = data.payload) == null ? void 0 : _j.domain) && typeof ((_k = data.payload) == null ? void 0 : _k.price) === "number") {
-          try {
-            const session = economy.startStore(
-              String(data.payload.domain),
-              Number(data.payload.price),
-              data.payload.url ? String(data.payload.url) : void 0
-            );
-            broadcast({ type: "paywall-session-started", payload: session });
-          } catch (error3) {
-            logger.error("Failed to start store session from extension", error3);
-            socket.send(JSON.stringify({ type: "error", payload: { message: error3.message } }));
-          }
-        }
-      } catch (e) {
-        logger.error("Failed to parse WS message", e);
-      }
-    });
-    socket.on("close", () => {
-      clients.delete(socket);
-      extensionEvents.emit("status", { connected: clients.size > 0, lastSeen: lastExtensionSeen });
-    });
-  });
-  function broadcast(event) {
+  return router2;
+}
+class WebSocketBroadcaster extends node_events.EventEmitter {
+  constructor(ctx) {
+    super();
+    this.ctx = ctx;
+    this.clients = /* @__PURE__ */ new Set();
+    this.lastExtensionSeen = null;
+    this.setupEconomyListeners();
+    this.setupFocusListeners();
+    this.setupLibraryListeners();
+  }
+  setupEconomyListeners() {
+    const { economy } = this.ctx;
+    economy.on("wallet-updated", (snapshot) => this.broadcast({ type: "wallet", payload: snapshot }));
+    economy.on("paywall-required", (payload) => this.broadcast({ type: "paywall-required", payload }));
+    economy.on("paywall-session-started", (payload) => this.broadcast({ type: "paywall-session-started", payload }));
+    economy.on("paywall-session-paused", (payload) => this.broadcast({ type: "paywall-session-paused", payload }));
+    economy.on("paywall-session-resumed", (payload) => this.broadcast({ type: "paywall-session-resumed", payload }));
+    economy.on("paywall-session-ended", (payload) => this.broadcast({ type: "paywall-session-ended", payload }));
+    economy.on("session-reminder", (payload) => this.broadcast({ type: "paywall-reminder", payload }));
+    economy.on("activity", (payload) => this.broadcast({ type: "activity", payload }));
+  }
+  setupFocusListeners() {
+    const { focus } = this.ctx;
+    focus.on("tick", (payload) => this.broadcast({ type: "focus-tick", payload }));
+    focus.on("start", (payload) => this.broadcast({ type: "focus-start", payload }));
+    focus.on("stop", (payload) => this.broadcast({ type: "focus-stop", payload }));
+  }
+  setupLibraryListeners() {
+    const { library } = this.ctx;
+    const emitLibrarySync = () => this.broadcast({ type: "library-sync", payload: { items: library.list() } });
+    library.on("added", emitLibrarySync);
+    library.on("updated", emitLibrarySync);
+    library.on("removed", emitLibrarySync);
+  }
+  broadcast(event) {
     const payload = JSON.stringify(event);
-    for (const client of clients) {
+    for (const client of this.clients) {
       if (client.readyState === client.OPEN) {
         client.send(payload);
       }
     }
   }
-  economy.on("wallet-updated", (snapshot) => broadcast({ type: "wallet", payload: snapshot }));
-  economy.on("paywall-required", (payload) => broadcast({ type: "paywall-required", payload }));
-  economy.on("paywall-session-started", (payload) => broadcast({ type: "paywall-session-started", payload }));
-  economy.on("paywall-session-paused", (payload) => broadcast({ type: "paywall-session-paused", payload }));
-  economy.on("paywall-session-resumed", (payload) => broadcast({ type: "paywall-session-resumed", payload }));
-  economy.on("paywall-session-ended", (payload) => broadcast({ type: "paywall-session-ended", payload }));
-  economy.on("session-reminder", (payload) => broadcast({ type: "paywall-reminder", payload }));
-  economy.on("activity", (payload) => broadcast({ type: "activity", payload }));
-  focus.on("tick", (payload) => broadcast({ type: "focus-tick", payload }));
-  focus.on("start", (payload) => broadcast({ type: "focus-start", payload }));
-  focus.on("stop", (payload) => broadcast({ type: "focus-stop", payload }));
-  const emitLibrarySync = () => broadcast({ type: "library-sync", payload: { items: library.list() } });
-  library.on("added", emitLibrarySync);
-  library.on("updated", emitLibrarySync);
-  library.on("removed", emitLibrarySync);
+  handleConnection(socket) {
+    this.clients.add(socket);
+    this.lastExtensionSeen = Date.now();
+    this.emit("status", { connected: true, lastSeen: this.lastExtensionSeen });
+    logger.info("WS client connected", this.clients.size);
+    socket.on("message", (msg) => {
+      try {
+        const data = JSON.parse(msg);
+        this.handleMessage(data, socket);
+      } catch (e) {
+        logger.error("Failed to parse WS message", e);
+      }
+    });
+    socket.on("close", () => {
+      this.clients.delete(socket);
+      this.emit("status", { connected: this.clients.size > 0, lastSeen: this.lastExtensionSeen });
+    });
+  }
+  handleMessage(data, socket) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+    const { economy, paywall, handleActivity, emergency } = this.ctx;
+    if (data.type === "activity" && data.payload) {
+      logger.info("Received activity from extension:", data.payload.domain);
+      handleActivity({
+        timestamp: new Date(data.payload.timestamp),
+        source: data.payload.source,
+        appName: data.payload.appName,
+        bundleId: data.payload.bundleId,
+        windowTitle: data.payload.windowTitle,
+        url: data.payload.url,
+        domain: data.payload.domain,
+        idleSeconds: data.payload.idleSeconds || 0
+      }, "extension");
+    } else if (data.type === "paywall:start-metered" && ((_a = data.payload) == null ? void 0 : _a.domain)) {
+      try {
+        const session = economy.startPayAsYouGo(String(data.payload.domain));
+        this.broadcast({ type: "paywall-session-started", payload: session });
+      } catch (error3) {
+        logger.error("Failed to start metered from extension", error3);
+        socket.send(JSON.stringify({ type: "error", payload: { message: error3.message } }));
+      }
+    } else if (data.type === "paywall:buy-pack" && ((_b = data.payload) == null ? void 0 : _b.domain) && ((_c = data.payload) == null ? void 0 : _c.minutes)) {
+      try {
+        const session = economy.buyPack(String(data.payload.domain), Number(data.payload.minutes));
+        this.broadcast({ type: "paywall-session-started", payload: session });
+      } catch (error3) {
+        logger.error("Failed to buy pack from extension", error3);
+        socket.send(JSON.stringify({ type: "error", payload: { message: error3.message } }));
+      }
+    } else if (data.type === "paywall:pause" && ((_d = data.payload) == null ? void 0 : _d.domain)) {
+      paywall.pause(String(data.payload.domain));
+      this.broadcast({ type: "paywall-session-paused", payload: { domain: data.payload.domain, reason: "manual" } });
+    } else if (data.type === "paywall:resume" && ((_e = data.payload) == null ? void 0 : _e.domain)) {
+      paywall.resume(String(data.payload.domain));
+      this.broadcast({ type: "paywall-session-resumed", payload: { domain: data.payload.domain } });
+    } else if (data.type === "paywall:end" && ((_f = data.payload) == null ? void 0 : _f.domain)) {
+      const session = paywall.endSession(String(data.payload.domain), "manual-end", { refundUnused: true });
+      if (!session) {
+        socket.send(JSON.stringify({ type: "error", payload: { message: "No active session to end" } }));
+      }
+    } else if (data.type === "paywall:start-emergency" && ((_g = data.payload) == null ? void 0 : _g.domain) && ((_h = data.payload) == null ? void 0 : _h.justification)) {
+      try {
+        const session = emergency.start(String(data.payload.domain), String(data.payload.justification), {
+          url: data.payload.url ? String(data.payload.url) : void 0
+        });
+        this.broadcast({ type: "paywall-session-started", payload: session });
+      } catch (error3) {
+        logger.error("Failed to start emergency from extension", error3);
+        socket.send(JSON.stringify({ type: "error", payload: { message: error3.message } }));
+      }
+    } else if (data.type === "paywall:emergency-review" && ((_i = data.payload) == null ? void 0 : _i.outcome)) {
+      try {
+        const outcome = String(data.payload.outcome);
+        if (outcome !== "kept" && outcome !== "not-kept") throw new Error("Invalid outcome");
+        const stats = emergency.recordReview(outcome);
+        socket.send(JSON.stringify({ type: "emergency-review-recorded", payload: stats }));
+      } catch (error3) {
+        socket.send(JSON.stringify({ type: "error", payload: { message: error3.message } }));
+      }
+    } else if (data.type === "paywall:start-store" && ((_j = data.payload) == null ? void 0 : _j.domain) && typeof ((_k = data.payload) == null ? void 0 : _k.price) === "number") {
+      try {
+        const session = economy.startStore(
+          String(data.payload.domain),
+          Number(data.payload.price),
+          data.payload.url ? String(data.payload.url) : void 0
+        );
+        this.broadcast({ type: "paywall-session-started", payload: session });
+      } catch (error3) {
+        logger.error("Failed to start store session from extension", error3);
+        socket.send(JSON.stringify({ type: "error", payload: { message: error3.message } }));
+      }
+    }
+  }
+  getStatus() {
+    return { connected: this.clients.size > 0, lastSeen: this.lastExtensionSeen };
+  }
+  get clientCount() {
+    return this.clients.size;
+  }
+}
+const PORT = 17600;
+async function createBackend(database) {
+  const wallet = new WalletManager(database);
+  const market = new MarketService(database);
+  const settings = new SettingsService(database);
+  const paywall = new PaywallManager(wallet, market);
+  const economy = new EconomyEngine(wallet, market, paywall, () => settings.getEmergencyReminderInterval(), {
+    getProductiveRatePerMin: () => settings.getProductiveRatePerMin(),
+    getNeutralRatePerMin: () => settings.getNeutralRatePerMin(),
+    getSpendIntervalSeconds: () => settings.getSpendIntervalSeconds()
+  });
+  const emergency = new EmergencyService(settings, wallet, paywall);
+  const activityTracker = new ActivityTracker(database);
+  const library = new LibraryService(database);
+  const consumption = new ConsumptionLogService(database);
+  const productiveOverrides = { urls: /* @__PURE__ */ new Set(), apps: /* @__PURE__ */ new Set() };
+  const normaliseProductiveUrl = (value) => {
+    try {
+      const parsed = new URL(value);
+      parsed.hash = "";
+      parsed.search = "";
+      let path3 = parsed.pathname;
+      if (path3.length > 1 && path3.endsWith("/")) {
+        path3 = path3.slice(0, -1);
+      }
+      return `${parsed.origin}${path3}`;
+    } catch {
+      return null;
+    }
+  };
+  const rebuildProductiveOverrides = () => {
+    productiveOverrides.urls.clear();
+    productiveOverrides.apps.clear();
+    for (const item of library.list()) {
+      if (item.purpose !== "productive") continue;
+      if (item.kind === "url" && item.url) {
+        const normalized = normaliseProductiveUrl(item.url);
+        if (normalized) productiveOverrides.urls.add(normalized);
+      } else if (item.kind === "app") {
+        const name = (item.app ?? item.domain ?? "").trim().toLowerCase();
+        if (name) productiveOverrides.apps.add(name);
+      }
+    }
+  };
+  rebuildProductiveOverrides();
+  library.on("added", rebuildProductiveOverrides);
+  library.on("updated", rebuildProductiveOverrides);
+  library.on("removed", rebuildProductiveOverrides);
+  const classifier = new ActivityClassifier(
+    () => settings.getCategorisation(),
+    () => settings.getIdleThreshold(),
+    () => settings.getFrivolousIdleThreshold(),
+    (event) => {
+      if (event.url) {
+        const normalized = normaliseProductiveUrl(event.url);
+        if (normalized && productiveOverrides.urls.has(normalized)) return "productive";
+      }
+      const appName = (event.appName ?? "").toLowerCase();
+      if (appName) {
+        for (const name of productiveOverrides.apps) {
+          if (appName.includes(name)) return "productive";
+        }
+      }
+      return null;
+    }
+  );
+  const activityPipeline = new ActivityPipeline(activityTracker, economy, classifier);
+  const focus = new FocusService(database, wallet);
+  const intentions = new IntentionService(database);
+  const budgets = new BudgetService(database);
+  const analytics = new AnalyticsService(database);
+  const reading = new ReadingService(settings);
+  const friends = new FriendsService(settings, analytics);
+  library.on("consumed", ({ item, consumedAt }) => {
+    const title = item.title ?? item.domain;
+    consumption.record({
+      kind: "library-item",
+      occurredAt: consumedAt,
+      title,
+      url: item.url ?? null,
+      domain: item.domain,
+      meta: { purpose: item.purpose }
+    });
+  });
+  economy.on("paywall-session-started", (session) => {
+    if (session.mode === "emergency") return;
+    consumption.record({
+      kind: "frivolous-session",
+      title: session.domain,
+      url: session.allowedUrl ?? null,
+      domain: session.domain,
+      meta: {
+        mode: session.mode,
+        purchasePrice: session.purchasePrice ?? null,
+        purchasedSeconds: session.purchasedSeconds ?? null,
+        allowedUrl: session.allowedUrl ?? null
+      }
+    });
+  });
+  const app = express$1();
+  const ws2 = expressWs$1(app);
+  const uiEvents = new node_events.EventEmitter();
+  app.use(express$1.json());
+  const broadcastMarketRates = () => {
+    const record = market.listRates().reduce((acc, rate) => {
+      acc[rate.domain] = rate;
+      return acc;
+    }, {});
+    broadcaster.broadcast({ type: "market-update", payload: record });
+  };
+  market.on("update", () => {
+    broadcastMarketRates();
+  });
   const handleActivity = (event, origin = "system") => {
     activityPipeline.handle(event, origin);
   };
+  const broadcaster = new WebSocketBroadcaster({
+    economy,
+    paywall,
+    wallet,
+    focus,
+    library,
+    emergency,
+    handleActivity
+  });
+  app.get("/health", (_req, res2) => res2.json({ status: "ok" }));
+  app.use("/wallet", createWalletRoutes(wallet));
+  app.use("/market", createMarketRoutes({ market, paywall, broadcastMarketRates }));
+  app.use("/paywall", createPaywallRoutes({ economy, paywall, wallet, market, emergency }));
+  app.use("/activities", createActivitiesRoutes(activityTracker));
+  app.use("/intentions", createIntentionsRoutes(intentions));
+  app.use("/budgets", createBudgetsRoutes(budgets));
+  app.use("/library", createLibraryRoutes(library));
+  app.use("/analytics", createAnalyticsRoutes(analytics));
+  app.use("/settings", createSettingsRoutes({ settings }));
+  app.use("/extension", createExtensionSyncRoutes({ settings, market, wallet, paywall, library, consumption }));
+  app.use("/actions", createActionsRoutes({ settings }));
+  app.use("/ui", createUiRoutes(uiEvents));
+  app.use("/integrations", createIntegrationsRoutes(reading));
+  ws2.app.ws("/events", (socket) => {
+    broadcaster.handleConnection(socket);
+  });
   const server = await new Promise((resolve3) => {
     const instance = app.listen(PORT, "127.0.0.1", () => {
       logger.info(`Local API listening on http://127.0.0.1:${PORT}`);
@@ -41924,11 +42113,16 @@ async function createBackend(database) {
     analytics,
     reading,
     friends,
+    ui: {
+      onNavigate: (cb) => {
+        uiEvents.on("navigate", cb);
+      }
+    },
     handleActivity,
     extension: {
-      status: () => ({ connected: clients.size > 0, lastSeen: lastExtensionSeen }),
+      status: () => broadcaster.getStatus(),
       onStatus: (cb) => {
-        extensionEvents.on("status", cb);
+        broadcaster.on("status", cb);
       }
     },
     declineDomain,
@@ -41944,6 +42138,15 @@ class Database {
     this.driver = new DatabaseDriver(dbPath);
     this.driver.pragma("journal_mode = WAL");
     this.initialise();
+  }
+  /**
+   * Execute a function inside a database transaction.
+   * If the function throws, the transaction is rolled back.
+   * If the function completes, the transaction is committed.
+   */
+  transaction(fn) {
+    const txn = this.driver.transaction(fn);
+    return txn();
   }
   initialise() {
     const ddl = `
@@ -42821,6 +43024,14 @@ async function bootstrap() {
       win.webContents.send(channel, payload);
     });
   };
+  backend.ui.onNavigate(({ view: view2 }) => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+    emitToRenderers("ui:navigate", { view: view2 });
+  });
   backend.paywall.on("session-tick", (session) => {
     const minutes = Math.ceil(session.remainingSeconds / 60);
     updateTray(`⏳ ${session.domain}: ${minutes}m`);

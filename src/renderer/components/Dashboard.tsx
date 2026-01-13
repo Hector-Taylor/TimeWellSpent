@@ -2,29 +2,30 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
   ActivityRecord,
   ActivitySummary,
+  AnalyticsOverview,
   EconomyState,
-  MarketRate,
   RendererApi,
-  PaywallSession,
   WalletSnapshot
 } from '@shared/types';
 import DayCompass from './DayCompass';
 import ActivityChart from './ActivityChart';
+import Insights from './Insights';
 
 interface DashboardProps {
   api: RendererApi;
   wallet: WalletSnapshot;
   economy: EconomyState | null;
-  rates: MarketRate[];
 }
 
-export default function Dashboard({ api, wallet, economy, rates }: DashboardProps) {
+export default function Dashboard({ api, wallet, economy }: DashboardProps) {
   const [activities, setActivities] = useState<ActivityRecord[]>([]);
   const [summary, setSummary] = useState<ActivitySummary | null>(null);
   const [loadingSummary, setLoadingSummary] = useState(true);
-  const [paywallSessions, setPaywallSessions] = useState<PaywallSession[]>([]);
-  const [endingDomain, setEndingDomain] = useState<string | null>(null);
-  const [paywallNote, setPaywallNote] = useState<string | null>(null);
+  const [overview, setOverview] = useState<AnalyticsOverview | null>(null);
+  const [loadingOverview, setLoadingOverview] = useState(true);
+  const [lastFrivolityAt, setLastFrivolityAt] = useState<number | null>(null);
+  const [lastFrivolityLoaded, setLastFrivolityLoaded] = useState(false);
+  const [now, setNow] = useState(Date.now());
 
   const refresh = useCallback(async (silent = false) => {
     if (!silent) setLoadingSummary(true);
@@ -35,43 +36,68 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
     setActivities(recent);
     setSummary(aggregate);
     setLoadingSummary(false);
-    api.paywall.sessions().then(setPaywallSessions).catch(() => { });
+  }, [api]);
+
+  const refreshOverview = useCallback(async () => {
+    setLoadingOverview(true);
+    try {
+      const data = await api.analytics.overview(7);
+      setOverview(data);
+    } catch (error) {
+      console.error('Failed to load analytics overview:', error);
+    } finally {
+      setLoadingOverview(false);
+    }
+  }, [api]);
+
+  const loadLastFrivolity = useCallback(async () => {
+    setLastFrivolityLoaded(false);
+    try {
+      const days = await api.history.days(60);
+      for (const day of days) {
+        const entries = await api.history.list(day.day);
+        const last = entries.find((entry) => entry.kind === 'frivolous-session');
+        if (last) {
+          setLastFrivolityAt(new Date(last.occurredAt).getTime());
+          setLastFrivolityLoaded(true);
+          return;
+        }
+      }
+      setLastFrivolityAt(null);
+    } catch (error) {
+      console.error('Failed to load frivolity history:', error);
+      setLastFrivolityAt(null);
+    } finally {
+      setLastFrivolityLoaded(true);
+    }
   }, [api]);
 
   useEffect(() => {
     refresh();
-  }, [refresh]);
+    refreshOverview();
+    loadLastFrivolity();
+  }, [refresh, refreshOverview, loadLastFrivolity]);
 
   useEffect(() => {
     const unsub = api.events.on('economy:activity', () => {
       refresh(true);
     });
-    const unsubPaywallStart = api.events.on('paywall:session-started', () => api.paywall.sessions().then(setPaywallSessions));
-    const unsubPaywallEnd = api.events.on('paywall:session-ended', () => api.paywall.sessions().then(setPaywallSessions));
-    const unsubPaywallPause = api.events.on('paywall:session-paused', () => api.paywall.sessions().then(setPaywallSessions));
-    const unsubPaywallResume = api.events.on('paywall:session-resumed', () => api.paywall.sessions().then(setPaywallSessions));
+    const unsubPaywallStart = api.events.on('paywall:session-started', () => {
+      setLastFrivolityAt(Date.now());
+      setLastFrivolityLoaded(true);
+    });
     return () => {
       unsub();
       unsubPaywallStart();
-      unsubPaywallEnd();
-      unsubPaywallPause();
-      unsubPaywallResume();
     };
   }, [api, refresh]);
 
-  const endSession = async (session: PaywallSession) => {
-    setEndingDomain(session.domain);
-    setPaywallNote(null);
-    try {
-      await api.paywall.end(session.domain, { refundUnused: true });
-      setPaywallNote(session.mode === 'pack' ? `Ended ${session.domain} • refund applied for unused time.` : `Ended ${session.domain}.`);
-      api.paywall.sessions().then(setPaywallSessions).catch(() => { });
-    } catch (error) {
-      setPaywallNote(`Could not end ${session.domain}: ${(error as Error).message}`);
-    } finally {
-      setEndingDomain(null);
-    }
-  };
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, []);
 
   const activeLabel = economy?.activeDomain ?? economy?.activeApp ?? 'Waiting...';
   const activeCategory = (economy?.activeCategory ?? 'idle') as string;
@@ -83,9 +109,16 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
     [timeline]
   );
 
+  const lastFrivolityAgeMs = lastFrivolityAt ? Math.max(0, now - lastFrivolityAt) : null;
+  const streakTargetMs = 72 * 60 * 60 * 1000;
+  const streakProgress = lastFrivolityAgeMs ? Math.min(1, lastFrivolityAgeMs / streakTargetMs) : 0;
+  const streakHue = Math.round(20 + 30 * streakProgress);
+  const streakLight = Math.round(48 + 18 * streakProgress);
+  const streakColor = lastFrivolityAgeMs ? `hsl(${streakHue} 70% ${streakLight}%)` : 'rgba(200, 149, 108, 0.7)';
+
   return (
     <section className="panel">
-      <header className="panel-header">
+      <header className="panel-header dashboard-header">
         <div>
           <p className="eyebrow">Attention control</p>
           <h1>Your day at a glance</h1>
@@ -96,21 +129,29 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
           </div>
         </div>
 
-        <div className="pulse-grid">
-          <div className="pulse-tile">
-            <span className="label">Today logged</span>
-            <strong>{totalHours.toFixed(1)}h</strong>
-            <small className="subtle">active seconds in the last {summary?.windowHours ?? 24}h</small>
+        <div
+          className={`card dashboard-streak ${streakProgress >= 1 ? 'streak-max' : ''}`}
+          style={{
+            ['--streak-color' as string]: streakColor,
+            ['--streak-progress' as string]: `${Math.round(streakProgress * 100)}%`
+          }}
+        >
+          <div className="streak-header">
+            <span className="eyebrow">Recovery timer</span>
+            <span className={`pill inline ${activeCategory}`}>{activeCategory}</span>
           </div>
-          <div className="pulse-tile accent">
-            <span className="label">Signal</span>
-            <strong className={`pill inline pill-${activeCategory}`}>{activeCategory}</strong>
-            <small className="subtle">Last ping {economy?.lastUpdated ? describeRecency(economy.lastUpdated) : 'waiting...'}</small>
+          <h2>Time since last frivolity</h2>
+          <div className="streak-time">
+            {lastFrivolityLoaded ? (lastFrivolityAgeMs ? formatDuration(lastFrivolityAgeMs) : 'No frivolity logged') : 'Loading...'}
           </div>
-          <div className="pulse-tile">
-            <span className="label">Streams tracked</span>
-            <strong>{summary?.sampleCount ?? '—'}</strong>
-            <small className="subtle">entries captured across desktop + browser</small>
+          <div className="streak-meta">
+            <span className="subtle">
+              {lastFrivolityAt ? `Last spend ${new Date(lastFrivolityAt).toLocaleString()}` : 'No paid sessions recorded yet.'}
+            </span>
+            <span className="pill ghost">Goal: 3 days</span>
+          </div>
+          <div className="streak-bar" aria-hidden>
+            <span />
           </div>
         </div>
       </header>
@@ -124,76 +165,74 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
           <DayCompass summary={summary} economy={economy} />
         </div>
 
-        <div className="card now-card dashboard-now">
-          <div className="card-header-row">
-            <h2>Live context</h2>
-            <span className="pill inline">{economy?.neutralClockedIn ? 'Neutral clocked in' : 'Neutral paused'}</span>
-          </div>
-          <div className="now-grid">
-            <div className="now-focus">
-              <p className="subtle">Foreground</p>
-              <strong className="big">{activeLabel}</strong>
-              <span className={`category-chip category-${activeCategory}`}>{activeCategory}</span>
-              <p className="subtle">Tracking your focused time throughout the day.</p>
-            </div>
-            <div className="now-stats">
-              <div>
-                <span className="label">Wallet</span>
-                <strong>{wallet.balance} f-coins</strong>
-              </div>
-              <div>
-                <span className="label">Samples</span>
-                <strong>{summary?.sampleCount ?? '—'}</strong>
-              </div>
-              <div>
-                <span className="label">Recency</span>
-                <strong>{economy?.lastUpdated ? describeRecency(economy.lastUpdated) : 'Calibrating'}</strong>
-              </div>
-            </div>
-          </div>
+        <div className="dashboard-insights">
+          <Insights api={api} overview={overview} loading={loadingOverview} onRefresh={refreshOverview} />
         </div>
 
-        <div className="card paywall-state dashboard-paywall">
+        <div className="card dashboard-overview">
           <div className="card-header-row">
-            <h2>Paywall sessions</h2>
-            <span className="subtle">Paused when window/tab is not active</span>
+            <div>
+              <p className="eyebrow">Signal deck</p>
+              <h2>Focus telemetry</h2>
+            </div>
+            <span className="pill ghost">{summary ? `${summary.windowHours}h window` : 'Rolling day'}</span>
           </div>
-          {paywallNote && <div className={`inline-note ${paywallNote.startsWith('Could not') ? 'danger' : ''}`}>{paywallNote}</div>}
-          <ul className="context-list">
-            {paywallSessions.length === 0 && <li className="subtle">No active sessions.</li>}
-            {paywallSessions.map((session) => (
-              <li key={session.domain}>
-                <div>
-                  <strong>{session.domain}</strong>
-                  <span className="subtle">{session.mode === 'metered' ? 'Metered' : 'Pack'}</span>
-                </div>
-                <div className="context-meta">
-                  <span className={`category-chip ${session.paused ? 'category-idle' : 'category-productive'}`}>
-                    {session.paused ? 'Paused' : 'Spending'}
-                  </span>
-                  <strong>{session.mode === 'metered' ? '∞' : formatMinutes(session.remainingSeconds ?? 0)}</strong>
-                </div>
-                <div className="paywall-actions">
-                  <button
-                    className="pill danger"
-                    disabled={endingDomain === session.domain}
-                    onClick={() => endSession(session)}
-                  >
-                    {endingDomain === session.domain ? 'Ending…' : 'End session'}
-                  </button>
-                  {session.mode === 'pack' && estimateRefund(session) > 0 && (
-                    <span className="subtle">~{estimateRefund(session)} f-coin refund</span>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
+          <div className="overview-grid">
+            <div className="overview-metric">
+              <span className="label">Active time</span>
+              <strong>{totalHours.toFixed(1)}h</strong>
+              <span className="subtle">last {summary?.windowHours ?? 24}h</span>
+            </div>
+            <div className="overview-metric">
+              <span className="label">Productivity</span>
+              <strong>{overview?.productivityScore ?? '--'}%</strong>
+              <span className="subtle">last {overview?.periodDays ?? 7}d</span>
+            </div>
+            <div className="overview-metric">
+              <span className="label">Avg session</span>
+              <strong>{overview ? formatDuration(overview.avgSessionLength * 1000) : '--'}</strong>
+              <span className="subtle">{overview?.totalSessions ?? '--'} sessions</span>
+            </div>
+            <div className="overview-metric">
+              <span className="label">Peak hour</span>
+              <strong>{overview ? formatHour(overview.peakProductiveHour) : '--'}</strong>
+              <span className="subtle">risk {overview ? formatHour(overview.riskHour) : '--'}</span>
+            </div>
+          </div>
+          <div className="overview-breakdown">
+            <span className="label">Category mix</span>
+            <div className="overview-bars">
+              {renderCategoryBar('Productive', 'productive', overview)}
+              {renderCategoryBar('Neutral', 'neutral', overview)}
+              {renderCategoryBar('Frivolity', 'frivolity', overview)}
+              {renderCategoryBar('Idle', 'idle', overview)}
+            </div>
+          </div>
+          <div className="overview-top">
+            <span className="label">Top contexts</span>
+            <ul className="overview-list">
+              {topContexts.slice(0, 3).map((ctx) => (
+                <li key={ctx.label}>
+                  <strong>{ctx.label}</strong>
+                  <span className="subtle">{Math.round(ctx.seconds / 60)}m • {ctx.source === 'url' ? 'Browser' : 'App'}</span>
+                </li>
+              ))}
+              {topContexts.length === 0 && <li className="subtle">No streams yet.</li>}
+            </ul>
+            {overview?.topEngagementDomain && (
+              <div className="overview-highlight">
+                <span className="label">Most engaging</span>
+                <strong>{overview.topEngagementDomain}</strong>
+                <span className="subtle">highest attention hold this week</span>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="card timeline-card dashboard-timeline">
           <div className="card-header-row">
             <h2>Pulse over the last {summary?.windowHours ?? 24}h</h2>
-            <span className="subtle">{loadingSummary ? 'Refreshing…' : 'Synthesized from raw activity logs'}</span>
+            <span className="subtle">{loadingSummary ? 'Refreshing...' : 'Synthesized from raw activity logs'}</span>
           </div>
           <div className="timeline">
             {timeline.map((slot, idx) => {
@@ -224,92 +263,40 @@ export default function Dashboard({ api, wallet, economy, rates }: DashboardProp
             })}
           </div>
         </div>
-
-        <div className="card top-contexts dashboard-streams">
-          <div className="card-header-row">
-            <h2>Top streams</h2>
-            <span className="subtle">Where the minutes actually land</span>
-          </div>
-          <ul className="context-list">
-            {topContexts.map((ctx) => (
-              <li key={ctx.label}>
-                <div>
-                  <strong>{ctx.label}</strong>
-                  <span className="subtle">{ctx.source === 'url' ? 'Browser' : 'App'}</span>
-                </div>
-                <div className="context-meta">
-                  <span className={`category-chip category-${ctx.category ?? 'neutral'}`}>{ctx.category ?? 'neutral'}</span>
-                  <strong>{formatMinutes(ctx.seconds)}</strong>
-                </div>
-              </li>
-            ))}
-            {topContexts.length === 0 && <li className="subtle">No streams yet.</li>}
-          </ul>
-        </div>
-
-        <div className="card activity-scroll dashboard-recent">
-          <h2>Recent activity</h2>
-          <ul className="activity-list">
-            {activities.map((activity) => (
-              <li key={activity.id} className="activity-row">
-                <div className="activity-main">
-                  <strong>{activity.domain ?? activity.appName ?? 'Unknown'}</strong>
-                  <span className="subtle">{new Date(activity.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                </div>
-                <div className="activity-meta">
-                  <span className={`category-chip category-${activity.category ?? 'neutral'}`}>{activity.category ?? 'neutral'}</span>
-                  <span className="pill ghost">{activity.source}</span>
-                  <strong>{formatMinutes(activity.secondsActive)}</strong>
-                </div>
-              </li>
-            ))}
-            {activities.length === 0 && <li className="subtle">No tracked activity yet.</li>}
-          </ul>
-        </div>
-
-        <div className="card market-card dashboard-market">
-          <div className="card-header-row">
-            <h2>Frivolity market</h2>
-            <span className="subtle">Make the expensive domains earn their keep</span>
-          </div>
-          <ul className="market-list">
-            {rates.map((rate) => (
-              <li key={rate.domain}>
-                <div>
-                  <strong>{rate.domain}</strong>
-                  <span className="subtle">{rate.ratePerMin} f-coins/min</span>
-                </div>
-                <div className="subtle">
-                  Packs: {rate.packs.map((pack) => `${pack.minutes}m/${pack.price}`).join(' • ')}
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
       </div>
     </section>
   );
 }
 
-function formatMinutes(seconds: number) {
-  const minutes = Math.max(1, Math.round(seconds / 60));
-  return `${minutes}m`;
+function formatDuration(ms: number) {
+  const totalMinutes = Math.max(0, Math.floor(ms / 60000));
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  return `${hours}h ${minutes}m`;
 }
 
-function describeRecency(lastUpdated: number | null) {
-  if (!lastUpdated) return 'Calibrating';
-  const diff = Math.max(0, Math.floor((Date.now() - lastUpdated) / 1000));
-  if (diff < 4) return 'Live';
-  if (diff < 60) return `${diff}s ago`;
-  const minutes = Math.floor(diff / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h ago`;
+function formatHour(h: number) {
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const hour = h % 12 || 12;
+  return `${hour}${ampm}`;
 }
 
-function estimateRefund(session: PaywallSession) {
-  if (session.mode !== 'pack' || !session.purchasePrice || !session.purchasedSeconds || session.purchasedSeconds <= 0) return 0;
-  const unusedSeconds = Math.max(0, Math.min(session.purchasedSeconds, session.remainingSeconds ?? 0));
-  const fraction = unusedSeconds / session.purchasedSeconds;
-  return Math.round(session.purchasePrice * fraction);
+function renderCategoryBar(label: string, key: 'productive' | 'neutral' | 'frivolity' | 'idle', overview: AnalyticsOverview | null) {
+  const totals = overview?.categoryBreakdown ?? { productive: 0, neutral: 0, frivolity: 0, idle: 0 };
+  const total = totals.productive + totals.neutral + totals.frivolity + totals.idle;
+  const value = totals[key] ?? 0;
+  const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+  return (
+    <div className="overview-bar" key={key}>
+      <div className="overview-bar-label">
+        <span>{label}</span>
+        <span className="subtle">{pct}%</span>
+      </div>
+      <div className="overview-bar-track">
+        <span className={`overview-bar-fill cat-${key}`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
 }

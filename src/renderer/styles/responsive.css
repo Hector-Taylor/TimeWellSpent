@@ -1,0 +1,123 @@
+/* ============================================================================
+   TimeWellSpent — Responsive Breakpoints & Utilities
+   Responsive adaptations for different screen sizes
+   ============================================================================ */
+
+/* Tablet breakpoint - 1024px */
+@media (max-width: 1024px) {
+    .app-shell {
+        grid-template-columns: 200px 1fr;
+    }
+
+    .sidebar {
+        padding: var(--space-lg) var(--space-md);
+    }
+
+    main {
+        padding: var(--space-lg);
+    }
+}
+
+/* Compact sidebar breakpoint - 768px */
+@media (max-width: 768px) {
+    .app-shell {
+        grid-template-columns: 64px 1fr;
+    }
+
+    .sidebar {
+        padding: var(--space-md) var(--space-sm);
+        align-items: center;
+    }
+
+    .brand span {
+        display: none;
+    }
+
+    .nav-menu button {
+        justify-content: center;
+        padding: var(--space-sm);
+    }
+
+    .nav-menu button span:not(.icon) {
+        display: none;
+    }
+
+    .wallet-summary {
+        display: none;
+    }
+
+    .nav-label {
+        display: none;
+    }
+
+    .window-chrome {
+        padding-left: var(--space-lg);
+    }
+
+    main {
+        padding: var(--space-md);
+    }
+}
+
+/* Small screens - 640px */
+@media (max-width: 640px) {
+    .app-shell {
+        grid-template-columns: 1fr;
+        grid-template-rows: 48px auto 1fr;
+    }
+
+    .sidebar {
+        grid-row: 2;
+        flex-direction: row;
+        padding: var(--space-sm) var(--space-md);
+        gap: var(--space-sm);
+        overflow-x: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .nav-menu {
+        flex-direction: row;
+        gap: var(--space-xs);
+    }
+
+    main {
+        grid-row: 3;
+    }
+
+    /* Stack dashboard grid */
+    .panel-body.dashboard-grid {
+        grid-template-columns: 1fr;
+        gap: var(--space-md);
+    }
+}
+
+/* Utility classes for responsive visibility */
+.hide-mobile {
+    display: block;
+}
+
+.show-mobile {
+    display: none;
+}
+
+@media (max-width: 768px) {
+    .hide-mobile {
+        display: none;
+    }
+
+    .show-mobile {
+        display: block;
+    }
+}
+
+/* Responsive spacing utilities */
+@media (max-width: 768px) {
+    .panel-body {
+        padding: var(--space-md);
+    }
+
+    .card {
+        padding: var(--space-md);
+    }
+}

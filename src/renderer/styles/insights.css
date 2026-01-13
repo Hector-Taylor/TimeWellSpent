@@ -1,0 +1,106 @@
+/* ============================================================================
+   TimeWellSpent — Insights Component Styles
+   Behavioral insights and recommendations display
+   ============================================================================ */
+
+.insights-card {
+    grid-column: span 2;
+}
+
+.insights-loading {
+    padding: var(--space-md) 0;
+}
+
+.insights-summary {
+    display: flex;
+    gap: var(--space-lg);
+    padding: var(--space-md) 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: var(--space-md);
+}
+
+.insight-metric {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-xs);
+    flex: 1;
+    text-align: center;
+}
+
+.insight-value {
+    font-family: var(--font-mono);
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--fg);
+}
+
+.insight-label {
+    font-size: 12px;
+    color: var(--fg-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.insights-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.insight-item {
+    padding: var(--space-sm) var(--space-md);
+    background: var(--bg-surface);
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    line-height: 1.5;
+    border-left: 3px solid var(--accent-muted);
+    transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.insight-item:hover {
+    border-left-color: var(--accent);
+}
+
+.insight-item.subtle {
+    color: var(--fg-muted);
+    font-style: italic;
+}
+
+.insight-warning {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-md);
+    margin-top: var(--space-md);
+    background: rgba(212, 165, 116, 0.1);
+    border: 1px solid var(--warning);
+    border-radius: var(--radius-md);
+    font-size: 13px;
+}
+
+.insight-warning .warning-icon {
+    font-size: 18px;
+}
+
+.insight-warning strong {
+    color: var(--warning);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .insights-card {
+        grid-column: span 1;
+    }
+
+    .insights-summary {
+        flex-wrap: wrap;
+    }
+
+    .insight-metric {
+        min-width: 80px;
+    }
+}

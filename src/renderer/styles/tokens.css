@@ -1,0 +1,70 @@
+/* ============================================================================
+   TimeWellSpent — Design Tokens
+   Core variables for the visual design system
+   Aesthetic: Mid-century skeletal tech meets modern precision
+   ============================================================================ */
+
+:root {
+    color-scheme: dark;
+
+    /* Typography */
+    --font-mono: 'JetBrains Mono', 'Berkeley Mono', 'SF Mono', monospace;
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+
+    font-family: var(--font-sans);
+    line-height: 1.6;
+    font-size: 15px;
+    font-weight: 400;
+    -webkit-font-smoothing: antialiased;
+
+    /* Core Palette — Warm neutrals with copper accent */
+    --bg-base: #0a0a0b;
+    --bg-raised: #111113;
+    --bg-surface: #18181b;
+    --bg-elevated: #1f1f23;
+
+    --fg: #e8e4df;
+    --fg-muted: #8a8680;
+    --fg-subtle: #5c5955;
+
+    /* Accent — Oxidized copper */
+    --accent: #c8956c;
+    --accent-muted: rgba(200, 149, 108, 0.15);
+    --accent-strong: #daa06d;
+
+    /* Semantic Colors */
+    --cat-productive: #7eb88c;
+    --cat-neutral: #9b9da3;
+    --cat-frivolity: #d4a574;
+    --cat-idle: #4a4a50;
+
+    --success: #7eb88c;
+    --warning: #d4a574;
+    --danger: #c77171;
+
+    /* Borders & Shadows */
+    --border: rgba(255, 255, 255, 0.06);
+    --border-strong: rgba(255, 255, 255, 0.12);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.6);
+
+    /* Transitions */
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+    --duration-fast: 120ms;
+    --duration-normal: 200ms;
+    --duration-slow: 400ms;
+
+    /* Spacing */
+    --space-xs: 4px;
+    --space-sm: 8px;
+    --space-md: 16px;
+    --space-lg: 24px;
+    --space-xl: 40px;
+
+    /* Radii */
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 16px;
+}

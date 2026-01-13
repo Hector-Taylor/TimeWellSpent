@@ -63,6 +63,7 @@ async function mountOverlay(domain: string, reason?: string, peek?: { allowed: b
   host.style.inset = '0';
   host.style.width = '100%';
   host.style.height = '100%';
+  host.style.background = '#05060a';
 
   document.body.appendChild(host);
 

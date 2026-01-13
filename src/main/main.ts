@@ -108,6 +108,15 @@ async function bootstrap() {
     });
   };
 
+  backend.ui.onNavigate(({ view }) => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+    emitToRenderers('ui:navigate', { view });
+  });
+
   // Listen for paywall session ticks to update tray and notify
   backend.paywall.on('session-tick', (session: { domain: string; remainingSeconds: number }) => {
     const minutes = Math.ceil(session.remainingSeconds / 60);

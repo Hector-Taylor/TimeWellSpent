@@ -29,6 +29,7 @@ const ROULETTE_PROMPT_MIN_MS = 20_000;
 // Buffer when desktop app is offline (10s heartbeat ≈ 2400 → ~6h40m).
 const ACTIVITY_BUFFER_LIMIT = 2400;
 const activityBuffer: Array<Record<string, unknown>> = [];
+const rotModeStartInFlight = new Set<string>();
 
 type RouletteOpen = {
     openedAt: number;
@@ -259,6 +260,9 @@ function handleDesktopMessage(data: any) {
                 lastReminder: session.lastReminder,
                 allowedUrl: session.allowedUrl
             });
+            if (session.mode !== 'emergency') {
+                storage.setLastFrivolityAt(Date.now());
+            }
         }
     } else if (data.type === 'paywall-session-ended') {
         if (data.payload?.domain) {
@@ -366,6 +370,27 @@ chrome.windows.onFocusChanged.addListener(async () => {
     await pushActivitySample('window-focus');
 });
 
+async function ensureRotModeSession(tabId: number, domain: string, source: string) {
+    if (rotModeStartInFlight.has(domain)) return true;
+    rotModeStartInFlight.add(domain);
+    try {
+        const balance = await storage.getBalance();
+        if (balance < 1) {
+            await showBlockScreen(tabId, domain, 'insufficient-funds', `rot-mode:${source}`);
+            return false;
+        }
+
+        const result = await handleStartMetered({ domain });
+        if (!result.success) {
+            await showBlockScreen(tabId, domain, undefined, `rot-mode:${source}`);
+            return false;
+        }
+        return true;
+    } finally {
+        rotModeStartInFlight.delete(domain);
+    }
+}
+
 async function checkAndBlockUrl(tabId: number, urlString: string, source: string) {
     if (!urlString || !urlString.startsWith('http')) return;
 
@@ -395,6 +420,12 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
                 } else if (session.remainingSeconds > 0) {
                     return;
                 }
+            }
+
+            const rotMode = await storage.getRotMode();
+            if (rotMode.enabled) {
+                const started = await ensureRotModeSession(tabId, domain, source);
+                if (started) return;
             }
 
             // No session (or invalid URL-locked session) - BLOCK!
@@ -725,6 +756,7 @@ async function preferDesktopPurchase(path: '/paywall/packs' | '/paywall/metered'
                 }
             } as any
         });
+        await storage.setLastFrivolityAt(Date.now());
         await syncFromDesktop(); // refresh wallet + rates
         return { ok: true, session };
     } catch (error) {
@@ -808,6 +840,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message.type === 'OPEN_DESKTOP_ACTION') {
         handleOpenDesktopAction(message.payload).then(sendResponse);
         return true;
+    } else if (message.type === 'OPEN_DESKTOP_VIEW') {
+        handleOpenDesktopView(message.payload).then(sendResponse);
+        return true;
     } else if (message.type === 'UPSERT_LIBRARY_ITEM') {
         handleUpsertLibraryItem(message.payload).then(sendResponse);
         return true;
@@ -843,6 +878,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return true;
     } else if (message.type === 'MARK_READING_CONSUMED') {
         handleMarkReadingConsumed(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'SET_ROT_MODE') {
+        handleSetRotMode(message.payload).then(sendResponse);
         return true;
     }
 });
@@ -916,6 +954,26 @@ async function handleOpenDesktopAction(payload: { kind: 'deeplink' | 'file'; url
     }
 }
 
+async function handleOpenDesktopView(payload: { view?: string }) {
+    try {
+        const view = String(payload?.view ?? '').trim();
+        if (!view) return { success: false, error: 'Missing view' };
+        const response = await fetch(`${DESKTOP_API_URL}/ui/navigate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ view }),
+            cache: 'no-store'
+        });
+        if (!response.ok) {
+            const data = (await response.json().catch(() => null)) as { error?: string } | null;
+            return { success: false, error: data?.error ?? 'Failed to open desktop view' };
+        }
+        return { success: true };
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+}
+
 type LinkPreview = {
     url: string;
     title?: string;
@@ -942,7 +1000,7 @@ function chromeFaviconUrl(url: string): string {
     return `chrome://favicon2/?size=64&url=${encodeURIComponent(url)}`;
 }
 
-function extractMeta(html: string, attr: 'property' | 'name', key: string): string | undefined {
+function extractMeta(html: string, attr: 'property' | 'name' | 'itemprop', key: string): string | undefined {
     const re = new RegExp(`<meta\\s+[^>]*${attr}=["']${escapeRegExp(key)}["'][^>]*content=["']([^"']+)["'][^>]*>`, 'i');
     const m = html.match(re);
     if (!m?.[1]) return undefined;
@@ -965,7 +1023,27 @@ function extractDescription(html: string): string | undefined {
 }
 
 function extractOgImage(html: string): string | undefined {
-    return extractMeta(html, 'property', 'og:image');
+    return (
+        extractMeta(html, 'property', 'og:image:secure_url') ??
+        extractMeta(html, 'property', 'og:image:url') ??
+        extractMeta(html, 'property', 'og:image')
+    );
+}
+
+function extractTwitterImage(html: string): string | undefined {
+    return (
+        extractMeta(html, 'name', 'twitter:image') ??
+        extractMeta(html, 'name', 'twitter:image:src') ??
+        extractMeta(html, 'property', 'twitter:image')
+    );
+}
+
+function extractImageHref(html: string): string | undefined {
+    const m =
+        html.match(/<link\\s+[^>]*rel=["']image_src["'][^>]*href=["']([^"']+)["'][^>]*>/i) ??
+        html.match(/<link\\s+[^>]*href=["']([^"']+)["'][^>]*rel=["']image_src["'][^>]*>/i);
+    if (!m?.[1]) return undefined;
+    return decodeHtml(m[1]).trim();
 }
 
 function extractIconHref(html: string): string | undefined {
@@ -1042,7 +1120,13 @@ async function getLinkPreviewFromWeb(url: string): Promise<Omit<LinkPreview, 'up
         const html = await response.text();
         const title = extractTitle(html);
         const description = extractDescription(html);
-        const imageUrl = yt ?? resolveUrl(extractOgImage(html), canonical);
+        const imageCandidate =
+            yt ??
+            resolveUrl(extractOgImage(html), canonical) ??
+            resolveUrl(extractTwitterImage(html), canonical) ??
+            resolveUrl(extractMeta(html, 'itemprop', 'image'), canonical) ??
+            resolveUrl(extractImageHref(html), canonical);
+        const imageUrl = imageCandidate ?? undefined;
         const iconUrl = resolveUrl(extractIconHref(html), canonical) ?? chromeFaviconUrl(canonical);
 
         return { url: canonical, title, description, imageUrl, iconUrl };
@@ -1075,8 +1159,9 @@ async function handleGetLinkPreviews(payload: { urls?: string[] }) {
     const canonicalUrls = urls
         .map((u) => canonicalizePreviewUrl(String(u)))
         .filter((u): u is string => Boolean(u));
+    const uniqueUrls = [...new Set(canonicalUrls)];
 
-    if (!canonicalUrls.length) {
+    if (!uniqueUrls.length) {
         return { success: true as const, previews: {} as Record<string, LinkPreview | null> };
     }
 
@@ -1086,24 +1171,26 @@ async function handleGetLinkPreviews(payload: { urls?: string[] }) {
     const previews: Record<string, LinkPreview | null> = {};
     let cacheChanged = false;
 
-    for (const url of canonicalUrls) {
-        const existing = cache[url];
-        if (existing && now - existing.updatedAt < LINK_PREVIEW_TTL_MS) {
-            previews[url] = existing;
-            continue;
-        }
+    await Promise.all(
+        uniqueUrls.map(async (url) => {
+            const existing = cache[url];
+            if (existing && now - existing.updatedAt < LINK_PREVIEW_TTL_MS) {
+                previews[url] = existing;
+                return;
+            }
 
-        const fetched = await getLinkPreviewFromWeb(url);
-        if (!fetched) {
-            previews[url] = null;
-            continue;
-        }
+            const fetched = await getLinkPreviewFromWeb(url);
+            if (!fetched) {
+                previews[url] = null;
+                return;
+            }
 
-        const next: LinkPreview = { ...fetched, updatedAt: now };
-        cache[url] = next;
-        previews[url] = next;
-        cacheChanged = true;
-    }
+            const next: LinkPreview = { ...fetched, updatedAt: now };
+            cache[url] = next;
+            previews[url] = next;
+            cacheChanged = true;
+        })
+    );
 
     if (cacheChanged) {
         await saveLinkPreviewCache(cache);
@@ -1597,6 +1684,7 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
         matchedPricedItem,
         lastSync,
         desktopConnected: ws?.readyState === WebSocket.OPEN,
+        rotMode: state.rotMode,
         emergencyPolicy: state.settings.emergencyPolicy ?? 'balanced',
         emergency: state.emergency,
         journal: state.settings.journal ?? { url: null, minutes: 10 },
@@ -1608,6 +1696,12 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
             readingItems
         }
     };
+}
+
+async function handleSetRotMode(payload: { enabled?: boolean }) {
+    const enabled = Boolean(payload?.enabled);
+    const rotMode = await storage.setRotMode(enabled);
+    return { success: true, rotMode };
 }
 
 async function handleStartStoreSession(payload: { domain: string; price: number; url?: string }) {
@@ -1633,6 +1727,7 @@ async function handleStartStoreSession(payload: { domain: string; price: number;
             allowedUrl: payload.url ? baseUrl(payload.url) ?? undefined : undefined
         };
         await storage.setSession(payload.domain, session);
+        await storage.setLastFrivolityAt(Date.now());
 
         // Notify desktop if possible via HTTP even if WS is down?
         fetch(`${DESKTOP_API_URL}/paywall/start-store-fallback`, {
@@ -1650,10 +1745,12 @@ async function handleStartStoreSession(payload: { domain: string; price: number;
 async function handleGetConnection() {
     const lastSync = await storage.getLastSyncTime();
     const sessions = await storage.getAllSessions();
+    const lastFrivolityAt = await storage.getLastFrivolityAt();
     return {
         desktopConnected: ws?.readyState === WebSocket.OPEN,
         lastSync,
-        sessions
+        sessions,
+        lastFrivolityAt
     };
 }
 
@@ -1770,6 +1867,7 @@ async function handleBuyPack(payload: { domain: string; minutes: number }) {
             purchasedSeconds: pack.minutes * 60
         };
         await storage.setSession(payload.domain, session);
+        await storage.setLastFrivolityAt(Date.now());
         console.log(`✅ Purchased ${pack.minutes} minutes for ${payload.domain} (offline mode)`);
         return { success: true, session };
     } catch (error) {
@@ -1795,6 +1893,7 @@ async function handleStartMetered(payload: { domain: string }) {
     };
 
     await storage.setSession(payload.domain, session);
+    await storage.setLastFrivolityAt(Date.now());
     console.log(`✅ Started metered session for ${payload.domain} (offline mode)`);
     return { success: true, session };
 }
