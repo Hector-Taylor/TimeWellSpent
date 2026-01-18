@@ -3,6 +3,7 @@ import type { CategorisationConfig, RendererApi } from '@shared/types';
 
 type Props = {
   api: RendererApi;
+  variant?: 'page' | 'settings';
 };
 
 type DomainCategory = 'productive' | 'neutral' | 'frivolous';
@@ -32,7 +33,7 @@ function uniq(list: string[]) {
   return result;
 }
 
-export default function Domains({ api }: Props) {
+export default function Domains({ api, variant = 'page' }: Props) {
   const [config, setConfig] = useState<CategorisationConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -127,22 +128,41 @@ export default function Domains({ api }: Props) {
   if (loading) return <div className="panel">Loading domains…</div>;
   if (!config) return <div className="panel">Could not load domains.</div>;
 
+  const wrapperClass = variant === 'settings' ? 'store-page settings-domains' : 'page store-page';
+
   return (
-    <section className="page store-page">
-      <header className="page-header">
-        <div>
-          <h1>Domains</h1>
-          <p className="subtle">
-            Keep this simple: <strong>productive</strong>, <strong>neutral</strong>, or <strong>frivolous</strong>.
-            Idle is inferred automatically.
-          </p>
+    <section className={wrapperClass}>
+      {variant === 'page' ? (
+        <header className="page-header">
+          <div>
+            <h1>Domains</h1>
+            <p className="subtle">
+              Keep this simple: <strong>productive</strong>, <strong>neutral</strong>, or <strong>frivolous</strong>.
+              Idle is inferred automatically.
+            </p>
+          </div>
+          <div className="pill-row">
+            <span className="pill ghost">{totals.productive} productive</span>
+            <span className="pill ghost">{totals.neutral} neutral</span>
+            <span className="pill ghost">{totals.frivolity} frivolous</span>
+          </div>
+        </header>
+      ) : (
+        <div className="settings-section-header">
+          <div>
+            <h2>Domains</h2>
+            <p className="subtle">
+              Keep this simple: <strong>productive</strong>, <strong>neutral</strong>, or <strong>frivolous</strong>.
+              Idle is inferred automatically.
+            </p>
+          </div>
+          <div className="pill-row">
+            <span className="pill ghost">{totals.productive} productive</span>
+            <span className="pill ghost">{totals.neutral} neutral</span>
+            <span className="pill ghost">{totals.frivolity} frivolous</span>
+          </div>
         </div>
-        <div className="pill-row">
-          <span className="pill ghost">{totals.productive} productive</span>
-          <span className="pill ghost">{totals.neutral} neutral</span>
-          <span className="pill ghost">{totals.frivolity} frivolous</span>
-        </div>
-      </header>
+      )}
 
       {error && <p className="error-text">{error}</p>}
       {saved && <p className="subtle">Saved.</p>}
@@ -256,4 +276,3 @@ function DomainList(props: {
     </div>
   );
 }
-

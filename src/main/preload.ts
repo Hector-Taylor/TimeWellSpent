@@ -23,7 +23,8 @@ const api: RendererApi = {
   },
   activities: {
     recent: (limit) => ipcRenderer.invoke('activities:recent', { limit }),
-    summary: (windowHours) => ipcRenderer.invoke('activities:summary', { windowHours })
+    summary: (windowHours, deviceId) => ipcRenderer.invoke('activities:summary', { windowHours, deviceId }),
+    journey: (windowHours, deviceId) => ipcRenderer.invoke('activities:journey', { windowHours, deviceId })
   },
   market: {
     list: () => ipcRenderer.invoke('market:list'),
@@ -62,6 +63,8 @@ const api: RendererApi = {
     updateIdleThreshold: (value) => ipcRenderer.invoke('settings:update-idle-threshold', value),
     frivolousIdleThreshold: () => ipcRenderer.invoke('settings:frivolous-idle-threshold'),
     updateFrivolousIdleThreshold: (value) => ipcRenderer.invoke('settings:update-frivolous-idle-threshold', value),
+    excludedKeywords: () => ipcRenderer.invoke('settings:excluded-keywords'),
+    updateExcludedKeywords: (value) => ipcRenderer.invoke('settings:update-excluded-keywords', value),
     emergencyPolicy: () => ipcRenderer.invoke('settings:emergency-policy'),
     updateEmergencyPolicy: (value) => ipcRenderer.invoke('settings:update-emergency-policy', value),
     emergencyReminderInterval: () => ipcRenderer.invoke('settings:emergency-reminder-interval'),
@@ -71,7 +74,13 @@ const api: RendererApi = {
     journalConfig: () => ipcRenderer.invoke('settings:journal-config'),
     updateJournalConfig: (value) => ipcRenderer.invoke('settings:update-journal-config', value),
     peekConfig: () => ipcRenderer.invoke('settings:peek-config'),
-    updatePeekConfig: (value) => ipcRenderer.invoke('settings:update-peek-config', value)
+    updatePeekConfig: (value) => ipcRenderer.invoke('settings:update-peek-config', value),
+    competitiveOptIn: () => ipcRenderer.invoke('settings:competitive-opt-in'),
+    updateCompetitiveOptIn: (value) => ipcRenderer.invoke('settings:update-competitive-opt-in', value),
+    competitiveMinActiveHours: () => ipcRenderer.invoke('settings:competitive-min-hours'),
+    updateCompetitiveMinActiveHours: (value) => ipcRenderer.invoke('settings:update-competitive-min-hours', value),
+    continuityWindowSeconds: () => ipcRenderer.invoke('settings:continuity-window'),
+    updateContinuityWindowSeconds: (value) => ipcRenderer.invoke('settings:update-continuity-window', value)
   },
   integrations: {
     zotero: {
@@ -99,14 +108,35 @@ const api: RendererApi = {
     trends: (granularity) => ipcRenderer.invoke('analytics:trends', { granularity })
   },
   friends: {
-    identity: () => ipcRenderer.invoke('friends:identity'),
-    enable: (payload) => ipcRenderer.invoke('friends:enable', payload),
-    disable: () => ipcRenderer.invoke('friends:disable'),
-    publishNow: () => ipcRenderer.invoke('friends:publish'),
+    profile: () => ipcRenderer.invoke('friends:profile'),
+    updateProfile: (payload) => ipcRenderer.invoke('friends:update-profile', payload),
+    findByHandle: (handle) => ipcRenderer.invoke('friends:find-handle', { handle }),
+    request: (handle) => ipcRenderer.invoke('friends:request', { handle }),
+    requests: () => ipcRenderer.invoke('friends:requests'),
+    accept: (id) => ipcRenderer.invoke('friends:accept', { id }),
+    decline: (id) => ipcRenderer.invoke('friends:decline', { id }),
+    cancel: (id) => ipcRenderer.invoke('friends:cancel', { id }),
     list: () => ipcRenderer.invoke('friends:list'),
-    add: (friend) => ipcRenderer.invoke('friends:add', friend),
     remove: (id) => ipcRenderer.invoke('friends:remove', { id }),
-    fetchAll: () => ipcRenderer.invoke('friends:fetch-all')
+    summaries: (windowHours) => ipcRenderer.invoke('friends:summaries', { windowHours }),
+    meSummary: (windowHours) => ipcRenderer.invoke('friends:me-summary', { windowHours }),
+    timeline: (userId, windowHours) => ipcRenderer.invoke('friends:timeline', { userId, windowHours })
+  },
+  trophies: {
+    list: () => ipcRenderer.invoke('trophies:list'),
+    profile: () => ipcRenderer.invoke('trophies:profile'),
+    pin: (ids) => ipcRenderer.invoke('trophies:pin', { ids })
+  },
+  sync: {
+    status: () => ipcRenderer.invoke('sync:status'),
+    signIn: (provider) => ipcRenderer.invoke('sync:sign-in', { provider }),
+    signOut: () => ipcRenderer.invoke('sync:sign-out'),
+    syncNow: () => ipcRenderer.invoke('sync:sync-now'),
+    setDeviceName: (name) => ipcRenderer.invoke('sync:set-device-name', { name }),
+    listDevices: () => ipcRenderer.invoke('sync:devices')
+  },
+  system: {
+    reset: (scope) => ipcRenderer.invoke('system:reset', { scope })
   },
   events: {
     on: <T = unknown>(channel: string, callback: (payload: T) => void) => {

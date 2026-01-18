@@ -369,3 +369,188 @@ button:disabled {
   font-size: 12px;
   color: rgba(255, 255, 255, 0.75);
 }
+
+.friends-card .card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.friends-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.friends-item {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.friends-item:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.friends-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.friends-item-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.friends-item-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.friends-item-bar span {
+  height: 100%;
+  display: block;
+}
+
+.cat-productive {
+  background: #7cf4d4;
+}
+
+.cat-neutral {
+  background: #7aa3ff;
+}
+
+.cat-frivolity {
+  background: #d4a574;
+}
+
+.cat-idle {
+  background: #4f5058;
+}
+
+.friend-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 8, 14, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  padding: 12px;
+}
+
+.friend-modal {
+  width: min(360px, 100%);
+  max-height: 92vh;
+  overflow-y: auto;
+  background: rgba(18, 18, 20, 0.98);
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.friend-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.friend-modal-header h3 {
+  margin: 0 0 4px 0;
+  font-size: 16px;
+}
+
+.friend-modal-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.friend-modal-metrics .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.friend-modal-metrics strong {
+  display: block;
+  font-size: 16px;
+  margin-top: 4px;
+}
+
+.friend-modal-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.friend-modal-timeline-bars {
+  display: flex;
+  gap: 4px;
+  align-items: flex-end;
+  min-height: 56px;
+}
+
+.friend-modal-bar-col {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+}
+
+.friend-modal-bar-fill {
+  width: 100%;
+  border-radius: 4px;
+  min-height: 6px;
+}
+
+.head-to-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.head-to-head-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.head-to-head-row.subtle {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.head-to-head-bar {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+  display: flex;
+}
+
+.head-to-head-bar span {
+  height: 100%;
+  display: block;
+}

@@ -66,6 +66,45 @@ type LinkPreview = {
 
 type Notice = { kind: 'success' | 'error' | 'info'; text: string };
 
+type FriendConnection = {
+  id: string;
+  userId: string;
+  handle: string | null;
+  displayName?: string | null;
+};
+
+type FriendSummary = {
+  userId: string;
+  updatedAt: string;
+  periodHours: number;
+  totalActiveSeconds: number;
+  categoryBreakdown: { productive: number; neutral: number; frivolity: number; idle: number };
+  productivityScore: number;
+};
+
+type FriendTimeline = {
+  userId: string;
+  windowHours: number;
+  updatedAt: string;
+  totalsByCategory: { productive: number; neutral: number; frivolity: number; idle: number };
+  timeline: Array<{
+    start: string;
+    hour: string;
+    productive: number;
+    neutral: number;
+    frivolity: number;
+    idle: number;
+    dominant: 'productive' | 'neutral' | 'frivolity' | 'idle';
+  }>;
+};
+
+type FriendProfile = {
+  id: string;
+  handle: string | null;
+  displayName?: string | null;
+  color?: string | null;
+};
+
 function App() {
   const [connection, setConnection] = useState<ConnectionState | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTabInfo | null>(null);
@@ -75,6 +114,13 @@ function App() {
   const [working, setWorking] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [now, setNow] = useState(Date.now());
+  const [friends, setFriends] = useState<FriendConnection[]>([]);
+  const [friendSummaries, setFriendSummaries] = useState<Record<string, FriendSummary>>({});
+  const [mySummary, setMySummary] = useState<FriendSummary | null>(null);
+  const [myProfile, setMyProfile] = useState<FriendProfile | null>(null);
+  const [friendDetail, setFriendDetail] = useState<FriendConnection | null>(null);
+  const [friendTimeline, setFriendTimeline] = useState<FriendTimeline | null>(null);
+  const [friendDetailOpen, setFriendDetailOpen] = useState(false);
 
   const [libraryPurpose, setLibraryPurpose] = useState<'replace' | 'allow' | 'temptation' | 'productive'>('replace');
   const [domainCategory, setDomainCategory] = useState<'productive' | 'neutral' | 'frivolous'>('frivolous');
@@ -94,6 +140,25 @@ function App() {
       setStatus(stat);
     } else {
       setStatus(null);
+    }
+
+    const friendsResp = await chrome.runtime.sendMessage({ type: 'GET_FRIENDS' }) as {
+      success: boolean;
+      friends: FriendConnection[];
+      summaries: Record<string, FriendSummary>;
+      profile: FriendProfile | null;
+      meSummary: FriendSummary | null;
+    };
+    if (friendsResp?.success) {
+      setFriends(friendsResp.friends ?? []);
+      setFriendSummaries(friendsResp.summaries ?? {});
+      setMyProfile(friendsResp.profile ?? null);
+      setMySummary(friendsResp.meSummary ?? null);
+    } else {
+      setFriends([]);
+      setFriendSummaries({});
+      setMyProfile(null);
+      setMySummary(null);
     }
   }, []);
 
@@ -219,6 +284,23 @@ function App() {
     }
   }
 
+  async function openFriendDetail(friend: FriendConnection) {
+    setFriendDetail(friend);
+    setFriendDetailOpen(true);
+    setFriendTimeline(null);
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'GET_FRIEND_TIMELINE',
+        payload: { userId: friend.userId, hours: 24 }
+      }) as { success: boolean; timeline: FriendTimeline | null };
+      if (response?.success) {
+        setFriendTimeline(response.timeline);
+      }
+    } catch {
+      setFriendTimeline(null);
+    }
+  }
+
   async function togglePause() {
     if (!activeTab?.domain) return;
     setWorking(true);
@@ -300,6 +382,74 @@ function App() {
         </div>
       </section>
 
+      <section className="card friends-card">
+        <div className="card-header">
+          <div>
+            <p className="eyebrow">Friends</p>
+            <h2>In the zone</h2>
+          </div>
+          <span className="pill ghost">Last 24h</span>
+        </div>
+        {friends.length === 0 ? (
+          <div className="empty-state">
+            <strong>No friends yet</strong>
+            <span>Add a handle in the desktop Friends tab.</span>
+          </div>
+        ) : (
+          <div className="friends-list">
+            {friends.map((friend) => {
+              const summary = friendSummaries[friend.userId];
+              const totals = summary?.categoryBreakdown ?? null;
+              const active = summary?.totalActiveSeconds ?? 0;
+              const productivePct = active > 0 ? (totals!.productive / active) * 100 : 0;
+              const neutralPct = active > 0 ? (totals!.neutral / active) * 100 : 0;
+              const frivolityPct = active > 0 ? (totals!.frivolity / active) * 100 : 0;
+              const headToHead = headToHeadPercent(mySummary, summary);
+              return (
+                <button key={friend.id} type="button" className="friends-item" onClick={() => openFriendDetail(friend)}>
+                  <div className="friends-item-header">
+                    <div>
+                      <strong>{friend.displayName ?? friend.handle ?? 'Friend'}</strong>
+                      <span className="subtle">@{friend.handle ?? 'no-handle'}</span>
+                    </div>
+                    <span className="pill ghost">{summary ? `${summary.productivityScore}%` : '--'}</span>
+                  </div>
+                  <div className="friends-item-meta">
+                    <span>{summary ? formatDuration(summary.totalActiveSeconds * 1000) : '--'} active</span>
+                    <span className="subtle">{summary ? `Updated ${new Date(summary.updatedAt).toLocaleTimeString()}` : 'No data yet'}</span>
+                  </div>
+                  <div className="friends-item-bar">
+                    <span className="cat-productive" style={{ width: `${productivePct}%` }} />
+                    <span className="cat-neutral" style={{ width: `${neutralPct}%` }} />
+                    <span className="cat-frivolity" style={{ width: `${frivolityPct}%` }} />
+                  </div>
+                  <div className="head-to-head">
+                    <div className="head-to-head-row">
+                      <span>You</span>
+                      <span>{friend.displayName ?? friend.handle ?? 'Friend'}</span>
+                    </div>
+                    <div className="head-to-head-bar">
+                      <span
+                        className="head-to-head-left"
+                        style={{ width: `${headToHead}%`, background: myProfile?.color ?? '#7cf4d4' }}
+                      />
+                      <span
+                        className="head-to-head-right"
+                        style={{ width: `${100 - headToHead}%`, background: friend.color ?? 'rgba(255, 255, 255, 0.3)' }}
+                      />
+                    </div>
+                    <div className="head-to-head-row subtle">
+                      <span>{formatMinutesShort(mySummary?.categoryBreakdown.productive ?? 0)} productive</span>
+                      <span>{formatMinutesShort(summary?.categoryBreakdown.productive ?? 0)} productive</span>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
       {activeTab ? (
         <section className="card preview-card">
           <div className="preview-thumb">
@@ -321,6 +471,51 @@ function App() {
           <strong>No active page</strong>
           <span>Open a web page to save it to your Library.</span>
         </section>
+      )}
+
+      {friendDetailOpen && friendDetail && (
+        <div className="friend-modal-overlay" onClick={() => setFriendDetailOpen(false)}>
+          <div className="friend-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="friend-modal-header">
+              <div>
+                <h3>{friendDetail.displayName ?? friendDetail.handle ?? 'Friend'}</h3>
+                <p className="subtle">@{friendDetail.handle ?? 'no-handle'}</p>
+              </div>
+              <button className="ghost" onClick={() => setFriendDetailOpen(false)}>Close</button>
+            </div>
+            <div className="friend-modal-metrics">
+              <div>
+                <span className="label">Productivity</span>
+                <strong>{friendSummaries[friendDetail.userId] ? `${friendSummaries[friendDetail.userId].productivityScore}%` : '--'}</strong>
+              </div>
+              <div>
+                <span className="label">Active time</span>
+                <strong>{friendSummaries[friendDetail.userId] ? formatDuration(friendSummaries[friendDetail.userId].totalActiveSeconds * 1000) : '--'}</strong>
+              </div>
+              <div>
+                <span className="label">Updated</span>
+                <strong>{friendSummaries[friendDetail.userId] ? new Date(friendSummaries[friendDetail.userId].updatedAt).toLocaleTimeString() : '--'}</strong>
+              </div>
+            </div>
+            <div className="friend-modal-timeline">
+              <div className="friend-modal-timeline-header">
+                <span className="label">Last {friendTimeline?.windowHours ?? 24}h</span>
+                <span className="subtle">Dominant attention per hour</span>
+              </div>
+              <div className="friend-modal-timeline-bars">
+                {(friendTimeline?.timeline ?? []).map((slot, idx) => {
+                  const total = slot.productive + slot.neutral + slot.frivolity + slot.idle;
+                  const height = total === 0 ? 8 : Math.max(12, Math.min(52, Math.round((total / maxPopupTimeline(friendTimeline)) * 52)));
+                  return (
+                    <div key={`${slot.start}-${idx}`} className="friend-modal-bar-col" title={slot.hour}>
+                      <span className={`friend-modal-bar-fill cat-${slot.dominant}`} style={{ height: `${height}px` }} />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {notice && (
@@ -513,6 +708,23 @@ function formatDuration(ms: number) {
   const minutes = totalMinutes % 60;
   if (days > 0) return `${days}d ${hours}h ${minutes}m`;
   return `${hours}h ${minutes}m`;
+}
+
+function formatMinutesShort(seconds: number) {
+  return `${Math.round(seconds / 60)}m`;
+}
+
+function maxPopupTimeline(timeline: FriendTimeline | null) {
+  if (!timeline || timeline.timeline.length === 0) return 1;
+  return Math.max(...timeline.timeline.map((slot) => slot.productive + slot.neutral + slot.frivolity + slot.idle), 1);
+}
+
+function headToHeadPercent(me: FriendSummary | null, friend: FriendSummary | null) {
+  const myProductive = me?.categoryBreakdown.productive ?? 0;
+  const friendProductive = friend?.categoryBreakdown.productive ?? 0;
+  const total = myProductive + friendProductive;
+  if (total === 0) return 50;
+  return Math.round((myProductive / total) * 100);
 }
 
 export default App;

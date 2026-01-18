@@ -8,3 +8,5 @@ export { createLibraryRoutes } from './library';
 export { createAnalyticsRoutes } from './analytics';
 export { createSettingsRoutes, createExtensionSyncRoutes, type SettingsRoutesContext, type ExtensionSyncContext } from './settings';
 export { createActionsRoutes, createUiRoutes, createIntegrationsRoutes, type ActionsRoutesContext } from './actions';
+export { createFriendsRoutes } from './friends';
+export { createTrophyRoutes } from './trophies';

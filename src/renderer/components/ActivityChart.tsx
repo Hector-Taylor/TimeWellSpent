@@ -147,7 +147,7 @@ export default function ActivityChart({ activities, summary }: ActivityChartProp
         <div className="donut-shell" style={{ position: 'relative' }}>
           {tooltipCategory && (
             <div
-              className="pill soft"
+              className="pill soft activity-tooltip"
               style={{
                 position: 'absolute',
                 top: -16,

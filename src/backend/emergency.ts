@@ -1,6 +1,7 @@
 import type { SettingsService } from './settings';
 import type { WalletManager } from './wallet';
 import type { PaywallManager } from './paywall';
+import type { ConsumptionLogService } from './consumption';
 import { getEmergencyPolicyConfig, normaliseBaseUrl } from './emergencyPolicy';
 import { logger } from '@shared/logger';
 
@@ -8,7 +9,8 @@ export class EmergencyService {
   constructor(
     private settings: SettingsService,
     private wallet: WalletManager,
-    private paywall: PaywallManager
+    private paywall: PaywallManager,
+    private consumption: ConsumptionLogService
   ) { }
 
   start(domain: string, justification: string, options?: { url?: string }) {
@@ -59,14 +61,25 @@ export class EmergencyService {
         : undefined;
 
     logger.info('Starting emergency session', { domain, policy: policy.id, allowedUrl });
-    return this.paywall.startEmergency(domain, justification, {
+    const session = this.paywall.startEmergency(domain, justification, {
       durationSeconds: policy.durationSeconds,
       allowedUrl: allowedUrl ?? undefined
     });
+    this.consumption.record({
+      kind: 'emergency-session',
+      title: domain,
+      url: allowedUrl ?? null,
+      domain,
+      meta: {
+        policy: policy.id,
+        durationSeconds: policy.durationSeconds,
+        justification
+      }
+    });
+    return session;
   }
 
   recordReview(outcome: 'kept' | 'not-kept') {
     return this.settings.recordEmergencyReview(outcome);
   }
 }
-

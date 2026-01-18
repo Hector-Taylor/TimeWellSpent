@@ -7,3 +7,4 @@ sqlite.db
 coverage/
 web-ext-artifacts/
 out/
+extension/dist/

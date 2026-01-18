@@ -37,6 +37,38 @@ export interface PendingLibrarySync {
     updatedAt: number;
 }
 
+export type PendingWalletTransaction = {
+    syncId: string;
+    ts: string;
+    type: 'earn' | 'spend' | 'adjust';
+    amount: number;
+    meta?: Record<string, unknown>;
+};
+
+export type PendingConsumptionEvent = {
+    syncId: string;
+    occurredAt: string;
+    kind: string;
+    title?: string | null;
+    url?: string | null;
+    domain?: string | null;
+    meta?: Record<string, unknown>;
+};
+
+export type PendingActivityEvent = {
+    type: 'activity';
+    reason?: string;
+    payload: {
+        timestamp: number;
+        source: 'url';
+        appName: string;
+        windowTitle?: string | null;
+        url?: string | null;
+        domain?: string | null;
+        idleSeconds?: number;
+    };
+};
+
 export interface PaywallSession {
     domain: string;
     mode: 'metered' | 'pack' | 'emergency' | 'store';
@@ -79,6 +111,9 @@ export interface ExtensionState {
     sessions: Record<string, PaywallSession>;
     libraryItems: LibraryItem[];
     pendingLibrarySync: Record<string, PendingLibrarySync>;
+    pendingWalletTransactions: PendingWalletTransaction[];
+    pendingConsumptionEvents: PendingConsumptionEvent[];
+    pendingActivityEvents: PendingActivityEvent[];
     nextLibraryTempId: number;
     lastDesktopSync: number; // timestamp of last successful sync with desktop
     lastFrivolityAt: number | null;
@@ -164,6 +199,9 @@ const DEFAULT_STATE: ExtensionState = {
     sessions: {},
     libraryItems: [],
     pendingLibrarySync: {},
+    pendingWalletTransactions: [],
+    pendingConsumptionEvents: [],
+    pendingActivityEvents: [],
     nextLibraryTempId: -1,
     lastDesktopSync: 0,
     lastFrivolityAt: null,
@@ -186,6 +224,10 @@ const DEFAULT_STATE: ExtensionState = {
         }
     }
 };
+
+const MAX_PENDING_WALLET_TRANSACTIONS = 1000;
+const MAX_PENDING_CONSUMPTION_EVENTS = 1000;
+const MAX_PENDING_ACTIVITY_EVENTS = 2400;
 
 class ExtensionStorage {
     private state: ExtensionState | null = null;
@@ -345,6 +387,15 @@ class ExtensionStorage {
 
         if (!this.state.libraryItems) {
             this.state.libraryItems = [];
+        }
+        if (!Array.isArray(this.state.pendingWalletTransactions)) {
+            this.state.pendingWalletTransactions = [];
+        }
+        if (!Array.isArray(this.state.pendingConsumptionEvents)) {
+            this.state.pendingConsumptionEvents = [];
+        }
+        if (!Array.isArray(this.state.pendingActivityEvents)) {
+            this.state.pendingActivityEvents = [];
         }
     }
 
@@ -613,6 +664,76 @@ class ExtensionStorage {
     async setLastFrivolityAt(value: number | null): Promise<void> {
         if (!this.state) await this.init();
         this.state!.lastFrivolityAt = typeof value === 'number' ? value : null;
+        await this.save();
+    }
+
+    private trimQueue<T>(entries: T[], limit: number): T[] {
+        if (entries.length <= limit) return entries;
+        return entries.slice(entries.length - limit);
+    }
+
+    async queueWalletTransaction(payload: PendingWalletTransaction): Promise<void> {
+        if (!this.state) await this.init();
+        this.state!.pendingWalletTransactions = this.trimQueue(
+            [...(this.state!.pendingWalletTransactions ?? []), payload],
+            MAX_PENDING_WALLET_TRANSACTIONS
+        );
+        await this.save();
+    }
+
+    async getPendingWalletTransactions(limit = MAX_PENDING_WALLET_TRANSACTIONS): Promise<PendingWalletTransaction[]> {
+        if (!this.state) await this.init();
+        return (this.state!.pendingWalletTransactions ?? []).slice(0, limit);
+    }
+
+    async clearPendingWalletTransactions(syncIds: string[]): Promise<void> {
+        if (!this.state) await this.init();
+        if (!syncIds.length) return;
+        const idSet = new Set(syncIds);
+        this.state!.pendingWalletTransactions = (this.state!.pendingWalletTransactions ?? []).filter((entry) => !idSet.has(entry.syncId));
+        await this.save();
+    }
+
+    async queueConsumptionEvent(payload: PendingConsumptionEvent): Promise<void> {
+        if (!this.state) await this.init();
+        this.state!.pendingConsumptionEvents = this.trimQueue(
+            [...(this.state!.pendingConsumptionEvents ?? []), payload],
+            MAX_PENDING_CONSUMPTION_EVENTS
+        );
+        await this.save();
+    }
+
+    async getPendingConsumptionEvents(limit = MAX_PENDING_CONSUMPTION_EVENTS): Promise<PendingConsumptionEvent[]> {
+        if (!this.state) await this.init();
+        return (this.state!.pendingConsumptionEvents ?? []).slice(0, limit);
+    }
+
+    async clearPendingConsumptionEvents(syncIds: string[]): Promise<void> {
+        if (!this.state) await this.init();
+        if (!syncIds.length) return;
+        const idSet = new Set(syncIds);
+        this.state!.pendingConsumptionEvents = (this.state!.pendingConsumptionEvents ?? []).filter((entry) => !idSet.has(entry.syncId));
+        await this.save();
+    }
+
+    async queueActivityEvent(payload: PendingActivityEvent): Promise<void> {
+        if (!this.state) await this.init();
+        this.state!.pendingActivityEvents = this.trimQueue(
+            [...(this.state!.pendingActivityEvents ?? []), payload],
+            MAX_PENDING_ACTIVITY_EVENTS
+        );
+        await this.save();
+    }
+
+    async getPendingActivityEvents(limit = MAX_PENDING_ACTIVITY_EVENTS): Promise<PendingActivityEvent[]> {
+        if (!this.state) await this.init();
+        return (this.state!.pendingActivityEvents ?? []).slice(0, limit);
+    }
+
+    async clearPendingActivityEvents(count: number): Promise<void> {
+        if (!this.state) await this.init();
+        if (count <= 0) return;
+        this.state!.pendingActivityEvents = (this.state!.pendingActivityEvents ?? []).slice(count);
         await this.save();
     }
 

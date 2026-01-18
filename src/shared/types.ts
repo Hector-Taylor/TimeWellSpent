@@ -49,6 +49,23 @@ export type ActivitySummary = {
   }>;
 };
 
+export type ActivityJourneySegment = {
+  start: string;
+  end: string;
+  category: ActivityCategory | 'idle';
+  label: string | null;
+  source: ActivitySource;
+  seconds: number;
+};
+
+export type ActivityJourney = {
+  windowHours: number;
+  start: string;
+  end: string;
+  segments: ActivityJourneySegment[];
+  neutralCounts: Array<{ label: string; count: number; seconds: number; source: ActivitySource }>;
+};
+
 export type WalletSnapshot = {
   balance: number;
 };
@@ -59,6 +76,7 @@ export type TransactionRecord = {
   type: 'earn' | 'spend' | 'adjust';
   amount: number;
   meta: Record<string, unknown>;
+  syncId?: string;
 };
 
 export type MarketRate = {
@@ -102,6 +120,7 @@ export type LibraryPurpose = 'replace' | 'allow' | 'temptation' | 'productive';
 
 export type LibraryItem = {
   id: number;
+  syncId?: string;
   kind: 'url' | 'app';
   url?: string;
   app?: string;
@@ -111,14 +130,17 @@ export type LibraryItem = {
   purpose: LibraryPurpose;
   price?: number;
   createdAt: string;
+  updatedAt?: string;
   lastUsedAt?: string;
   consumedAt?: string;
+  deletedAt?: string;
 };
 
-export type ConsumptionLogKind = 'library-item' | 'frivolous-session';
+export type ConsumptionLogKind = 'library-item' | 'frivolous-session' | 'paywall-decline' | 'paywall-exit' | 'emergency-session';
 
 export type ConsumptionLogEntry = {
   id: number;
+  syncId?: string;
   occurredAt: string;
   day: string;
   kind: ConsumptionLogKind;
@@ -126,6 +148,28 @@ export type ConsumptionLogEntry = {
   url?: string;
   domain?: string;
   meta?: Record<string, unknown>;
+};
+
+export type SyncUser = {
+  id: string;
+  email?: string | null;
+};
+
+export type SyncDevice = {
+  id: string;
+  name: string;
+  platform: string;
+  lastSeenAt?: string | null;
+  isCurrent?: boolean;
+};
+
+export type SyncStatus = {
+  configured: boolean;
+  authenticated: boolean;
+  user?: SyncUser | null;
+  device?: SyncDevice | null;
+  lastSyncAt?: string | null;
+  lastError?: string | null;
 };
 
 export type ConsumptionDaySummary = {
@@ -145,6 +189,7 @@ export type PaywallSession = {
   mode: 'metered' | 'pack' | 'emergency' | 'store';
   ratePerMin: number;
   remainingSeconds: number;
+  startedAt?: number;
   paused?: boolean;
   purchasePrice?: number;
   purchasedSeconds?: number;
@@ -156,6 +201,123 @@ export type PaywallSession = {
 
 export type EmergencyPolicyId = 'off' | 'gentle' | 'balanced' | 'strict';
 
+export type FriendProfile = {
+  id: string;
+  handle: string | null;
+  displayName?: string | null;
+  color?: string | null;
+  pinnedTrophies?: string[] | null;
+};
+
+export type FriendRequest = {
+  id: string;
+  userId: string;
+  handle: string | null;
+  displayName?: string | null;
+  direction: 'incoming' | 'outgoing';
+  status: 'pending' | 'accepted' | 'declined' | 'canceled';
+  createdAt: string;
+};
+
+export type FriendConnection = {
+  id: string;
+  userId: string;
+  handle: string | null;
+  displayName?: string | null;
+  color?: string | null;
+  pinnedTrophies?: string[] | null;
+  createdAt: string;
+};
+
+export type TrophyCategory =
+  | 'attention'
+  | 'recovery'
+  | 'streaks'
+  | 'economy'
+  | 'library'
+  | 'time'
+  | 'stability'
+  | 'fun'
+  | 'social'
+  | 'secret';
+
+export type TrophyRarity = 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary' | 'secret';
+
+export type TrophyProgressState = 'locked' | 'earned' | 'untracked';
+
+export type TrophyDefinition = {
+  id: string;
+  name: string;
+  description: string;
+  emoji: string;
+  category: TrophyCategory;
+  rarity: TrophyRarity;
+  secret?: boolean;
+};
+
+export type TrophyProgress = {
+  current: number;
+  target: number;
+  ratio: number;
+  label?: string;
+  state: TrophyProgressState;
+};
+
+export type TrophyStatus = {
+  id: string;
+  name: string;
+  description: string;
+  emoji: string;
+  category: TrophyCategory;
+  rarity: TrophyRarity;
+  secret?: boolean;
+  earnedAt?: string;
+  progress: TrophyProgress;
+  pinned: boolean;
+};
+
+export type TrophyProfileSummary = {
+  profile: FriendProfile | null;
+  pinnedTrophies: string[];
+  stats: {
+    weeklyProductiveMinutes: number;
+    bestRunMinutes: number;
+    recoveryMedianMinutes: number | null;
+    currentFrivolityStreakHours: number;
+    bestFrivolityStreakHours: number;
+  };
+  earnedToday: string[];
+};
+
+export type FriendSummary = {
+  userId: string;
+  updatedAt: string;
+  periodHours: number;
+  totalActiveSeconds: number;
+  categoryBreakdown: Record<ActivityCategory | 'idle', number>;
+  productivityScore: number;
+  emergencySessions?: number;
+};
+
+export type FriendTimelinePoint = {
+  start: string;
+  hour: string;
+  productive: number;
+  neutral: number;
+  frivolity: number;
+  idle: number;
+  dominant: ActivityCategory | 'idle';
+};
+
+export type FriendTimeline = {
+  userId: string;
+  windowHours: number;
+  updatedAt: string;
+  totalsByCategory: Record<ActivityCategory | 'idle', number>;
+  timeline: FriendTimelinePoint[];
+};
+
+// Legacy relay feed types (kept for backwards compatibility)
 export type FriendIdentity = {
   userId: string;
   publishKey: string;
@@ -202,7 +364,8 @@ export type RendererApi = {
   };
   activities: {
     recent(limit?: number): Promise<ActivityRecord[]>;
-    summary(windowHours?: number): Promise<ActivitySummary>;
+    summary(windowHours?: number, deviceId?: string | null): Promise<ActivitySummary>;
+    journey(windowHours?: number, deviceId?: string | null): Promise<ActivityJourney | null>;
   };
   market: {
     list(): Promise<MarketRate[]>;
@@ -241,6 +404,8 @@ export type RendererApi = {
     updateIdleThreshold(value: number): Promise<void>;
     frivolousIdleThreshold(): Promise<number>;
     updateFrivolousIdleThreshold(value: number): Promise<void>;
+    excludedKeywords(): Promise<string[]>;
+    updateExcludedKeywords(value: string[]): Promise<void>;
     emergencyPolicy(): Promise<EmergencyPolicyId>;
     updateEmergencyPolicy(value: EmergencyPolicyId): Promise<void>;
     emergencyReminderInterval(): Promise<number>;
@@ -251,6 +416,12 @@ export type RendererApi = {
     updateJournalConfig(value: JournalConfig): Promise<void>;
     peekConfig(): Promise<PeekConfig>;
     updatePeekConfig(value: PeekConfig): Promise<void>;
+    competitiveOptIn(): Promise<boolean>;
+    updateCompetitiveOptIn(value: boolean): Promise<void>;
+    competitiveMinActiveHours(): Promise<number>;
+    updateCompetitiveMinActiveHours(value: number): Promise<void>;
+    continuityWindowSeconds(): Promise<number>;
+    updateContinuityWindowSeconds(value: number): Promise<void>;
   };
   integrations: {
     zotero: {
@@ -281,14 +452,35 @@ export type RendererApi = {
     trends(granularity?: 'hour' | 'day' | 'week'): Promise<TrendPoint[]>;
   };
   friends: {
-    identity(): Promise<FriendIdentity | null>;
-    enable(payload: { relayUrl: string }): Promise<FriendIdentity>;
-    disable(): Promise<void>;
-    publishNow(): Promise<{ ok: true; publishedAt: string }>;
-    list(): Promise<FriendEntry[]>;
-    add(friend: { name: string; userId: string; readKey: string }): Promise<FriendEntry>;
+    profile(): Promise<FriendProfile | null>;
+    updateProfile(payload: { handle?: string; displayName?: string; color?: string; pinnedTrophies?: string[] }): Promise<FriendProfile>;
+    findByHandle(handle: string): Promise<FriendProfile | null>;
+    request(handle: string): Promise<FriendRequest>;
+    requests(): Promise<{ incoming: FriendRequest[]; outgoing: FriendRequest[] }>;
+    accept(requestId: string): Promise<void>;
+    decline(requestId: string): Promise<void>;
+    cancel(requestId: string): Promise<void>;
+    list(): Promise<FriendConnection[]>;
     remove(id: string): Promise<void>;
-    fetchAll(): Promise<Record<string, FriendFeedSummary | null>>;
+    summaries(windowHours?: number): Promise<Record<string, FriendSummary>>;
+    meSummary(windowHours?: number): Promise<FriendSummary | null>;
+    timeline(userId: string, windowHours?: number): Promise<FriendTimeline | null>;
+  };
+  trophies: {
+    list(): Promise<TrophyStatus[]>;
+    profile(): Promise<TrophyProfileSummary>;
+    pin(ids: string[]): Promise<string[]>;
+  };
+  sync: {
+    status(): Promise<SyncStatus>;
+    signIn(provider: 'google' | 'github'): Promise<{ ok: true } | { ok: false; error: string }>;
+    signOut(): Promise<{ ok: true } | { ok: false; error: string }>;
+    syncNow(): Promise<{ ok: true } | { ok: false; error: string }>;
+    setDeviceName(name: string): Promise<{ ok: true } | { ok: false; error: string }>;
+    listDevices(): Promise<SyncDevice[]>;
+  };
+  system: {
+    reset(scope: 'trophies' | 'all'): Promise<{ cleared: 'trophies' | 'all' }>;
   };
   events: {
     on<T = unknown>(channel: string, callback: (payload: T) => void): () => void;

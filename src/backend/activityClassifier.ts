@@ -5,6 +5,8 @@ import type { ActivityEvent } from './activity-tracker';
 export type ClassifiedActivity = ActivityEvent & {
   category: ActivityCategory;
   isIdle: boolean;
+  suppressContext?: boolean;
+  continuityApplied?: boolean;
 };
 
 export class ActivityClassifier {
@@ -12,7 +14,8 @@ export class ActivityClassifier {
     private readonly getConfig: () => CategorisationConfig,
     private readonly getIdleThreshold: () => number,
     private readonly getFrivolousIdleThreshold: () => number,
-    private readonly resolveOverride?: (event: ActivityEvent & { idleSeconds?: number }) => ActivityCategory | null
+    private readonly resolveOverride?: (event: ActivityEvent & { idleSeconds?: number }) => ActivityCategory | null,
+    private readonly shouldSuppressContext?: (event: ActivityEvent & { idleSeconds?: number }) => boolean
   ) { }
 
   classify(event: ActivityEvent & { idleSeconds?: number }): ClassifiedActivity {
@@ -22,7 +25,8 @@ export class ActivityClassifier {
     const appName = event.appName;
 
     const override = this.resolveOverride ? this.resolveOverride(event) : null;
-    const category = override ?? this.resolveCategory(domain, appName ?? '', config);
+    const suppressContext = this.shouldSuppressContext ? this.shouldSuppressContext(event) : false;
+    const category = suppressContext ? 'neutral' : (override ?? this.resolveCategory(domain, appName ?? '', config));
     const baseThreshold = Math.max(1, this.getIdleThreshold() ?? DEFAULT_IDLE_THRESHOLD_SECONDS);
     const frivolousThreshold = Math.max(1, this.getFrivolousIdleThreshold() ?? DEFAULT_IDLE_THRESHOLD_SECONDS);
     const idleThreshold = category === 'frivolity' ? frivolousThreshold : baseThreshold;
@@ -35,7 +39,8 @@ export class ActivityClassifier {
       category,
       domain,
       appName,
-      isIdle
+      isIdle,
+      suppressContext
     };
   }
 

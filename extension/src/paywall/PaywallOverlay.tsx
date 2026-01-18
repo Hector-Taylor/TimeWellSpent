@@ -92,6 +92,82 @@ type StatusResponse = {
   };
 };
 
+type FriendConnection = {
+  id: string;
+  userId: string;
+  handle: string | null;
+  displayName?: string | null;
+  color?: string | null;
+  pinnedTrophies?: string[] | null;
+};
+
+type FriendSummary = {
+  userId: string;
+  updatedAt: string;
+  periodHours: number;
+  totalActiveSeconds: number;
+  categoryBreakdown: { productive: number; neutral: number; frivolity: number; idle: number };
+  productivityScore: number;
+};
+
+type FriendTimeline = {
+  userId: string;
+  windowHours: number;
+  updatedAt: string;
+  totalsByCategory: { productive: number; neutral: number; frivolity: number; idle: number };
+  timeline: Array<{
+    start: string;
+    hour: string;
+    productive: number;
+    neutral: number;
+    frivolity: number;
+    idle: number;
+    dominant: 'productive' | 'neutral' | 'frivolity' | 'idle';
+  }>;
+};
+
+type FriendProfile = {
+  id: string;
+  handle: string | null;
+  displayName?: string | null;
+  color?: string | null;
+  pinnedTrophies?: string[] | null;
+};
+
+type TrophyProgress = {
+  current: number;
+  target: number;
+  ratio: number;
+  label?: string;
+  state: 'locked' | 'earned' | 'untracked';
+};
+
+type TrophyStatus = {
+  id: string;
+  name: string;
+  description: string;
+  emoji: string;
+  category: string;
+  rarity: string;
+  secret?: boolean;
+  earnedAt?: string;
+  progress: TrophyProgress;
+  pinned: boolean;
+};
+
+type TrophyProfileSummary = {
+  profile: FriendProfile | null;
+  pinnedTrophies: string[];
+  stats: {
+    weeklyProductiveMinutes: number;
+    bestRunMinutes: number;
+    recoveryMedianMinutes: number | null;
+    currentFrivolityStreakHours: number;
+    bestFrivolityStreakHours: number;
+  };
+  earnedToday: string[];
+};
+
 type Props = {
   domain: string;
   status: StatusResponse;
@@ -187,6 +263,37 @@ function formatClock(seconds: number) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+function formatDuration(ms: number) {
+  const totalMinutes = Math.max(0, Math.floor(ms / 60000));
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  return `${hours}h ${minutes}m`;
+}
+
+function formatMinutes(seconds: number) {
+  return `${Math.round(seconds / 60)}m`;
+}
+
+function formatCount(value?: number | null) {
+  if (typeof value !== 'number') return '—';
+  return String(value);
+}
+
+function maxPopupTimeline(timeline: FriendTimeline | null) {
+  if (!timeline || timeline.timeline.length === 0) return 1;
+  return Math.max(...timeline.timeline.map((slot) => slot.productive + slot.neutral + slot.frivolity + slot.idle), 1);
+}
+
+function headToHeadPercent(me: FriendSummary | null, friend: FriendSummary | null) {
+  const myProductive = me?.categoryBreakdown.productive ?? 0;
+  const friendProductive = friend?.categoryBreakdown.productive ?? 0;
+  const total = myProductive + friendProductive;
+  if (total === 0) return 50;
+  return Math.round((myProductive / total) * 100);
+}
+
 function playSoftChime() {
   try {
     const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
@@ -229,7 +336,8 @@ const NAV_ITEMS = [
   { id: 'settings', label: 'Settings' },
   { id: 'analytics', label: 'Analytics' },
   { id: 'economy', label: 'Economy' },
-  { id: 'friends', label: 'Friends' }
+  { id: 'friends', label: 'Friends' },
+  { id: 'profile', label: 'Profile' }
 ];
 
 export default function PaywallOverlay({ domain, status, reason, peek, onClose }: Props) {
@@ -247,6 +355,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const [feedVotes, setFeedVotes] = useState<Record<string, number>>({});
   const [visibleCount, setVisibleCount] = useState(8);
   const [linkPreviews, setLinkPreviews] = useState<Record<string, LinkPreview | null>>({});
+  const [navOpen, setNavOpen] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [dismissedIds, setDismissedIds] = useState<Record<string, true>>({});
   const [ritual, setRitual] = useState<{ kind: 'meditation'; minutes: number } | null>(null);
@@ -258,10 +367,34 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const feedSentinelRef = useRef<HTMLDivElement | null>(null);
   const [rotModeEnabled, setRotModeEnabled] = useState(status.rotMode?.enabled ?? false);
   const [rotModeBusy, setRotModeBusy] = useState(false);
+  const [overlayView, setOverlayView] = useState<string>('dashboard');
+  const [friends, setFriends] = useState<FriendConnection[]>([]);
+  const [friendSummaries, setFriendSummaries] = useState<Record<string, FriendSummary>>({});
+  const [mySummary, setMySummary] = useState<FriendSummary | null>(null);
+  const [myProfile, setMyProfile] = useState<FriendProfile | null>(null);
+  const [competitiveSettings, setCompetitiveSettings] = useState<{ optIn: boolean; minActiveHours: number } | null>(null);
+  const [friendDetail, setFriendDetail] = useState<FriendConnection | null>(null);
+  const [friendTimeline, setFriendTimeline] = useState<FriendTimeline | null>(null);
+  const [friendDetailOpen, setFriendDetailOpen] = useState(false);
+  const [trophies, setTrophies] = useState<TrophyStatus[]>([]);
+  const [trophyProfile, setTrophyProfile] = useState<TrophyProfileSummary | null>(null);
 
   const ratePerMin = status.rate?.ratePerMin ?? status.session?.ratePerMin ?? 1;
   const emergencyPolicy = status.emergencyPolicy ?? 'balanced';
   const peekAllowed = Boolean(peek?.allowed);
+  const competitiveOptIn = competitiveSettings?.optIn ?? false;
+  const competitiveMinHours = competitiveSettings?.minActiveHours ?? 2;
+  const competitiveGateSeconds = Math.max(0, competitiveMinHours) * 3600;
+  const meetsCompetitiveGate = (summary: FriendSummary | null) => {
+    if (!summary) return false;
+    return summary.totalActiveSeconds >= competitiveGateSeconds;
+  };
+
+  useEffect(() => {
+    if (showEmergencyForm || ritual) {
+      setPeekActive(false);
+    }
+  }, [showEmergencyForm, ritual]);
 
   const emergencyPolicyConfig = useMemo<EmergencyPolicyConfig>(() => {
     switch (emergencyPolicy) {
@@ -295,9 +428,125 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     return linkPreviews[normalized] ?? null;
   };
 
+  const youtubeThumbFromUrl = (rawUrl: string) => {
+    try {
+      const url = new URL(rawUrl);
+      const host = url.hostname.replace(/^www\./, '');
+      if (host === 'youtu.be') {
+        const id = url.pathname.split('/').filter(Boolean)[0];
+        return id ? `https://i.ytimg.com/vi/${encodeURIComponent(id)}/hqdefault.jpg` : null;
+      }
+      if (host.endsWith('youtube.com')) {
+        const id = url.searchParams.get('v');
+        return id ? `https://i.ytimg.com/vi/${encodeURIComponent(id)}/hqdefault.jpg` : null;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  };
+
+  const screenshotThumb = (rawUrl: string) => {
+    const normalized = normalizePreviewUrl(rawUrl);
+    if (!normalized) return null;
+    return `https://image.thum.io/get/width/640/${normalized}`;
+  };
+
+  const BOOK_ICON = `data:image/svg+xml;utf8,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+      <rect x="10" y="12" width="38" height="40" rx="6" fill="#1b2030"/>
+      <path d="M20 18h18a6 6 0 0 1 6 6v26H20a6 6 0 0 0-6 6V24a6 6 0 0 1 6-6z" stroke="#7da3ff" stroke-width="2"/>
+      <path d="M22 26h18M22 32h18M22 38h14" stroke="#7da3ff" stroke-width="2" stroke-linecap="round"/>
+    </svg>`
+  )}`;
+
+  const DOC_ICON = `data:image/svg+xml;utf8,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+      <rect x="14" y="10" width="36" height="44" rx="6" fill="#1b2030"/>
+      <path d="M22 22h20M22 30h20M22 38h16" stroke="#d4a574" stroke-width="2" stroke-linecap="round"/>
+      <path d="M34 10l16 16h-10a6 6 0 0 1-6-6V10z" fill="#2a2f3d"/>
+    </svg>`
+  )}`;
+
   useEffect(() => {
     setRotModeEnabled(status.rotMode?.enabled ?? false);
   }, [status.rotMode?.enabled]);
+
+  const refreshFriends = async () => {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'GET_FRIENDS' }) as {
+        success: boolean;
+        friends: FriendConnection[];
+        summaries: Record<string, FriendSummary>;
+        profile: FriendProfile | null;
+        meSummary: FriendSummary | null;
+        competitive: { optIn: boolean; minActiveHours: number } | null;
+      };
+      if (response?.success) {
+        setFriends(response.friends ?? []);
+        setFriendSummaries(response.summaries ?? {});
+        setMyProfile(response.profile ?? null);
+        setMySummary(response.meSummary ?? null);
+        setCompetitiveSettings(response.competitive ?? null);
+      } else {
+        setFriends([]);
+        setFriendSummaries({});
+        setMyProfile(null);
+        setMySummary(null);
+        setCompetitiveSettings(null);
+      }
+    } catch {
+      setFriends([]);
+      setFriendSummaries({});
+      setMyProfile(null);
+      setMySummary(null);
+      setCompetitiveSettings(null);
+    }
+  };
+
+  const refreshTrophies = async () => {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'GET_TROPHIES' }) as {
+        success: boolean;
+        trophies: TrophyStatus[];
+        profile: TrophyProfileSummary | null;
+      };
+      if (response?.success) {
+        setTrophies(response.trophies ?? []);
+        setTrophyProfile(response.profile ?? null);
+      } else {
+        setTrophies([]);
+        setTrophyProfile(null);
+      }
+    } catch {
+      setTrophies([]);
+      setTrophyProfile(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!status.desktopConnected) {
+      setFriends([]);
+      setFriendSummaries({});
+      setMyProfile(null);
+      setMySummary(null);
+      return;
+    }
+    refreshFriends();
+    const id = window.setInterval(refreshFriends, 20000);
+    return () => window.clearInterval(id);
+  }, [status.desktopConnected]);
+
+  useEffect(() => {
+    if (!status.desktopConnected) {
+      setTrophies([]);
+      setTrophyProfile(null);
+      return;
+    }
+    refreshTrophies();
+    const id = window.setInterval(refreshTrophies, 30000);
+    return () => window.clearInterval(id);
+  }, [status.desktopConnected]);
 
   useEffect(() => {
     if (!peekAllowed && peekActive) {
@@ -305,6 +554,23 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       setPeekAnchor(null);
     }
   }, [peekAllowed, peekActive]);
+
+  const openFriendDetail = async (friend: FriendConnection) => {
+    setFriendDetail(friend);
+    setFriendDetailOpen(true);
+    setFriendTimeline(null);
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'GET_FRIEND_TIMELINE',
+        payload: { userId: friend.userId, hours: 24 }
+      }) as { success: boolean; timeline: FriendTimeline | null };
+      if (response?.success) {
+        setFriendTimeline(response.timeline);
+      }
+    } catch {
+      setFriendTimeline(null);
+    }
+  };
 
   useEffect(() => {
     if (!peekActive || !peekAnchor) return;
@@ -1118,27 +1384,32 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       .catch(() => {});
   }, [feedView, linkPreviews, visibleFeedItems]);
 
-  const navActive = feedView === 'feed' ? 'library' : 'dashboard';
+  const navActive = overlayView;
   const feedLensOptions = [
     { id: 'balanced', label: 'Balanced' },
     { id: 'fresh', label: 'Fresh' },
     { id: 'wild', label: 'Wild' }
   ] as const;
+  const trophyById = useMemo(() => {
+    const map = new Map<string, TrophyStatus>();
+    trophies.forEach((trophy) => map.set(trophy.id, trophy));
+    return map;
+  }, [trophies]);
+  const pinnedTrophyIds = trophyProfile?.pinnedTrophies?.length
+    ? trophyProfile.pinnedTrophies
+    : trophies.filter((trophy) => trophy.pinned).map((trophy) => trophy.id);
+  const pinnedTrophies = pinnedTrophyIds
+    .map((id) => trophyById.get(id))
+    .filter((trophy): trophy is TrophyStatus => Boolean(trophy))
+    .slice(0, 3);
+  const nextTrophy = trophies
+    .filter((trophy) => trophy.progress.state === 'locked')
+    .sort((a, b) => b.progress.ratio - a.progress.ratio)[0] ?? null;
+  const profileName = trophyProfile?.profile?.displayName ?? trophyProfile?.profile?.handle ?? 'You';
+  const profileHandle = trophyProfile?.profile?.handle ? `@${trophyProfile.profile.handle}` : 'Not synced';
+  const profileColor = trophyProfile?.profile?.color ?? 'var(--tws-accent)';
   const feedHasMore = visibleCount < feedSorted.length;
-  const navDisabled = !status.desktopConnected;
-
-  const handleNavigate = (view: string) => {
-    chrome.runtime
-      .sendMessage({ type: 'OPEN_DESKTOP_VIEW', payload: { view } })
-      .then((result) => {
-        if (!result?.success) {
-          setError(result?.error ? String(result.error) : 'Failed to open desktop view');
-        }
-      })
-      .catch((err) => {
-        setError((err as Error).message);
-      });
-  };
+  const navDisabled = false;
 
   const handleRotModeToggle = async () => {
     if (rotModeBusy) return;
@@ -1164,76 +1435,112 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     }
   };
 
+  useEffect(() => {
+    if (!navOpen) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setNavOpen(false);
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [navOpen]);
+
   return (
     <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''}`}>
       {peekToggle}
-      <div className="tws-paywall-shell">
-        <aside className="tws-paywall-sidebar">
-          <div className="tws-sidebar-brand">
-            <div className="tws-logo">TWS</div>
-            <div>
-              <div className="tws-brand-name">TimeWellSpent</div>
-              <div className="tws-brand-tag">attention on purpose</div>
-            </div>
+      <div
+        className={`tws-nav-backdrop ${navOpen ? 'open' : ''}`}
+        aria-hidden={!navOpen}
+        onClick={() => setNavOpen(false)}
+      />
+      <aside id="tws-nav-drawer" className={`tws-paywall-sidebar ${navOpen ? 'open' : ''}`} aria-hidden={!navOpen}>
+        <div className="tws-sidebar-brand">
+          <div className="tws-logo">TWS</div>
+          <div>
+            <div className="tws-brand-name">TimeWellSpent</div>
+            <div className="tws-brand-tag">attention on purpose</div>
           </div>
-          <nav className="tws-sidebar-nav" aria-label="TimeWellSpent">
-            {NAV_ITEMS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={item.id === navActive ? 'active' : ''}
-                aria-current={item.id === navActive ? 'page' : undefined}
-                disabled={navDisabled}
-                title={navDisabled ? 'Desktop app is offline' : 'Open in desktop app'}
-                onClick={() => handleNavigate(item.id)}
-              >
-                <span className="tws-nav-dot" aria-hidden="true" />
-                {item.label}
-              </button>
-            ))}
-          </nav>
-          <div className="tws-sidebar-footer">
-            <div className="tws-sidebar-badge">
-              <span>Balance</span>
-              <strong>{status.balance} f-coins</strong>
-            </div>
-            <p className="tws-subtle" style={{ margin: 0 }}>
-              This is your feed, tuned for what matters.
-            </p>
+        </div>
+        <nav className="tws-sidebar-nav" aria-label="TimeWellSpent">
+          {NAV_ITEMS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={item.id === navActive ? 'active' : ''}
+              aria-current={item.id === navActive ? 'page' : undefined}
+              disabled={navDisabled}
+              title={navDisabled ? 'Desktop app is offline' : undefined}
+              onClick={() => {
+                setOverlayView(item.id);
+                setNavOpen(false);
+              }}
+            >
+              <span className="tws-nav-dot" aria-hidden="true" />
+              {item.label}
+            </button>
+          ))}
+        </nav>
+        <div className="tws-sidebar-footer">
+          <div className="tws-sidebar-badge">
+            <span>Balance</span>
+            <strong>{status.balance} f-coins</strong>
           </div>
-        </aside>
+          <p className="tws-subtle" style={{ margin: 0 }}>
+            This is your feed, tuned for what matters.
+          </p>
+        </div>
+      </aside>
 
+      <div className="tws-paywall-shell">
         <main className="tws-paywall-main">
           <header className="tws-paywall-topbar">
-            <div>
-              <p className="tws-eyebrow">TimeWellSpent</p>
-              <h2>{domain}</h2>
-              <p className="tws-subtle">{heading}</p>
-            </div>
-            <div className="tws-feed-toggle" role="tablist" aria-label="Feed view">
+            <div className="tws-topbar-left">
               <button
                 type="button"
-                className={feedView === 'for-you' ? 'active' : ''}
-                onClick={() => setFeedView('for-you')}
-                aria-pressed={feedView === 'for-you'}
+                className={`tws-nav-toggle ${navOpen ? 'open' : ''}`}
+                aria-label={navOpen ? 'Close menu' : 'Open menu'}
+                aria-expanded={navOpen}
+                aria-controls="tws-nav-drawer"
+                onClick={() => setNavOpen((open) => !open)}
               >
-                For you
+                <span className="tws-nav-bars" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+                <span className="tws-nav-label">Menu</span>
               </button>
-              <button
-                type="button"
-                className={feedView === 'feed' ? 'active' : ''}
-                onClick={() => setFeedView('feed')}
-                aria-pressed={feedView === 'feed'}
-              >
-                Feed
-              </button>
+              <div>
+                <p className="tws-eyebrow">TimeWellSpent</p>
+                <h2>{overlayView === 'dashboard' ? domain : NAV_ITEMS.find((item) => item.id === overlayView)?.label ?? 'Dashboard'}</h2>
+                <p className="tws-subtle">{overlayView === 'dashboard' ? heading : 'View synced data from your desktop app.'}</p>
+              </div>
             </div>
+            {overlayView === 'dashboard' && (
+              <div className="tws-feed-toggle" role="tablist" aria-label="Feed view">
+                <button
+                  type="button"
+                  className={feedView === 'for-you' ? 'active' : ''}
+                  onClick={() => setFeedView('for-you')}
+                  aria-pressed={feedView === 'for-you'}
+                >
+                  For you
+                </button>
+                <button
+                  type="button"
+                  className={feedView === 'feed' ? 'active' : ''}
+                  onClick={() => setFeedView('feed')}
+                  aria-pressed={feedView === 'feed'}
+                >
+                  Feed
+                </button>
+              </div>
+            )}
           </header>
 
           <div className="tws-paywall-content">
             {error && <p className="tws-error-text" style={{ marginBottom: 0 }}>{error}</p>}
 
-            {reason === 'emergency-expired' && !reviewed && (
+            {overlayView === 'dashboard' && reason === 'emergency-expired' && !reviewed && (
               <section className="tws-paywall-option" style={{ borderColor: '#d07f00' }}>
                 <div className="tws-option-header">
                   <h3>Emergency ended</h3>
@@ -1255,7 +1562,14 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
               </section>
             )}
 
-            {feedView === 'for-you' ? (
+            {!status.desktopConnected && overlayView !== 'dashboard' && (
+              <div className="tws-rail-card" style={{ marginBottom: 12 }}>
+                <strong>Desktop app offline</strong>
+                <p className="tws-subtle" style={{ margin: 0 }}>Open the desktop app to sync data for this view.</p>
+              </div>
+            )}
+
+            {overlayView === 'dashboard' && feedView === 'for-you' ? (
               <div className="tws-bins">
                 <section className="tws-paywall-option tws-attractors">
                   <div className="tws-option-header tws-attractors-header">
@@ -1284,7 +1598,11 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
 
                         if (item.type === 'url') {
                           const preview = previewFor(item.url);
-                          const thumb = preview?.imageUrl ?? null;
+                          const thumb =
+                            preview?.imageUrl ??
+                            youtubeThumbFromUrl(item.url) ??
+                            screenshotThumb(item.url) ??
+                            null;
                           const icon = preview?.iconUrl ?? faviconUrl(item.url);
                           return (
                             <div
@@ -1353,6 +1671,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                             item.source === 'zotero' && typeof item.progress === 'number'
                               ? Math.round(Math.max(0, Math.min(1, item.progress)) * 100)
                               : null;
+                          const thumb = item.thumbDataUrl ?? (item.source === 'books' ? BOOK_ICON : DOC_ICON);
                           return (
                             <div
                               key={item.id}
@@ -1374,8 +1693,8 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                               }}
                             >
                               <div className="tws-attractor-thumb">
-                                {item.thumbDataUrl ? (
-                                  <img className="tws-attractor-thumb-img" src={item.thumbDataUrl} alt="" loading="lazy" />
+                                {thumb ? (
+                                  <img className="tws-attractor-thumb-img" src={thumb} alt="" loading="lazy" />
                                 ) : (
                                   <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
                                 )}
@@ -1477,7 +1796,12 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                             }}
                           >
                             <div className="tws-attractor-thumb tws-attractor-thumb-app">
-                              <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
+                              <img
+                                className="tws-attractor-thumb-img"
+                                src={item.app?.toLowerCase().includes('book') ? BOOK_ICON : DOC_ICON}
+                                alt=""
+                                loading="lazy"
+                              />
                               <div className="tws-attractor-app-badge">App</div>
                             </div>
                             <div className="tws-attractor-meta">
@@ -1541,7 +1865,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                   )}
                 </section>
               </div>
-            ) : (
+            ) : overlayView === 'dashboard' && feedView === 'feed' ? (
               <div className="tws-feed">
                 <div className="tws-feed-toolbar">
                   <div className="tws-feed-lens">
@@ -1697,7 +2021,318 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                   </div>
                 )}
               </div>
-            )}
+            ) : overlayView === 'friends' ? (
+              <div className="tws-bins">
+                <section className="tws-paywall-option">
+                  <div className="tws-option-header">
+                    <div>
+                      <h3>Friends head-to-head</h3>
+                      <p className="tws-subtle">Productive minutes vs you.</p>
+                    </div>
+                  </div>
+                  {!competitiveOptIn ? (
+                    <p className="tws-subtle" style={{ margin: 0 }}>
+                      Competitive view is off. Enable it in the desktop app.
+                    </p>
+                  ) : friends.length === 0 ? (
+                    <p className="tws-subtle" style={{ margin: 0 }}>
+                      Add a friend in the desktop app to compare here.
+                    </p>
+                  ) : (
+                    <div className="tws-friends-list">
+                      {friends.map((friend) => {
+                        const summary = friendSummaries[friend.userId];
+                        const headToHead = headToHeadPercent(mySummary, summary);
+                        const friendTrophies = (friend.pinnedTrophies ?? [])
+                          .map((id) => trophyById.get(id))
+                          .filter((trophy): trophy is TrophyStatus => Boolean(trophy));
+                        return (
+                          <button
+                            key={friend.id}
+                            type="button"
+                            className="tws-friend-row"
+                            onClick={() => openFriendDetail(friend)}
+                          >
+                            <div className="tws-friend-row-header">
+                              <div>
+                                <strong>{friend.displayName ?? friend.handle ?? 'Friend'}</strong>
+                                <span className="tws-subtle">@{friend.handle ?? 'no-handle'}</span>
+                              </div>
+                              <span className="tws-pill">{summary ? `${summary.productivityScore}%` : '--'}</span>
+                            </div>
+                            <div className="tws-head-to-head">
+                              {meetsCompetitiveGate(mySummary) && meetsCompetitiveGate(summary) ? (
+                                <>
+                                  <div className="tws-head-to-head-bar fancy">
+                                    <span
+                                      className="tws-head-to-head-left"
+                                      style={{ width: `${headToHead}%`, background: myProfile?.color ?? 'var(--accent)' }}
+                                    />
+                                    <span
+                                      className="tws-head-to-head-right"
+                                      style={{ width: `${100 - headToHead}%`, background: friend.color ?? 'rgba(255, 255, 255, 0.3)' }}
+                                    />
+                                    <div className="tws-head-to-head-glow" />
+                                  </div>
+                                  <div className="tws-head-to-head-meta">
+                                    <span>{formatMinutes(mySummary?.categoryBreakdown.productive ?? 0)} productive</span>
+                                    <span>{formatMinutes(summary?.categoryBreakdown.productive ?? 0)} productive</span>
+                                  </div>
+                                  <div className="tws-head-to-head-meta">
+                                    <span>{formatCount(mySummary?.emergencySessions)} I need it</span>
+                                    <span>{formatCount(summary?.emergencySessions)} I need it</span>
+                                  </div>
+                                </>
+                              ) : (
+                                <p className="tws-subtle" style={{ margin: '6px 0 0' }}>
+                                  Head-to-head unlocks after both log {competitiveMinHours}h active today.
+                                </p>
+                              )}
+                            </div>
+                            {friendTrophies.length > 0 && (
+                              <div className="tws-friend-trophies">
+                                {friendTrophies.slice(0, 3).map((trophy) => (
+                                  <span key={trophy.id} className="tws-badge">
+                                    <span className="emoji">{trophy.emoji}</span>
+                                    {trophy.name}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+              </div>
+            ) : overlayView === 'library' ? (
+              <div className="tws-bins">
+                <section className="tws-paywall-option">
+                  <div className="tws-option-header">
+                    <div>
+                      <h3>Replace pool</h3>
+                      <p className="tws-subtle">Links you tagged for gentle redirection.</p>
+                    </div>
+                  </div>
+                  {(status.library?.replaceItems ?? []).length === 0 ? (
+                    <p className="tws-subtle" style={{ margin: 0 }}>No replace items yet.</p>
+                  ) : (
+                    <div className="tws-attractors-grid">
+                      {(status.library?.replaceItems ?? []).slice(0, 6).map((item) => {
+                        const preview = item.url ? previewFor(item.url) : null;
+                        const thumb = item.url ? (preview?.imageUrl ?? youtubeThumbFromUrl(item.url) ?? screenshotThumb(item.url)) : null;
+                        const icon = item.url ? preview?.iconUrl ?? faviconUrl(item.url) : null;
+                        return (
+                          <div
+                            key={item.id}
+                            className="tws-attractor-card"
+                            onClick={() => handleOpenSuggestion({
+                              type: 'url',
+                              id: `lib:${item.id}`,
+                              title: item.title ?? item.domain,
+                              subtitle: item.note ?? 'replace pool',
+                              url: item.url ?? '',
+                              libraryId: item.id
+                            })}
+                          >
+                            <div className="tws-attractor-thumb">
+                              {thumb ? (
+                                <img className="tws-attractor-thumb-img" src={thumb} alt="" loading="lazy" />
+                              ) : (
+                                <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
+                              )}
+                              {icon && <img className="tws-attractor-favicon" src={icon} alt="" loading="lazy" />}
+                            </div>
+                            <div className="tws-attractor-meta">
+                              <strong>{preview?.title ?? item.title ?? item.domain}</strong>
+                              <span>{preview?.description ?? item.note ?? 'replace pool'}</span>
+                              <small>{item.domain}</small>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+              </div>
+            ) : overlayView === 'economy' ? (
+              <div className="tws-bins">
+                <section className="tws-paywall-option">
+                  <div className="tws-option-header">
+                    <div>
+                      <h3>Wallet + rate</h3>
+                      <p className="tws-subtle">Live view for this domain.</p>
+                    </div>
+                  </div>
+                  <div className="tws-rail-card">
+                    <div className="tws-rail-row">
+                      <span className="tws-rail-label">Balance</span>
+                      <strong>{status.balance} f-coins</strong>
+                    </div>
+                    <div className="tws-rail-row">
+                      <span className="tws-rail-label">Rate</span>
+                      <strong>{formatCoins(ratePerMin)} f-coins/min</strong>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            ) : overlayView === 'settings' ? (
+              <div className="tws-bins">
+                <section className="tws-paywall-option">
+                  <div className="tws-option-header">
+                    <div>
+                      <h3>Quick settings</h3>
+                      <p className="tws-subtle">Syncs with your desktop app.</p>
+                    </div>
+                  </div>
+                  <div className="tws-rail-card">
+                    <div className="tws-rail-row">
+                      <span className="tws-rail-label">Rot mode</span>
+                      <button
+                        type="button"
+                        className={`tws-rot-toggle ${rotModeEnabled ? 'active' : ''}`}
+                        onClick={handleRotModeToggle}
+                        disabled={rotModeBusy || isProcessing}
+                      >
+                        {rotModeEnabled ? 'On' : 'Off'}
+                      </button>
+                    </div>
+                    <p className="tws-subtle" style={{ margin: 0 }}>Use the desktop app for full settings.</p>
+                  </div>
+                </section>
+              </div>
+            ) : overlayView === 'domains' ? (
+              <div className="tws-bins">
+                <section className="tws-paywall-option">
+                  <div className="tws-option-header">
+                    <div>
+                      <h3>Domain tagging</h3>
+                      <p className="tws-subtle">Set a quick label for {domain}.</p>
+                    </div>
+                  </div>
+                  <div className="tws-feed-actions">
+                    {(['productive', 'neutral', 'frivolous'] as const).map((category) => (
+                      <button
+                        key={category}
+                        type="button"
+                        className="tws-feed-react"
+                        disabled={isProcessing}
+                        onClick={() => handleSetDomainCategory(category)}
+                      >
+                        {category}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              </div>
+            ) : overlayView === 'analytics' ? (
+              <div className="tws-bins">
+                <section className="tws-paywall-option">
+                  <div className="tws-option-header">
+                    <div>
+                      <h3>Analytics</h3>
+                      <p className="tws-subtle">Use the desktop app for full analytics.</p>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            ) : overlayView === 'profile' ? (
+              <div className="tws-bins">
+                <section className="tws-paywall-option">
+                  <div className="tws-option-header">
+                    <div>
+                      <h3>Your card</h3>
+                      <p className="tws-subtle">Pinned trophies are visible to friends.</p>
+                    </div>
+                  </div>
+                  <div className="tws-profile-card">
+                    <div className="tws-profile-header">
+                      <div className="tws-profile-avatar" style={{ background: profileColor }}>
+                        {profileName.trim().slice(0, 2).toUpperCase()}
+                      </div>
+                      <div>
+                        <strong>{profileName}</strong>
+                        <span className="tws-subtle">{profileHandle}</span>
+                      </div>
+                    </div>
+                    <div className="tws-profile-stats">
+                      <div>
+                        <span className="tws-rail-label">Weekly productive</span>
+                        <strong>{trophyProfile ? `${trophyProfile.stats.weeklyProductiveMinutes}m` : '--'}</strong>
+                      </div>
+                      <div>
+                        <span className="tws-rail-label">Best run</span>
+                        <strong>{trophyProfile ? `${Math.round(trophyProfile.stats.bestRunMinutes)}m` : '--'}</strong>
+                      </div>
+                      <div>
+                        <span className="tws-rail-label">Recovery median</span>
+                        <strong>{trophyProfile?.stats.recoveryMedianMinutes != null ? `${Math.round(trophyProfile.stats.recoveryMedianMinutes)}m` : '--'}</strong>
+                      </div>
+                      <div>
+                        <span className="tws-rail-label">Frivolity streak</span>
+                        <strong>{trophyProfile ? `${trophyProfile.stats.currentFrivolityStreakHours}h` : '--'}</strong>
+                      </div>
+                    </div>
+                    <div className="tws-profile-badges">
+                      {pinnedTrophies.length === 0 ? (
+                        <span className="tws-subtle">No pinned trophies yet.</span>
+                      ) : (
+                        pinnedTrophies.map((trophy) => (
+                          <span key={trophy.id} className="tws-badge">
+                            <span className="emoji">{trophy.emoji}</span>
+                            {trophy.name}
+                          </span>
+                        ))
+                      )}
+                    </div>
+                    {nextTrophy && (
+                      <div className="tws-profile-next">
+                        <span className="tws-rail-label">Next up</span>
+                        <div className="tws-profile-next-body">
+                          <span className="emoji">{nextTrophy.emoji}</span>
+                          <div>
+                            <strong>{nextTrophy.name}</strong>
+                            <span className="tws-subtle">{nextTrophy.progress.label ?? `${nextTrophy.progress.current}/${nextTrophy.progress.target}`}</span>
+                          </div>
+                        </div>
+                        <div className="tws-progress">
+                          <span style={{ width: `${Math.round(nextTrophy.progress.ratio * 100)}%` }} />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </section>
+                <section className="tws-paywall-option">
+                  <div className="tws-option-header">
+                    <div>
+                      <h3>Trophy case</h3>
+                      <p className="tws-subtle">Locked trophies appear with a silhouette.</p>
+                    </div>
+                  </div>
+                  <div className="tws-trophy-grid">
+                    {trophies.map((trophy) => {
+                      const locked = !trophy.earnedAt;
+                      const isSecret = trophy.secret && locked;
+                      return (
+                        <div key={trophy.id} className={`tws-trophy-card ${locked ? 'locked' : 'earned'}`}>
+                          <span className="emoji">{isSecret ? '❓' : trophy.emoji}</span>
+                          <strong>{isSecret ? 'Classified' : trophy.name}</strong>
+                          <span className="tws-subtle">{isSecret ? 'Keep going to reveal.' : trophy.description}</span>
+                          {trophy.progress.state === 'untracked' ? (
+                            <span className="tws-subtle">{trophy.progress.label}</span>
+                          ) : (
+                            <div className="tws-progress">
+                              <span style={{ width: `${Math.round(trophy.progress.ratio * 100)}%` }} />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              </div>
+            ) : null}
           </div>
         </main>
 
@@ -1710,6 +2345,87 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
             <p className="tws-subtle" style={{ margin: 0 }}>
               Proceed only when it matches your intention.
             </p>
+          </div>
+
+          <div className="tws-rail-card tws-friends-card">
+            <div className="tws-rail-row">
+              <strong>Head to head</strong>
+              <span className="tws-rail-label">Last 24h</span>
+            </div>
+            {!competitiveOptIn ? (
+              <p className="tws-subtle" style={{ margin: 0 }}>
+                Competitive view is off. Enable it in the desktop app.
+              </p>
+            ) : friends.length === 0 ? (
+              <p className="tws-subtle" style={{ margin: 0 }}>
+                Add a friend in the desktop app to compare here.
+              </p>
+            ) : (
+              <div className="tws-friends-list">
+                {friends.map((friend) => {
+                  const summary = friendSummaries[friend.userId];
+                  const headToHead = headToHeadPercent(mySummary, summary);
+                  const friendTrophies = (friend.pinnedTrophies ?? [])
+                    .map((id) => trophyById.get(id))
+                    .filter((trophy): trophy is TrophyStatus => Boolean(trophy));
+                  return (
+                    <button
+                      key={friend.id}
+                      type="button"
+                      className="tws-friend-row"
+                      onClick={() => openFriendDetail(friend)}
+                    >
+                      <div className="tws-friend-row-header">
+                        <div>
+                          <strong>{friend.displayName ?? friend.handle ?? 'Friend'}</strong>
+                          <span className="tws-subtle">@{friend.handle ?? 'no-handle'}</span>
+                        </div>
+                        <span className="tws-pill">{summary ? `${summary.productivityScore}%` : '--'}</span>
+                      </div>
+                      <div className="tws-head-to-head">
+                        {meetsCompetitiveGate(mySummary) && meetsCompetitiveGate(summary) ? (
+                          <>
+                            <div className="tws-head-to-head-bar fancy">
+                              <span
+                                className="tws-head-to-head-left"
+                                style={{ width: `${headToHead}%`, background: myProfile?.color ?? 'var(--accent)' }}
+                              />
+                              <span
+                                className="tws-head-to-head-right"
+                                style={{ width: `${100 - headToHead}%`, background: friend.color ?? 'rgba(255, 255, 255, 0.3)' }}
+                              />
+                              <div className="tws-head-to-head-glow" />
+                            </div>
+                            <div className="tws-head-to-head-meta">
+                              <span>{formatMinutes(mySummary?.categoryBreakdown.productive ?? 0)} productive</span>
+                              <span>{formatMinutes(summary?.categoryBreakdown.productive ?? 0)} productive</span>
+                            </div>
+                            <div className="tws-head-to-head-meta">
+                              <span>{formatCount(mySummary?.emergencySessions)} I need it</span>
+                              <span>{formatCount(summary?.emergencySessions)} I need it</span>
+                            </div>
+                          </>
+                        ) : (
+                          <p className="tws-subtle" style={{ margin: '6px 0 0' }}>
+                            Head-to-head unlocks after both log {competitiveMinHours}h active today.
+                          </p>
+                        )}
+                      </div>
+                      {friendTrophies.length > 0 && (
+                        <div className="tws-friend-trophies">
+                          {friendTrophies.slice(0, 2).map((trophy) => (
+                            <span key={trophy.id} className="tws-badge">
+                              <span className="emoji">{trophy.emoji}</span>
+                              {trophy.name}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <div className="tws-rail-card tws-rot-card">
@@ -1854,6 +2570,63 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
             </details>
           </div>
         </aside>
+
+        {friendDetailOpen && friendDetail && (
+          <div className="tws-friend-modal-overlay" onClick={() => setFriendDetailOpen(false)}>
+            <div className="tws-friend-modal" onClick={(event) => event.stopPropagation()}>
+              <div className="tws-friend-modal-header">
+                <div>
+                  <h3>{friendDetail.displayName ?? friendDetail.handle ?? 'Friend'}</h3>
+                  <p className="tws-subtle">@{friendDetail.handle ?? 'no-handle'}</p>
+                </div>
+                <button className="tws-secondary" type="button" onClick={() => setFriendDetailOpen(false)}>
+                  Close
+                </button>
+              </div>
+              <div className="tws-friend-modal-metrics">
+                <div>
+                  <span className="tws-rail-label">Productivity</span>
+                  <strong>{friendSummaries[friendDetail.userId] ? `${friendSummaries[friendDetail.userId].productivityScore}%` : '--'}</strong>
+                </div>
+                <div>
+                  <span className="tws-rail-label">Active time</span>
+                  <strong>{friendSummaries[friendDetail.userId] ? formatDuration(friendSummaries[friendDetail.userId].totalActiveSeconds * 1000) : '--'}</strong>
+                </div>
+              </div>
+              {(friendDetail.pinnedTrophies ?? []).length > 0 && (
+                <div className="tws-friend-trophies">
+                  {(friendDetail.pinnedTrophies ?? [])
+                    .map((id) => trophyById.get(id))
+                    .filter((trophy): trophy is TrophyStatus => Boolean(trophy))
+                    .slice(0, 4)
+                    .map((trophy) => (
+                      <span key={trophy.id} className="tws-badge">
+                        <span className="emoji">{trophy.emoji}</span>
+                        {trophy.name}
+                      </span>
+                    ))}
+                </div>
+              )}
+              <div className="tws-friend-modal-timeline">
+                <div className="tws-friend-modal-timeline-header">
+                  <span className="tws-rail-label">Last {friendTimeline?.windowHours ?? 24}h</span>
+                  <span className="tws-subtle">Dominant attention per hour</span>
+                </div>
+                <div className="tws-friend-modal-timeline-bars">
+                  {(friendTimeline?.timeline ?? []).map((slot, idx) => {
+                    const total = slot.productive + slot.neutral + slot.frivolity + slot.idle;
+                    const height = total === 0 ? 8 : Math.max(12, Math.min(60, Math.round((total / maxPopupTimeline(friendTimeline)) * 60)));
+                    return (
+                      <div key={`${slot.start}-${idx}`} className="tws-friend-bar-col" title={slot.hour}>
+                        <span className={`tws-friend-bar-fill tws-cat-${slot.dominant}`} style={{ height: `${height}px` }} />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

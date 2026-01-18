@@ -5,7 +5,7 @@ import type { WalletManager } from '../wallet';
 import type { PaywallManager } from '../paywall';
 import type { LibraryService } from '../library';
 import type { ConsumptionLogService } from '../consumption';
-import type { MarketRate } from '@shared/types';
+import type { ConsumptionLogKind, MarketRate } from '@shared/types';
 
 export type SettingsRoutesContext = {
     settings: SettingsService;
@@ -176,6 +176,53 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
             });
         } catch (error) {
             res.status(500).json({ error: (error as Error).message });
+        }
+    });
+
+    router.post('/ingest', (req, res) => {
+        try {
+            const payload = req.body as {
+                transactions?: Array<{ ts?: string; type?: 'earn' | 'spend' | 'adjust'; amount?: number; meta?: Record<string, unknown>; syncId?: string }>;
+                consumption?: Array<{ syncId?: string; occurredAt?: string; kind?: ConsumptionLogKind; title?: string | null; url?: string | null; domain?: string | null; meta?: Record<string, unknown> }>;
+            };
+            const transactions = Array.isArray(payload?.transactions) ? payload.transactions : [];
+            const consumptionEvents = Array.isArray(payload?.consumption) ? payload.consumption : [];
+
+            let appliedTransactions = 0;
+            for (const entry of transactions) {
+                if (!entry || typeof entry.syncId !== 'string' || typeof entry.ts !== 'string') continue;
+                if (entry.type !== 'earn' && entry.type !== 'spend' && entry.type !== 'adjust') continue;
+                if (typeof entry.amount !== 'number' || !Number.isFinite(entry.amount)) continue;
+                wallet.applyRemoteTransaction({
+                    syncId: entry.syncId,
+                    ts: entry.ts,
+                    type: entry.type,
+                    amount: entry.amount,
+                    meta: entry.meta
+                });
+                appliedTransactions += 1;
+            }
+
+            let appliedConsumption = 0;
+            for (const entry of consumptionEvents) {
+                if (!entry || typeof entry.syncId !== 'string' || typeof entry.occurredAt !== 'string' || !entry.kind) continue;
+                const kind = entry.kind;
+                if (!['library-item', 'frivolous-session', 'paywall-decline', 'paywall-exit', 'emergency-session'].includes(kind)) continue;
+                consumption.upsertFromSync({
+                    syncId: entry.syncId,
+                    occurredAt: entry.occurredAt,
+                    kind,
+                    title: entry.title ?? null,
+                    url: entry.url ?? null,
+                    domain: entry.domain ?? null,
+                    meta: entry.meta
+                });
+                appliedConsumption += 1;
+            }
+
+            res.json({ ok: true, applied: { transactions: appliedTransactions, consumption: appliedConsumption } });
+        } catch (error) {
+            res.status(400).json({ error: (error as Error).message });
         }
     });
 

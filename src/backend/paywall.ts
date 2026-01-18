@@ -9,6 +9,7 @@ export type PaywallSession = {
   ratePerMin: number;
   remainingSeconds: number;
   lastTick: number;
+  startedAt?: number;
   paused?: boolean;
   purchasePrice?: number;
   purchasedSeconds?: number;
@@ -79,6 +80,7 @@ export class PaywallManager extends EventEmitter {
       ratePerMin: 0,
       remainingSeconds: Infinity,
       lastTick: Date.now(),
+      startedAt: Date.now(),
       paused: false,
       spendRemainder: 0,
       purchasePrice: price,
@@ -98,6 +100,7 @@ export class PaywallManager extends EventEmitter {
       ratePerMin: rate.ratePerMin,
       remainingSeconds: Infinity,
       lastTick: Date.now(),
+      startedAt: Date.now(),
       paused: false,
       spendRemainder: 0
     };
@@ -119,6 +122,7 @@ export class PaywallManager extends EventEmitter {
       ratePerMin: 0,
       remainingSeconds: Number.isFinite(options.durationSeconds as number) ? Math.max(1, Math.round(options.durationSeconds as number)) : Infinity,
       lastTick: Date.now(),
+      startedAt: Date.now(),
       paused: false,
       spendRemainder: 0,
       justification,
@@ -141,6 +145,7 @@ export class PaywallManager extends EventEmitter {
       ratePerMin: rate.ratePerMin,
       remainingSeconds: minutes * 60,
       lastTick: Date.now(),
+      startedAt: Date.now(),
       paused: false,
       spendRemainder: 0,
       purchasePrice: price,
@@ -186,8 +191,10 @@ export class PaywallManager extends EventEmitter {
       }
     }
 
+    const endedAt = Date.now();
+    const durationSeconds = session.startedAt ? Math.round((endedAt - session.startedAt) / 1000) : null;
     this.sessions.delete(domain);
-    this.emit('session-ended', { domain, reason, refund });
+    this.emit('session-ended', { domain, reason, refund, startedAt: session.startedAt ?? null, durationSeconds });
     return session;
   }
 
@@ -229,7 +236,8 @@ export class PaywallManager extends EventEmitter {
           this.emit('session-tick', session);
           if (session.remainingSeconds <= 0) {
             this.sessions.delete(session.domain);
-            this.emit('session-ended', { domain: session.domain, reason: 'emergency-expired' });
+            const durationSeconds = session.startedAt ? Math.round((now - session.startedAt) / 1000) : null;
+            this.emit('session-ended', { domain: session.domain, reason: 'emergency-expired', startedAt: session.startedAt ?? null, durationSeconds });
           }
         } else {
           session.lastTick = now;
@@ -259,7 +267,8 @@ export class PaywallManager extends EventEmitter {
         } catch (error) {
           logger.warn('Metered session ended due to insufficient funds', session.domain);
           this.sessions.delete(session.domain);
-          this.emit('session-ended', { domain: session.domain, reason: 'insufficient-funds' });
+          const durationSeconds = session.startedAt ? Math.round((now - session.startedAt) / 1000) : null;
+          this.emit('session-ended', { domain: session.domain, reason: 'insufficient-funds', startedAt: session.startedAt ?? null, durationSeconds });
         }
       } else {
         session.remainingSeconds -= intervalSeconds;
@@ -268,7 +277,8 @@ export class PaywallManager extends EventEmitter {
 
         if (session.remainingSeconds <= 0) {
           this.sessions.delete(session.domain);
-          this.emit('session-ended', { domain: session.domain, reason: 'completed' });
+          const durationSeconds = session.startedAt ? Math.round((now - session.startedAt) / 1000) : null;
+          this.emit('session-ended', { domain: session.domain, reason: 'completed', startedAt: session.startedAt ?? null, durationSeconds });
         }
       }
     }

@@ -1,12 +1,11 @@
 import { useEffect, useState, useRef } from 'react';
 import Dashboard from './components/Dashboard';
 import Settings from './components/Settings';
-import EconomyTuner from './components/EconomyTuner';
 import Analytics from './components/Analytics';
 import PaywallOverlay from './components/PaywallOverlay';
 import Library from './components/Library';
-import Domains from './components/Domains';
 import Friends from './components/Friends';
+import Profile from './components/Profile';
 import type {
   EconomyState,
   MarketRate,
@@ -16,8 +15,8 @@ import type {
 
 const api: RendererApi = window.twsp;
 
-type View = 'dashboard' | 'library' | 'domains' | 'analytics' | 'economy' | 'settings' | 'friends';
-const VIEW_LIST: View[] = ['dashboard', 'library', 'domains', 'analytics', 'economy', 'settings', 'friends'];
+type View = 'dashboard' | 'library' | 'analytics' | 'settings' | 'friends' | 'profile';
+const VIEW_LIST: View[] = ['dashboard', 'library', 'analytics', 'settings', 'friends', 'profile'];
 const isView = (value: string): value is View => VIEW_LIST.includes(value as View);
 
 export default function App() {
@@ -145,12 +144,6 @@ export default function App() {
             Library
           </button>
           <button
-            className={view === 'domains' ? 'active' : ''}
-            onClick={() => setView('domains')}
-          >
-            Domains
-          </button>
-          <button
             className={view === 'settings' ? 'active' : ''}
             onClick={() => setView('settings')}
           >
@@ -163,16 +156,16 @@ export default function App() {
             Analytics
           </button>
           <button
-            className={view === 'economy' ? 'active' : ''}
-            onClick={() => setView('economy')}
-          >
-            Economy
-          </button>
-          <button
             className={view === 'friends' ? 'active' : ''}
             onClick={() => setView('friends')}
           >
             Friends
+          </button>
+          <button
+            className={view === 'profile' ? 'active' : ''}
+            onClick={() => setView('profile')}
+          >
+            Profile
           </button>
         </nav>
 
@@ -199,9 +192,6 @@ export default function App() {
         {view === 'analytics' && (
           <Analytics api={api} />
         )}
-        {view === 'economy' && (
-          <EconomyTuner api={api} />
-        )}
         {view === 'settings' && (
           <Settings
             api={api}
@@ -210,11 +200,11 @@ export default function App() {
         {view === 'library' && (
           <Library api={api} />
         )}
-        {view === 'domains' && (
-          <Domains api={api} />
-        )}
         {view === 'friends' && (
           <Friends api={api} />
+        )}
+        {view === 'profile' && (
+          <Profile api={api} />
         )}
       </main>
 

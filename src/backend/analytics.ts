@@ -57,6 +57,7 @@ type SessionAnalyticsRow = {
 
 export class AnalyticsService {
     private db: BetterSqlite3Database;
+    private getExcludedKeywords?: () => string[];
 
     // Prepared statements for performance
     private activitiesInRangeStmt: Statement;
@@ -68,8 +69,9 @@ export class AnalyticsService {
     private clearPatternsStmt: Statement;
     private getPatternsStmt: Statement;
 
-    constructor(database: Database) {
+    constructor(database: Database, getExcludedKeywords?: () => string[]) {
         this.db = database.connection;
+        this.getExcludedKeywords = getExcludedKeywords;
 
         this.activitiesInRangeStmt = this.db.prepare(`
       SELECT 
@@ -130,6 +132,13 @@ export class AnalyticsService {
     `);
     }
 
+    private shouldSuppress(domain: string | null, appName: string | null) {
+        const keywords = this.getExcludedKeywords ? this.getExcludedKeywords() : [];
+        if (!keywords.length) return false;
+        const haystack = `${domain ?? ''} ${appName ?? ''}`.toLowerCase();
+        return keywords.some((keyword) => keyword && haystack.includes(keyword));
+    }
+
     /**
      * Ingest behavioral events from the extension
      */
@@ -185,15 +194,18 @@ export class AnalyticsService {
             bucket.sampleCount++;
             bucket.idle += activity.idleSeconds;
 
-            const category = activity.category ?? 'neutral';
+            const suppressed = this.shouldSuppress(activity.domain, activity.appName);
+            const category = suppressed ? 'neutral' : (activity.category ?? 'neutral');
             if (category === 'productive') bucket.productive += activity.secondsActive;
             else if (category === 'frivolity') bucket.frivolity += activity.secondsActive;
             else bucket.neutral += activity.secondsActive;
 
             // Track domain frequency
-            const domain = activity.domain ?? activity.appName ?? 'Unknown';
-            const hourDomains = domainCounts.get(hour)!;
-            hourDomains.set(domain, (hourDomains.get(domain) ?? 0) + activity.secondsActive);
+            if (!suppressed) {
+                const domain = activity.domain ?? activity.appName ?? 'Unknown';
+                const hourDomains = domainCounts.get(hour)!;
+                hourDomains.set(domain, (hourDomains.get(domain) ?? 0) + activity.secondsActive);
+            }
         }
 
         // Compute dominant category and domain for each hour
@@ -256,14 +268,20 @@ export class AnalyticsService {
             const prev = sorted[i - 1];
             const curr = sorted[i];
 
-            const key = `${prev.category ?? 'null'}:${prev.domain ?? 'null'}→${curr.category ?? 'null'}:${curr.domain ?? 'null'}`;
+            const prevSuppressed = this.shouldSuppress(prev.domain, prev.appName);
+            const currSuppressed = this.shouldSuppress(curr.domain, curr.appName);
+            const prevCategory = prevSuppressed ? 'neutral' : (prev.category ?? null);
+            const currCategory = currSuppressed ? 'neutral' : (curr.category ?? null);
+            const prevDomain = prevSuppressed ? null : (prev.domain ?? prev.appName ?? null);
+            const currDomain = currSuppressed ? null : (curr.domain ?? curr.appName ?? null);
+            const key = `${prevCategory ?? 'null'}:${prevDomain ?? 'null'}→${currCategory ?? 'null'}:${currDomain ?? 'null'}`;
 
             if (!transitions.has(key)) {
                 transitions.set(key, {
-                    fromCategory: prev.category,
-                    fromDomain: prev.domain,
-                    toCategory: curr.category,
-                    toDomain: curr.domain,
+                    fromCategory: prevCategory,
+                    fromDomain: prevDomain,
+                    toCategory: currCategory,
+                    toDomain: currDomain,
                     count: 0,
                     totalDurationBefore: 0,
                     hourBuckets: new Map(),
@@ -457,11 +475,14 @@ export class AnalyticsService {
             totalIdle += activity.idleSeconds;
             categoryTotals.idle += activity.idleSeconds;
 
-            const category = activity.category ?? 'neutral';
+            const suppressed = this.shouldSuppress(activity.domain, activity.appName);
+            const category = suppressed ? 'neutral' : (activity.category ?? 'neutral');
             categoryTotals[category] += activity.secondsActive;
 
-            const domain = activity.domain ?? activity.appName ?? 'Unknown';
-            domainTotals.set(domain, (domainTotals.get(domain) ?? 0) + activity.secondsActive);
+            if (!suppressed) {
+                const domain = activity.domain ?? activity.appName ?? 'Unknown';
+                domainTotals.set(domain, (domainTotals.get(domain) ?? 0) + activity.secondsActive);
+            }
 
             const hour = new Date(activity.startedAt).getHours();
             if (category === 'productive') {
@@ -510,11 +531,17 @@ export class AnalyticsService {
         // Calculate focus trend by comparing recent half to older half
         const midpoint = activities.length / 2;
         const recentProductivity = activities.slice(0, midpoint)
-            .filter(a => a.category === 'productive')
-            .reduce((acc, a) => acc + a.secondsActive, 0);
+            .reduce((acc, a) => {
+                const suppressed = this.shouldSuppress(a.domain, a.appName);
+                const category = suppressed ? 'neutral' : a.category;
+                return category === 'productive' ? acc + a.secondsActive : acc;
+            }, 0);
         const olderProductivity = activities.slice(midpoint)
-            .filter(a => a.category === 'productive')
-            .reduce((acc, a) => acc + a.secondsActive, 0);
+            .reduce((acc, a) => {
+                const suppressed = this.shouldSuppress(a.domain, a.appName);
+                const category = suppressed ? 'neutral' : a.category;
+                return category === 'productive' ? acc + a.secondsActive : acc;
+            }, 0);
 
         let focusTrend: FocusTrend;
         if (recentProductivity > olderProductivity * 1.1) focusTrend = 'improving';
@@ -579,7 +606,8 @@ export class AnalyticsService {
 
             if (bucketIndex >= 0 && bucketIndex < bucketCount) {
                 const bucket = buckets[bucketIndex];
-                const category = activity.category ?? 'neutral';
+                const suppressed = this.shouldSuppress(activity.domain, activity.appName);
+                const category = suppressed ? 'neutral' : (activity.category ?? 'neutral');
 
                 if (category === 'productive') bucket.productive += activity.secondsActive;
                 else if (category === 'frivolity') bucket.frivolity += activity.secondsActive;

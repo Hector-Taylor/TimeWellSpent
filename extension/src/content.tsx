@@ -19,10 +19,11 @@ let heartbeatTimer: number | null = null;
 function sendHeartbeat() {
   if (document.visibilityState !== 'visible') return;
   if (!document.hasFocus()) return;
+  const mediaPlaying = isMediaPlaying();
   chrome.runtime
     .sendMessage({
       type: 'PAGE_HEARTBEAT',
-      payload: { url: window.location.href, title: document.title }
+      payload: { url: window.location.href, title: document.title, mediaPlaying }
     })
     .catch(() => { });
 }
@@ -49,6 +50,17 @@ chrome.runtime.onMessage.addListener((message: BlockMessage | { type: 'TWS_PING'
   return true;
 });
 
+function isMediaPlaying() {
+  const elements = document.querySelectorAll('video, audio');
+  for (const el of Array.from(elements)) {
+    const media = el as HTMLMediaElement;
+    if (media.readyState > 2 && !media.paused && !media.ended) {
+      return true;
+    }
+  }
+  return false;
+}
+
 async function mountOverlay(domain: string, reason?: string, peek?: { allowed: boolean; isNewPage: boolean }) {
   // Check for existing shadow host
   const existingHost = document.getElementById('tws-shadow-host');
@@ -63,7 +75,7 @@ async function mountOverlay(domain: string, reason?: string, peek?: { allowed: b
   host.style.inset = '0';
   host.style.width = '100%';
   host.style.height = '100%';
-  host.style.background = '#05060a';
+  host.style.background = 'transparent';
 
   document.body.appendChild(host);
 

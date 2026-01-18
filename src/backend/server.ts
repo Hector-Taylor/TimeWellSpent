@@ -7,6 +7,7 @@ import { WalletManager } from './wallet';
 import { MarketService } from './market';
 import { SettingsService } from './settings';
 import { ActivityTracker, type ActivityEvent } from './activity-tracker';
+import { ActivityRollupService } from './activityRollups';
 import { PaywallManager } from './paywall';
 import { EconomyEngine } from './economy';
 import { FocusService } from './focus';
@@ -15,7 +16,7 @@ import { BudgetService } from './budgets';
 import { ActivityClassifier } from './activityClassifier';
 import { ActivityPipeline, type ActivityOrigin } from './activityPipeline';
 import type { Database } from './storage';
-import type { MarketRate } from '@shared/types';
+import type { FriendConnection, FriendSummary, FriendTimeline, MarketRate } from '@shared/types';
 import { logger } from '@shared/logger';
 import { AnalyticsService } from './analytics';
 import { EmergencyService } from './emergency';
@@ -23,6 +24,7 @@ import { LibraryService } from './library';
 import { ConsumptionLogService } from './consumption';
 import { FriendsService } from './friends';
 import { ReadingService } from './reading';
+import { TrophyService } from './trophies';
 
 // Route modules
 import {
@@ -36,6 +38,8 @@ import {
   createAnalyticsRoutes,
   createSettingsRoutes,
   createExtensionSyncRoutes,
+  createFriendsRoutes,
+  createTrophyRoutes,
   createActionsRoutes,
   createUiRoutes,
   createIntegrationsRoutes
@@ -48,6 +52,7 @@ export type BackendServices = {
   market: MarketService;
   settings: SettingsService;
   activityTracker: ActivityTracker;
+  activityRollups: ActivityRollupService;
   paywall: PaywallManager;
   economy: EconomyEngine;
   focus: FocusService;
@@ -56,6 +61,7 @@ export type BackendServices = {
   budgets: BudgetService;
   library: LibraryService;
   consumption: ConsumptionLogService;
+  trophies: TrophyService;
   reading: ReadingService;
   friends: FriendsService;
   ui: {
@@ -73,7 +79,21 @@ export type BackendServices = {
 
 const PORT = 17600;
 
-export async function createBackend(database: Database): Promise<BackendServices> {
+type BackendOptions = {
+  onAuthCallback?: (url: string) => void;
+  friendsProvider?: {
+    profile: () => Promise<FriendProfile | null>;
+    meSummary?: (windowHours?: number) => Promise<FriendSummary | null>;
+    list: () => Promise<FriendConnection[]>;
+    summaries: (windowHours?: number) => Promise<Record<string, FriendSummary>>;
+    timeline: (userId: string, windowHours?: number) => Promise<FriendTimeline | null>;
+  };
+};
+
+export async function createBackend(
+  database: Database,
+  options?: BackendOptions
+): Promise<BackendServices> {
   // Initialize all services
   const wallet = new WalletManager(database);
   const market = new MarketService(database);
@@ -84,10 +104,11 @@ export async function createBackend(database: Database): Promise<BackendServices
     getNeutralRatePerMin: () => settings.getNeutralRatePerMin(),
     getSpendIntervalSeconds: () => settings.getSpendIntervalSeconds()
   });
-  const emergency = new EmergencyService(settings, wallet, paywall);
-  const activityTracker = new ActivityTracker(database);
+  const activityTracker = new ActivityTracker(database, () => settings.getExcludedKeywords());
+  const activityRollups = new ActivityRollupService(database);
   const library = new LibraryService(database);
   const consumption = new ConsumptionLogService(database);
+  const emergency = new EmergencyService(settings, wallet, paywall, consumption);
   const productiveOverrides = { urls: new Set<string>(), apps: new Set<string>() };
 
   // Helpers for productive overrides
@@ -143,15 +164,29 @@ export async function createBackend(database: Database): Promise<BackendServices
         }
       }
       return null;
+    },
+    (event) => {
+      const keywords = settings.getExcludedKeywords();
+      if (!keywords.length) return false;
+      const haystack = [
+        event.domain ?? '',
+        event.appName ?? '',
+        event.windowTitle ?? '',
+        event.url ?? ''
+      ]
+        .join(' ')
+        .toLowerCase();
+      return keywords.some((keyword) => keyword && haystack.includes(keyword));
     }
   );
-  const activityPipeline = new ActivityPipeline(activityTracker, economy, classifier);
+  const activityPipeline = new ActivityPipeline(activityTracker, economy, classifier, () => settings.getContinuityWindowSeconds());
   const focus = new FocusService(database, wallet);
   const intentions = new IntentionService(database);
   const budgets = new BudgetService(database);
-  const analytics = new AnalyticsService(database);
+  const analytics = new AnalyticsService(database, () => settings.getExcludedKeywords());
   const reading = new ReadingService(settings);
   const friends = new FriendsService(settings, analytics);
+  const trophies = new TrophyService(database, analytics, consumption, library, wallet, settings);
 
   // Consumption logging
   library.on('consumed', ({ item, consumedAt }) => {
@@ -182,12 +217,35 @@ export async function createBackend(database: Database): Promise<BackendServices
     });
   });
 
+  paywall.on('session-ended', (payload: { domain: string; reason: string; durationSeconds?: number | null }) => {
+    if (payload.durationSeconds != null && payload.durationSeconds <= 60) {
+      consumption.record({
+        kind: 'paywall-exit',
+        title: payload.domain,
+        domain: payload.domain,
+        meta: {
+          reason: payload.reason,
+          durationSeconds: payload.durationSeconds
+        }
+      });
+      trophies.scheduleEvaluation('paywall-exit');
+    }
+  });
+
   // Express setup
   const app = express();
   const ws = expressWs(app);
   const uiEvents = new EventEmitter();
 
   app.use(express.json());
+
+  if (options?.onAuthCallback) {
+    app.get('/auth/callback', (req, res) => {
+      const url = `http://127.0.0.1:${PORT}${req.originalUrl}`;
+      options.onAuthCallback?.(url);
+      res.status(200).send('Sign-in complete. You can close this tab.');
+    });
+  }
 
   // Helper for market rate broadcasts
   const broadcastMarketRates = () => {
@@ -230,6 +288,16 @@ export async function createBackend(database: Database): Promise<BackendServices
   app.use('/analytics', createAnalyticsRoutes(analytics));
   app.use('/settings', createSettingsRoutes({ settings }));
   app.use('/extension', createExtensionSyncRoutes({ settings, market, wallet, paywall, library, consumption }));
+  app.use('/trophies', createTrophyRoutes({ trophies, profile: options?.friendsProvider?.profile }));
+  if (options?.friendsProvider) {
+    app.use('/friends', createFriendsRoutes({
+      ...options.friendsProvider,
+      competitive: () => ({
+        optIn: settings.getCompetitiveOptIn(),
+        minActiveHours: settings.getCompetitiveMinActiveHours()
+      })
+    }));
+  }
   app.use('/actions', createActionsRoutes({ settings, reading, uiEvents }));
   app.use('/ui', createUiRoutes(uiEvents));
   app.use('/integrations', createIntegrationsRoutes(reading));
@@ -256,6 +324,12 @@ export async function createBackend(database: Database): Promise<BackendServices
 
   const declineDomain = async (domain: string) => {
     paywall.clearSession(domain);
+    consumption.record({
+      kind: 'paywall-decline',
+      title: domain,
+      domain
+    });
+    trophies.scheduleEvaluation('paywall-decline');
     const state = economy.getState();
     if (state.activeDomain === domain && state.activeApp) {
       logger.warn('Skipping closeActiveBrowserTab as it is not implemented');
@@ -267,6 +341,7 @@ export async function createBackend(database: Database): Promise<BackendServices
     market,
     settings,
     activityTracker,
+    activityRollups,
     paywall,
     economy,
     focus,
@@ -274,6 +349,7 @@ export async function createBackend(database: Database): Promise<BackendServices
     budgets,
     library,
     consumption,
+    trophies,
     analytics,
     reading,
     friends,

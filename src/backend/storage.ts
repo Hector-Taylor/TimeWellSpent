@@ -81,7 +81,8 @@ export class Database {
         ts TEXT NOT NULL,
         type TEXT CHECK(type IN ('earn','spend','adjust')) NOT NULL,
         amount INTEGER NOT NULL,
-        meta TEXT
+        meta TEXT,
+        sync_id TEXT
       );
 
       CREATE TABLE IF NOT EXISTS market_rates (
@@ -107,8 +108,11 @@ export class Database {
         purpose TEXT NOT NULL DEFAULT 'allow',
         price INTEGER,
         created_at TEXT NOT NULL,
+        updated_at TEXT,
         last_used_at TEXT,
-        consumed_at TEXT
+        consumed_at TEXT,
+        deleted_at TEXT,
+        sync_id TEXT
       );
 
       CREATE TABLE IF NOT EXISTS consumption_log (
@@ -119,6 +123,25 @@ export class Database {
         title TEXT,
         url TEXT,
         domain TEXT,
+        meta TEXT,
+        sync_id TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS activity_rollups (
+        id INTEGER PRIMARY KEY,
+        device_id TEXT NOT NULL,
+        hour_start TEXT NOT NULL,
+        productive INTEGER NOT NULL,
+        neutral INTEGER NOT NULL,
+        frivolity INTEGER NOT NULL,
+        idle INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(device_id, hour_start)
+      );
+
+      CREATE TABLE IF NOT EXISTS trophies (
+        id TEXT PRIMARY KEY,
+        earned_at TEXT NOT NULL,
         meta TEXT
       );
 
@@ -128,6 +151,9 @@ export class Database {
       CREATE INDEX IF NOT EXISTS idx_library_items_bucket ON library_items(bucket);
       CREATE INDEX IF NOT EXISTS idx_library_items_domain ON library_items(domain);
       CREATE INDEX IF NOT EXISTS idx_consumption_log_day ON consumption_log(day);
+      CREATE INDEX IF NOT EXISTS idx_activity_rollups_device ON activity_rollups(device_id);
+      CREATE INDEX IF NOT EXISTS idx_activity_rollups_hour ON activity_rollups(hour_start);
+      CREATE INDEX IF NOT EXISTS idx_trophies_earned_at ON trophies(earned_at);
 
       -- Granular behavioral events captured by extension
       CREATE TABLE IF NOT EXISTS behavior_events (
@@ -223,9 +249,42 @@ export class Database {
       logger.info('Migrating database: Adding consumed_at to library_items');
       this.driver.exec("ALTER TABLE library_items ADD COLUMN consumed_at TEXT");
     }
+    const hasUpdatedAt = libraryInfo.some(c => c.name === 'updated_at');
+    const hasDeletedAt = libraryInfo.some(c => c.name === 'deleted_at');
+    const hasSyncId = libraryInfo.some(c => c.name === 'sync_id');
+    if (!hasUpdatedAt) {
+      logger.info('Migrating database: Adding updated_at to library_items');
+      this.driver.exec("ALTER TABLE library_items ADD COLUMN updated_at TEXT");
+    }
+    if (!hasDeletedAt) {
+      logger.info('Migrating database: Adding deleted_at to library_items');
+      this.driver.exec("ALTER TABLE library_items ADD COLUMN deleted_at TEXT");
+    }
+    if (!hasSyncId) {
+      logger.info('Migrating database: Adding sync_id to library_items');
+      this.driver.exec("ALTER TABLE library_items ADD COLUMN sync_id TEXT");
+    }
 
     // Ensure index exists after migrations (older DBs may not have `purpose` yet when DDL runs).
     this.driver.exec('CREATE INDEX IF NOT EXISTS idx_library_items_purpose ON library_items(purpose)');
+    this.driver.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_library_items_sync_id ON library_items(sync_id)');
+    this.driver.exec('UPDATE library_items SET updated_at = created_at WHERE updated_at IS NULL');
+
+    const txInfo = this.driver.prepare("PRAGMA table_info(transactions)").all() as Array<{ name: string }>;
+    const hasTxSyncId = txInfo.some(c => c.name === 'sync_id');
+    if (!hasTxSyncId) {
+      logger.info('Migrating database: Adding sync_id to transactions');
+      this.driver.exec("ALTER TABLE transactions ADD COLUMN sync_id TEXT");
+    }
+    this.driver.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_sync_id ON transactions(sync_id)');
+
+    const consumptionInfo = this.driver.prepare("PRAGMA table_info(consumption_log)").all() as Array<{ name: string }>;
+    const hasConsumptionSyncId = consumptionInfo.some(c => c.name === 'sync_id');
+    if (!hasConsumptionSyncId) {
+      logger.info('Migrating database: Adding sync_id to consumption_log');
+      this.driver.exec("ALTER TABLE consumption_log ADD COLUMN sync_id TEXT");
+    }
+    this.driver.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_consumption_log_sync_id ON consumption_log(sync_id)');
 
     // Migration: merge legacy store_items into library_items (priced allow-items)
     const storeTable = this.driver

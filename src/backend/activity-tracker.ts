@@ -1,6 +1,6 @@
 import type { Database as BetterSqlite3Database, Statement } from 'better-sqlite3';
 import type { Database } from './storage';
-import type { ActivityRecord, ActivityCategory, ActivitySummary, ActivitySource } from '@shared/types';
+import type { ActivityRecord, ActivityCategory, ActivityJourney, ActivitySummary, ActivitySource } from '@shared/types';
 import { logger } from '@shared/logger';
 
 export type ActivityEvent = {
@@ -39,9 +39,10 @@ export class ActivityTracker {
   private closeStmt: Statement;
   private recentStmt: Statement;
   private summaryStmt: Statement;
+  private journeyStmt: Statement;
   private current: CurrentActivity | null = null;
 
-  constructor(database: Database) {
+  constructor(database: Database, private readonly getExcludedKeywords?: () => string[]) {
     this.db = database.connection;
     this.insertStmt = this.db.prepare(`
       INSERT INTO activities (
@@ -60,6 +61,16 @@ export class ActivityTracker {
     this.summaryStmt = this.db.prepare(
       'SELECT started_at as startedAt, source, app_name as appName, domain, category, seconds_active as secondsActive, idle_seconds as idleSeconds FROM activities WHERE started_at >= ? ORDER BY started_at DESC'
     );
+    this.journeyStmt = this.db.prepare(
+      'SELECT started_at as startedAt, ended_at as endedAt, source, app_name as appName, domain, category, seconds_active as secondsActive, idle_seconds as idleSeconds FROM activities WHERE started_at >= ? ORDER BY started_at ASC'
+    );
+  }
+
+  private shouldSuppressContext(domain: string | null, appName: string | null) {
+    const keywords = this.getExcludedKeywords ? this.getExcludedKeywords() : [];
+    if (!keywords.length) return false;
+    const haystack = `${domain ?? ''} ${appName ?? ''}`.toLowerCase();
+    return keywords.some((keyword) => keyword && haystack.includes(keyword));
   }
 
   recordActivity(event: ActivityEvent) {
@@ -133,7 +144,21 @@ export class ActivityTracker {
   }
 
   getRecent(limit = 50) {
-    return this.recentStmt.all(limit) as ActivityRecord[];
+    const rows = this.recentStmt.all(limit) as ActivityRecord[];
+    return rows.map((row) => {
+      const domain = row.domain ? canonicalDomain(row.domain) : null;
+      const appName = row.appName ?? null;
+      if (!this.shouldSuppressContext(domain, appName)) {
+        return row;
+      }
+      return {
+        ...row,
+        domain: null,
+        appName: null,
+        url: null,
+        windowTitle: null
+      };
+    });
   }
 
   getSummary(windowHours = 24): ActivitySummary {
@@ -200,7 +225,10 @@ export class ActivityTracker {
     let totalSeconds = 0;
 
     for (const row of rows) {
-      const category: ActivityCategory | 'uncategorised' = row.category ?? 'uncategorised';
+      const domain = row.domain ? canonicalDomain(row.domain) : null;
+      const appName = row.appName ?? null;
+      const suppressed = this.shouldSuppressContext(domain, appName);
+      const category: ActivityCategory | 'uncategorised' = suppressed ? 'neutral' : (row.category ?? 'uncategorised');
       const activeSeconds = Math.max(0, Math.round(row.secondsActive));
       const idleSeconds = Math.max(0, Math.round(row.idleSeconds));
       totalSeconds += activeSeconds;
@@ -209,43 +237,46 @@ export class ActivityTracker {
       totalsByCategory.idle += idleSeconds;
       totalsBySource[row.source] += activeSeconds;
 
-      const domain = row.domain ? canonicalDomain(row.domain) : null;
-      const key = domain ?? row.appName ?? 'Unknown';
-      if (!contextTotals.has(key)) {
-        contextTotals.set(key, {
-          label: key,
-          category: row.category,
-          seconds: 0,
-          source: row.source,
-          domain,
-          appName: row.appName ?? null
-        });
+      if (!suppressed) {
+        const key = domain ?? appName ?? 'Unknown';
+        if (!contextTotals.has(key)) {
+          contextTotals.set(key, {
+            label: key,
+            category: row.category,
+            seconds: 0,
+            source: row.source,
+            domain,
+            appName
+          });
+        }
+        const existing = contextTotals.get(key)!;
+        existing.seconds += activeSeconds;
       }
-      const existing = contextTotals.get(key)!;
-      existing.seconds += activeSeconds;
 
       const ts = new Date(row.startedAt).getTime();
       const bucketIndex = Math.min(bucketCount - 1, Math.max(0, Math.floor((ts - baseTs) / hourMs)));
       if (bucketIndex >= 0 && bucketIndex < timeline.length) {
-        if (row.category && timeline[bucketIndex][row.category] !== undefined) {
-          timeline[bucketIndex][row.category] += activeSeconds;
+        if (category !== 'uncategorised' && timeline[bucketIndex][category] !== undefined) {
+          timeline[bucketIndex][category] += activeSeconds;
         } else {
           timeline[bucketIndex].neutral += activeSeconds;
         }
         timeline[bucketIndex].idle += idleSeconds;
 
-        const key = domain ?? row.appName ?? 'Unknown';
-        const contextMap = timelineContexts[bucketIndex];
-        const ctx = contextMap.get(key) ?? {
-          label: key,
-          category: row.category ?? null,
-          seconds: 0,
-          source: row.source,
-          domain,
-          appName: row.appName ?? null
-        };
-        ctx.seconds += activeSeconds;
-        contextMap.set(key, ctx);
+        if (!suppressed) {
+          const key = domain ?? appName ?? 'Unknown';
+          const contextMap = timelineContexts[bucketIndex];
+          const ctx = contextMap.get(key) ?? {
+            label: key,
+            category: row.category ?? null,
+            seconds: 0,
+            source: row.source,
+            domain,
+            appName
+          };
+          ctx.seconds += activeSeconds;
+          contextMap.set(key, ctx);
+        }
       }
     }
 
@@ -279,6 +310,84 @@ export class ActivityTracker {
       totalsBySource,
       topContexts,
       timeline
+    };
+  }
+
+  getJourney(windowHours = 24): ActivityJourney {
+    const rangeHours = Math.min(Math.max(windowHours, 1), 168);
+    const now = Date.now();
+    const hourMs = 1000 * 60 * 60;
+    const windowStartIso = new Date(now - rangeHours * hourMs).toISOString();
+    const rows = this.journeyStmt.all(windowStartIso) as Array<{
+      startedAt: string;
+      endedAt: string | null;
+      source: ActivitySource;
+      appName: string | null;
+      domain: string | null;
+      category: ActivityCategory | null;
+      secondsActive: number;
+      idleSeconds: number;
+    }>;
+
+    const segments: Array<{
+      start: string;
+      end: string;
+      category: ActivityCategory | 'idle';
+      label: string | null;
+      source: ActivitySource;
+      seconds: number;
+    }> = [];
+    const neutralCounts = new Map<string, { count: number; seconds: number; source: ActivitySource }>();
+
+    for (const row of rows) {
+      const startMs = Date.parse(row.startedAt);
+      if (!Number.isFinite(startMs)) continue;
+      const rawDuration = Math.max(0, Math.round((row.secondsActive ?? 0) + (row.idleSeconds ?? 0)));
+      if (rawDuration <= 0) continue;
+      const parsedEnd = row.endedAt ? Date.parse(row.endedAt) : NaN;
+      const endMs = Number.isFinite(parsedEnd) ? parsedEnd : startMs + rawDuration * 1000;
+      const seconds = Math.max(1, Math.round((endMs - startMs) / 1000));
+      const domain = row.domain ? canonicalDomain(row.domain) : null;
+      const appName = row.appName ?? null;
+      const suppressed = this.shouldSuppressContext(domain, appName);
+      const label = suppressed ? null : (domain ?? appName);
+      const category = suppressed ? 'neutral' : (row.category ?? 'neutral');
+      const segment = {
+        start: new Date(startMs).toISOString(),
+        end: new Date(startMs + seconds * 1000).toISOString(),
+        category,
+        label,
+        source: row.source,
+        seconds
+      };
+
+      const prev = segments[segments.length - 1];
+      if (prev && prev.category === segment.category && prev.label === segment.label) {
+        prev.end = segment.end;
+        prev.seconds += segment.seconds;
+      } else {
+        segments.push(segment);
+      }
+
+      if (category === 'neutral' && label) {
+        const entry = neutralCounts.get(label) ?? { count: 0, seconds: 0, source: row.source };
+        entry.count += 1;
+        entry.seconds += seconds;
+        neutralCounts.set(label, entry);
+      }
+    }
+
+    const neutralList = Array.from(neutralCounts.entries())
+      .map(([label, entry]) => ({ label, ...entry }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 6);
+
+    return {
+      windowHours: rangeHours,
+      start: windowStartIso,
+      end: new Date(now).toISOString(),
+      segments,
+      neutralCounts: neutralList
     };
   }
 

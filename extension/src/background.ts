@@ -1,4 +1,4 @@
-import { storage, type LibraryItem, type LibraryPurpose } from './storage';
+import { storage, type LibraryItem, type LibraryPurpose, type PendingActivityEvent } from './storage';
 
 type IdleState = 'active' | 'idle' | 'locked';
 type EmergencyPolicyId = 'off' | 'gentle' | 'balanced' | 'strict';
@@ -26,10 +26,10 @@ let sessionTicker: number | null = null;
 let idleState: IdleState = 'active';
 let lastIdleChange = Date.now();
 const ROULETTE_PROMPT_MIN_MS = 20_000;
-// Buffer when desktop app is offline (10s heartbeat ≈ 2400 → ~6h40m).
-const ACTIVITY_BUFFER_LIMIT = 2400;
-const activityBuffer: Array<Record<string, unknown>> = [];
+const PENDING_ACTIVITY_FLUSH_LIMIT = 400;
+const PENDING_USAGE_FLUSH_LIMIT = 200;
 const rotModeStartInFlight = new Set<string>();
+let pendingUsageFlushTimer: number | null = null;
 
 type RouletteOpen = {
     openedAt: number;
@@ -112,6 +112,40 @@ function baseUrl(urlString: string): string | null {
     }
 }
 
+function createSyncId() {
+    try {
+        if (crypto?.randomUUID) return crypto.randomUUID();
+    } catch {
+        // Fall through.
+    }
+    return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+// Queue offline usage deltas so the desktop app can ingest them when it reconnects.
+async function queueWalletTransaction(payload: { type: 'earn' | 'spend' | 'adjust'; amount: number; meta?: Record<string, unknown>; ts?: string; syncId?: string }) {
+    await storage.queueWalletTransaction({
+        syncId: payload.syncId ?? createSyncId(),
+        ts: payload.ts ?? new Date().toISOString(),
+        type: payload.type,
+        amount: payload.amount,
+        meta: payload.meta
+    });
+    schedulePendingUsageFlush();
+}
+
+async function queueConsumptionEvent(payload: { kind: string; title?: string | null; url?: string | null; domain?: string | null; meta?: Record<string, unknown>; occurredAt?: string; syncId?: string }) {
+    await storage.queueConsumptionEvent({
+        syncId: payload.syncId ?? createSyncId(),
+        occurredAt: payload.occurredAt ?? new Date().toISOString(),
+        kind: payload.kind,
+        title: payload.title ?? null,
+        url: payload.url ?? null,
+        domain: payload.domain ?? null,
+        meta: payload.meta
+    });
+    schedulePendingUsageFlush();
+}
+
 function estimatePackRefund(session: { mode: 'metered' | 'pack' | 'emergency' | 'store'; purchasePrice?: number; purchasedSeconds?: number; remainingSeconds: number }) {
     if (session.mode !== 'pack') return 0;
     if (!session.purchasePrice || !session.purchasedSeconds) return 0;
@@ -186,7 +220,8 @@ function tryConnectToDesktop() {
         await syncFromDesktop();
         await syncPendingLibraryItems();
         await syncPendingCategorisation();
-        flushBufferedActivity();
+        await flushPendingUsage();
+        await flushPendingActivity();
     };
 
     ws.onclose = () => {
@@ -564,6 +599,18 @@ async function tickSessions() {
         try {
             if (cost > 0) {
                 await storage.spendCoins(cost);
+                await queueWalletTransaction({
+                    type: 'spend',
+                    amount: cost,
+                    ts: new Date(now).toISOString(),
+                    meta: {
+                        source: 'extension',
+                        reason: 'metered-tick',
+                        domain: activeDomain,
+                        mode: 'metered',
+                        elapsedSeconds
+                    }
+                });
             }
             session.ratePerMin = currentRate;
             session.spendRemainder = remainder;
@@ -662,24 +709,77 @@ async function getActiveHttpTab(): Promise<chrome.tabs.Tab | null> {
     return tab;
 }
 
-function emitActivity(event: Record<string, unknown>) {
+function emitActivity(event: PendingActivityEvent) {
     if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(event));
-    } else {
-        activityBuffer.push(event);
-        if (activityBuffer.length > ACTIVITY_BUFFER_LIMIT) {
-            activityBuffer.shift();
+        try {
+            ws.send(JSON.stringify(event));
+            return;
+        } catch (error) {
+            console.warn('Failed to send activity over WS, queueing locally', error);
+        }
+    }
+    storage.queueActivityEvent(event).catch(() => { });
+}
+
+async function flushPendingActivity() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    while (ws && ws.readyState === WebSocket.OPEN) {
+        const pending = await storage.getPendingActivityEvents(PENDING_ACTIVITY_FLUSH_LIMIT);
+        if (!pending.length) return;
+        let sent = 0;
+        for (const event of pending) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) break;
+            try {
+                ws.send(JSON.stringify(event));
+                sent += 1;
+            } catch {
+                break;
+            }
+        }
+        if (sent > 0) {
+            await storage.clearPendingActivityEvents(sent);
+        }
+        if (sent < pending.length) {
+            return;
         }
     }
 }
 
-function flushBufferedActivity() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    while (activityBuffer.length > 0) {
-        const next = activityBuffer.shift();
-        if (next) {
-            ws.send(JSON.stringify(next));
+function schedulePendingUsageFlush(delayMs = 2000) {
+    if (pendingUsageFlushTimer) return;
+    pendingUsageFlushTimer = setTimeout(() => {
+        pendingUsageFlushTimer = null;
+        flushPendingUsage().catch(() => { });
+    }, delayMs);
+}
+
+async function flushPendingUsage() {
+    // Send queued wallet + consumption events to desktop for reconciliation.
+    let synced = false;
+    while (true) {
+        const transactions = await storage.getPendingWalletTransactions(PENDING_USAGE_FLUSH_LIMIT);
+        const consumption = await storage.getPendingConsumptionEvents(PENDING_USAGE_FLUSH_LIMIT);
+        if (!transactions.length && !consumption.length) break;
+
+        try {
+            const response = await fetch(`${DESKTOP_API_URL}/extension/ingest`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ transactions, consumption }),
+                cache: 'no-store',
+            });
+            if (!response.ok) throw new Error('Failed to ingest pending usage');
+            await storage.clearPendingWalletTransactions(transactions.map((entry) => entry.syncId));
+            await storage.clearPendingConsumptionEvents(consumption.map((entry) => entry.syncId));
+            synced = true;
+        } catch (error) {
+            console.warn('Failed to sync pending usage', error);
+            return;
         }
+    }
+
+    if (synced) {
+        await syncFromDesktop();
     }
 }
 
@@ -825,6 +925,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message.type === 'GET_CONNECTION') {
         handleGetConnection().then(sendResponse);
         return true;
+    } else if (message.type === 'GET_FRIENDS') {
+        handleGetFriends().then(sendResponse);
+        return true;
+    } else if (message.type === 'GET_TROPHIES') {
+        handleGetTrophies().then(sendResponse);
+        return true;
+    } else if (message.type === 'GET_FRIEND_TIMELINE') {
+        handleGetFriendTimeline(message.payload).then(sendResponse);
+        return true;
     } else if (message.type === 'PAGE_HEARTBEAT') {
         handlePageHeartbeat(message.payload, _sender).then(sendResponse);
         return true;
@@ -885,7 +994,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
 });
 
-function emitUrlActivitySample(payload: { url: string; title?: string | null }, reason: string) {
+function emitUrlActivitySample(payload: { url: string; title?: string | null; mediaPlaying?: boolean }, reason: string) {
     const url = String(payload.url ?? '');
     if (!url || !/^https?:/i.test(url)) return;
 
@@ -896,7 +1005,7 @@ function emitUrlActivitySample(payload: { url: string; title?: string | null }, 
         return;
     }
 
-    const idleSeconds = idleState === 'active' ? 0 : Math.floor((Date.now() - lastIdleChange) / 1000);
+    const idleSeconds = payload.mediaPlaying ? 0 : (idleState === 'active' ? 0 : Math.floor((Date.now() - lastIdleChange) / 1000));
 
     emitActivity({
         type: 'activity',
@@ -913,7 +1022,7 @@ function emitUrlActivitySample(payload: { url: string; title?: string | null }, 
     });
 }
 
-async function handlePageHeartbeat(payload: { url?: string; title?: string }, sender: chrome.runtime.MessageSender) {
+async function handlePageHeartbeat(payload: { url?: string; title?: string; mediaPlaying?: boolean }, sender: chrome.runtime.MessageSender) {
     try {
         if (sender.tab && sender.tab.active === false) {
             return { ok: true };
@@ -921,7 +1030,11 @@ async function handlePageHeartbeat(payload: { url?: string; title?: string }, se
         const url = typeof payload?.url === 'string' ? payload.url : sender.tab?.url;
         if (!url) return { ok: true };
 
-        emitUrlActivitySample({ url, title: typeof payload?.title === 'string' ? payload.title : sender.tab?.title ?? undefined }, 'content-heartbeat');
+        emitUrlActivitySample({
+            url,
+            title: typeof payload?.title === 'string' ? payload.title : sender.tab?.title ?? undefined,
+            mediaPlaying: Boolean(payload?.mediaPlaying)
+        }, 'content-heartbeat');
 
         // Keep offline session enforcement responsive even if the service worker is being suspended.
         await tickSessions();
@@ -1698,6 +1811,51 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
     };
 }
 
+async function handleGetFriends() {
+    try {
+        const response = await fetch(`${DESKTOP_API_URL}/friends?hours=24`, { cache: 'no-store' });
+        if (!response.ok) throw new Error('Desktop unavailable');
+        const data = await response.json();
+        return {
+            success: true,
+            friends: data.friends ?? [],
+            summaries: data.summaries ?? {},
+            profile: data.profile ?? null,
+            meSummary: data.meSummary ?? null,
+            competitive: data.competitive ?? null
+        };
+    } catch (error) {
+        return { success: false, error: (error as Error).message, friends: [], summaries: {}, profile: null, meSummary: null, competitive: null };
+    }
+}
+
+async function handleGetTrophies() {
+    try {
+        const [listRes, profileRes] = await Promise.all([
+            fetch(`${DESKTOP_API_URL}/trophies`, { cache: 'no-store' }),
+            fetch(`${DESKTOP_API_URL}/trophies/profile`, { cache: 'no-store' })
+        ]);
+        if (!listRes.ok || !profileRes.ok) throw new Error('Desktop unavailable');
+        const trophies = await listRes.json();
+        const profile = await profileRes.json();
+        return { success: true, trophies, profile };
+    } catch (error) {
+        return { success: false, error: (error as Error).message, trophies: [], profile: null };
+    }
+}
+
+async function handleGetFriendTimeline(payload: { userId: string; hours?: number }) {
+    try {
+        const hours = payload?.hours ?? 24;
+        const response = await fetch(`${DESKTOP_API_URL}/friends/${encodeURIComponent(payload.userId)}?hours=${hours}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error('Desktop unavailable');
+        const data = await response.json();
+        return { success: true, timeline: data };
+    } catch (error) {
+        return { success: false, error: (error as Error).message, timeline: null };
+    }
+}
+
 async function handleSetRotMode(payload: { enabled?: boolean }) {
     const enabled = Boolean(payload?.enabled);
     const rotMode = await storage.setRotMode(enabled);
@@ -1729,12 +1887,41 @@ async function handleStartStoreSession(payload: { domain: string; price: number;
         await storage.setSession(payload.domain, session);
         await storage.setLastFrivolityAt(Date.now());
 
-        // Notify desktop if possible via HTTP even if WS is down?
-        fetch(`${DESKTOP_API_URL}/paywall/start-store-fallback`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        }).catch(() => { }); // Fire and forget
+        // Notify desktop if possible via HTTP even if WS is down.
+        let fallbackOk = false;
+        try {
+            const response = await fetch(`${DESKTOP_API_URL}/paywall/start-store-fallback`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                cache: 'no-store'
+            });
+            fallbackOk = response.ok;
+        } catch {
+            fallbackOk = false;
+        }
+
+        if (fallbackOk) {
+            await syncFromDesktop();
+        } else {
+            await queueWalletTransaction({
+                type: 'spend',
+                amount: payload.price,
+                meta: {
+                    source: 'extension',
+                    reason: 'store-start',
+                    domain: payload.domain,
+                    url: payload.url ?? null
+                }
+            });
+            await queueConsumptionEvent({
+                kind: 'frivolous-session',
+                title: payload.domain,
+                url: session.allowedUrl ?? null,
+                domain: payload.domain,
+                meta: { mode: 'store', purchasePrice: payload.price, allowedUrl: session.allowedUrl ?? null }
+            });
+        }
 
         return { success: true, session };
     } catch (err) {
@@ -1856,6 +2043,16 @@ async function handleBuyPack(payload: { domain: string; minutes: number }) {
 
     try {
         await storage.spendCoins(pack.price);
+        await queueWalletTransaction({
+            type: 'spend',
+            amount: pack.price,
+            meta: {
+                source: 'extension',
+                reason: 'pack-purchase',
+                domain: payload.domain,
+                minutes: pack.minutes
+            }
+        });
         const session = {
             domain: payload.domain,
             mode: 'pack' as const,
@@ -1868,6 +2065,16 @@ async function handleBuyPack(payload: { domain: string; minutes: number }) {
         };
         await storage.setSession(payload.domain, session);
         await storage.setLastFrivolityAt(Date.now());
+        await queueConsumptionEvent({
+            kind: 'frivolous-session',
+            title: payload.domain,
+            domain: payload.domain,
+            meta: {
+                mode: 'pack',
+                purchasePrice: pack.price,
+                purchasedSeconds: pack.minutes * 60
+            }
+        });
         console.log(`✅ Purchased ${pack.minutes} minutes for ${payload.domain} (offline mode)`);
         return { success: true, session };
     } catch (error) {
@@ -1894,6 +2101,12 @@ async function handleStartMetered(payload: { domain: string }) {
 
     await storage.setSession(payload.domain, session);
     await storage.setLastFrivolityAt(Date.now());
+    await queueConsumptionEvent({
+        kind: 'frivolous-session',
+        title: payload.domain,
+        domain: payload.domain,
+        meta: { mode: 'metered' }
+    });
     console.log(`✅ Started metered session for ${payload.domain} (offline mode)`);
     return { success: true, session };
 }
@@ -1941,6 +2154,15 @@ async function handleEndSession(payload: { domain: string }) {
     if (!desktopResult.ok) {
         if (refund > 0) {
             await storage.earnCoins(refund);
+            await queueWalletTransaction({
+                type: 'earn',
+                amount: refund,
+                meta: {
+                    source: 'extension',
+                    reason: 'pack-refund',
+                    domain: payload.domain
+                }
+            });
         }
     }
 
@@ -2008,6 +2230,17 @@ async function handleStartEmergency(payload: { domain: string; justification: st
     };
 
     await storage.setSession(payload.domain, session);
+    await queueConsumptionEvent({
+        kind: 'emergency-session',
+        title: payload.domain,
+        url: allowedUrl ?? null,
+        domain: payload.domain,
+        meta: {
+            justification: payload.justification,
+            policy: policy.id,
+            durationSeconds: policy.durationSeconds
+        }
+    });
     console.log(`✅ Started emergency session for ${payload.domain} (offline mode)`);
     return { success: true, session };
 }

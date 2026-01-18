@@ -85,9 +85,10 @@ export class EconomyEngine extends EventEmitter {
 
   handleActivity(event: ClassifiedActivity) {
     const category = event.category;
-    const domain = event.domain ?? null;
-    const app = event.appName ?? null;
-    const url = event.url ?? null;
+    const suppressContext = Boolean(event.suppressContext);
+    const domain = suppressContext ? null : (event.domain ?? null);
+    const app = suppressContext ? null : (event.appName ?? null);
+    const url = suppressContext ? null : (event.url ?? null);
     const idle = event.isIdle;
 
     // Check if we've navigated away from a domain with an active paywall session

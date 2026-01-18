@@ -34,6 +34,18 @@ export class SettingsService {
     }
   }
 
+  private normalizeKeywords(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    const unique = new Set<string>();
+    for (const entry of value) {
+      if (typeof entry !== 'string') continue;
+      const cleaned = entry.trim().toLowerCase();
+      if (!cleaned) continue;
+      unique.add(cleaned);
+    }
+    return [...unique].slice(0, 50);
+  }
+
   getJson<T>(key: string): T | null {
     const row = this.getStmt.get(key) as { value: string } | undefined;
     if (!row) return null;
@@ -49,12 +61,25 @@ export class SettingsService {
     this.setStmt.run(key, JSON.stringify(value));
   }
 
+  getBoolean(key: string, fallback = false): boolean {
+    const val = this.getJson<unknown>(key);
+    return typeof val === 'boolean' ? val : fallback;
+  }
+
   getCategorisation(): CategorisationConfig {
     return this.getJson<CategorisationConfig>('categorisation') ?? DEFAULT_CATEGORISATION;
   }
 
   setCategorisation(value: CategorisationConfig) {
     this.setJson('categorisation', value);
+  }
+
+  getExcludedKeywords(): string[] {
+    return this.normalizeKeywords(this.getJson<string[]>('excludedKeywords'));
+  }
+
+  setExcludedKeywords(value: string[]) {
+    this.setJson('excludedKeywords', this.normalizeKeywords(value));
   }
 
   getIdleThreshold(): number {
@@ -184,6 +209,46 @@ export class SettingsService {
       enabled: Boolean(value?.enabled),
       allowOnNewPages: Boolean(value?.allowOnNewPages)
     });
+  }
+
+  getContinuityWindowSeconds(): number {
+    const raw = this.getJson<number>('continuityWindowSeconds');
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return Math.max(0, Math.min(900, Math.round(raw)));
+    }
+    return 120;
+  }
+
+  setContinuityWindowSeconds(value: number) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0 || n > 900) {
+      throw new Error('Invalid continuity window');
+    }
+    this.setJson('continuityWindowSeconds', Math.round(n));
+  }
+
+  getCompetitiveOptIn(): boolean {
+    return this.getBoolean('competitiveOptIn', false);
+  }
+
+  setCompetitiveOptIn(value: boolean) {
+    this.setJson('competitiveOptIn', Boolean(value));
+  }
+
+  getCompetitiveMinActiveHours(): number {
+    const raw = this.getJson<number>('competitiveMinActiveHours');
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return Math.max(0, Math.min(12, Math.round(raw * 10) / 10));
+    }
+    return 2;
+  }
+
+  setCompetitiveMinActiveHours(value: number) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0 || n > 12) {
+      throw new Error('Invalid minimum active hours');
+    }
+    this.setJson('competitiveMinActiveHours', Math.round(n * 10) / 10);
   }
 
   getZoteroIntegrationConfig(): ZoteroIntegrationConfig {

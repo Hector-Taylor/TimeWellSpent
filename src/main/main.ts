@@ -4,6 +4,7 @@ import { createBackend } from '@backend/server';
 import { Database } from '@backend/storage';
 import { createUrlWatcher } from '@backend/urlWatcher';
 import { createIpc } from './ipc';
+import { SyncService } from './sync';
 import { logger } from '@shared/logger';
 
 const isMac = process.platform === 'darwin';
@@ -13,6 +14,8 @@ let db: Database | null = null;
 let stopBackend: (() => Promise<void>) | null = null;
 let stopWatcher: (() => void) | null = null;
 let lastTrayLabel = 'TimeWellSpent';
+let syncService: SyncService | null = null;
+let pendingAuthUrl: string | null = null;
 
 async function createWindow() {
   mainWindow = new BrowserWindow({
@@ -81,24 +84,104 @@ async function bootstrap() {
     return;
   }
 
-  app.on('second-instance', () => {
+  const handleAuthUrl = (url: string) => {
+    console.log('[auth] Received callback URL', url);
+    if (syncService) {
+      syncService.handleAuthCallback(url);
+    } else {
+      pendingAuthUrl = url;
+    }
+  };
+
+  app.on('second-instance', (_event, argv) => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
+    }
+    const url = argv.find((arg) => arg.startsWith('timewellspent://'));
+    if (url) {
+      console.log('[auth] second-instance argv', argv);
+      handleAuthUrl(url);
     }
   });
 
   app.name = 'Time Well Spent';
   nativeTheme.themeSource = 'system';
 
+  app.on('open-url', (event, url) => {
+    event.preventDefault();
+    console.log('[auth] open-url fired');
+    handleAuthUrl(url);
+  });
+
   await app.whenReady();
   console.log('App ready');
+
+  if (!app.isDefaultProtocolClient('timewellspent')) {
+    if (process.defaultApp) {
+      app.setAsDefaultProtocolClient('timewellspent', process.execPath, [path.resolve(process.argv[1])]);
+    } else {
+      app.setAsDefaultProtocolClient('timewellspent');
+    }
+  }
 
   db = new Database();
   console.log('Database initialized');
 
-  const backend = await createBackend(db);
+  const backend = await createBackend(db, {
+    onAuthCallback: (url) => {
+      if (syncService) {
+        syncService.handleAuthCallback(url);
+      } else {
+        pendingAuthUrl = url;
+      }
+    },
+    friendsProvider: {
+      profile: async () => (syncService ? syncService.getProfile() : null),
+      meSummary: async (windowHours) => {
+        if (!backend) return null;
+        const rangeHours = Number.isFinite(windowHours) ? Number(windowHours) : 24;
+        const summary = backend.activityTracker.getSummary(rangeHours);
+        const sinceIso = new Date(Date.now() - rangeHours * 60 * 60 * 1000).toISOString();
+        const emergencySessions = backend.consumption
+          .listSince(sinceIso)
+          .filter((entry) => entry.kind === 'emergency-session').length;
+        return {
+          userId: 'me',
+          updatedAt: new Date().toISOString(),
+          periodHours: summary.windowHours,
+          totalActiveSeconds: summary.totalSeconds,
+          categoryBreakdown: {
+            productive: summary.totalsByCategory.productive ?? 0,
+            neutral: summary.totalsByCategory.neutral ?? 0,
+            frivolity: summary.totalsByCategory.frivolity ?? 0,
+            idle: summary.totalsByCategory.idle ?? 0
+          },
+          productivityScore: summary.totalSeconds > 0
+            ? Math.round((summary.totalsByCategory.productive / summary.totalSeconds) * 100)
+            : 0,
+          emergencySessions
+        };
+      },
+      list: async () => (syncService ? syncService.listFriends() : []),
+      summaries: async (windowHours) => (syncService ? syncService.getFriendSummaries(windowHours ?? 24) : {}),
+      timeline: async (userId, windowHours) => (syncService ? syncService.getFriendTimeline(userId, windowHours ?? 24) : null)
+    }
+  });
   console.log('Backend created');
+
+  const redirectTo = `http://127.0.0.1:${backend.port}/auth/callback`;
+  syncService = new SyncService(backend, { redirectTo });
+  if (pendingAuthUrl) {
+    handleAuthUrl(pendingAuthUrl);
+    pendingAuthUrl = null;
+  }
+  if (syncService.isConfigured()) {
+    syncService.syncNow().catch(() => { });
+    setInterval(() => {
+      syncService?.syncNow().catch(() => { });
+    }, 5 * 60 * 1000);
+  }
 
   stopBackend = backend.stop;
 
@@ -107,6 +190,20 @@ async function bootstrap() {
       win.webContents.send(channel, payload);
     });
   };
+
+  backend.trophies.on('earned', (trophy) => {
+    emitToRenderers('trophies:earned', trophy);
+    try {
+      new Notification({
+        title: 'Trophy earned',
+        body: `${trophy.emoji} ${trophy.name}`
+      }).show();
+    } catch {
+      // ignore notification errors
+    }
+  });
+
+  backend.trophies.scheduleEvaluation('startup');
 
   backend.ui.onNavigate(({ view }) => {
     if (mainWindow) {
@@ -149,6 +246,7 @@ async function bootstrap() {
       updateTray(`💰 ${backend.wallet.getSnapshot().balance}`);
       buildTrayMenu();
     }
+    backend.trophies.scheduleEvaluation('paywall-ended');
   });
 
   const updateTray = (label: string) => {
@@ -171,6 +269,7 @@ async function bootstrap() {
       updateTray(`💰 ${balance}`);
     }
     buildTrayMenu();
+    backend.trophies.scheduleEvaluation('wallet');
   });
 
 
@@ -273,11 +372,15 @@ async function bootstrap() {
   updateTray(`💰 ${backend.wallet.getSnapshot().balance}`);
 
   backend.economy.on('paywall-required', (payload) => emitToRenderers('paywall:required', payload));
-  backend.economy.on('paywall-session-started', (payload) => emitToRenderers('paywall:session-started', payload));
+  backend.economy.on('paywall-session-started', (payload) => {
+    emitToRenderers('paywall:session-started', payload);
+    backend.trophies.scheduleEvaluation('paywall-started');
+  });
   backend.economy.on('paywall-session-ended', (payload) => emitToRenderers('paywall:session-ended', payload));
   backend.economy.on('paywall-session-paused', (payload) => emitToRenderers('paywall:session-paused', payload));
   backend.economy.on('paywall-session-resumed', (payload) => emitToRenderers('paywall:session-resumed', payload));
   backend.economy.on('activity', (payload) => emitToRenderers('economy:activity', payload));
+  backend.economy.on('activity', () => backend.trophies.scheduleEvaluation('activity'));
 
   // Update tray with current rate when economy state changes
   backend.economy.on('activity', (payload: { category: string; domain?: string; app?: string }) => {
@@ -325,13 +428,22 @@ async function bootstrap() {
   backend.extension.onStatus((status) => emitToRenderers('extension:status', status));
   emitToRenderers('extension:status', backend.extension.status());
 
-  backend.library.on('added', (item) => emitToRenderers('library:changed', { action: 'added', item }));
-  backend.library.on('updated', (item) => emitToRenderers('library:changed', { action: 'updated', item }));
-  backend.library.on('removed', (payload) => emitToRenderers('library:changed', { action: 'removed', ...payload }));
+  backend.library.on('added', (item) => {
+    emitToRenderers('library:changed', { action: 'added', item });
+    backend.trophies.scheduleEvaluation('library');
+  });
+  backend.library.on('updated', (item) => {
+    emitToRenderers('library:changed', { action: 'updated', item });
+    backend.trophies.scheduleEvaluation('library');
+  });
+  backend.library.on('removed', (payload) => {
+    emitToRenderers('library:changed', { action: 'removed', ...payload });
+    backend.trophies.scheduleEvaluation('library');
+  });
   backend.friends.on('published', () => emitToRenderers('friends:published', {}));
   backend.friends.on('updated', (payload) => emitToRenderers('friends:updated', payload));
 
-  createIpc({ backend, db });
+  createIpc({ backend, db, sync: syncService });
 
   await createWindow();
   console.log('Window created');

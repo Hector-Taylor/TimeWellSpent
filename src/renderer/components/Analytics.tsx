@@ -20,6 +20,7 @@ export default function Analytics({ api }: AnalyticsProps) {
     const [patterns, setPatterns] = useState<BehavioralPattern[]>([]);
     const [trends, setTrends] = useState<TrendPoint[]>([]);
     const [loading, setLoading] = useState(true);
+    const [excludedKeywords, setExcludedKeywords] = useState<string[]>([]);
 
     const days = useMemo(() => {
         switch (timeRange) {
@@ -48,6 +49,10 @@ export default function Analytics({ api }: AnalyticsProps) {
         refresh();
     }, [refresh]);
 
+    useEffect(() => {
+        api.settings.excludedKeywords().then(setExcludedKeywords).catch(() => { });
+    }, [api]);
+
     const formatHour = (h: number) => {
         const ampm = h >= 12 ? 'PM' : 'AM';
         const hour = h % 12 || 12;
@@ -64,6 +69,28 @@ export default function Analytics({ api }: AnalyticsProps) {
             .filter(p => p.toContext.category === 'frivolity')
             .slice(0, 6);
     }, [patterns]);
+
+    const isExcludedLabel = useCallback((value: string) => {
+        if (!excludedKeywords.length) return false;
+        const haystack = value.toLowerCase();
+        return excludedKeywords.some((keyword) => keyword && haystack.includes(keyword));
+    }, [excludedKeywords]);
+
+    const scrubLabel = useCallback((value: string | null) => {
+        if (!value) return null;
+        return isExcludedLabel(value) ? 'Hidden' : value;
+    }, [isExcludedLabel]);
+
+    const scrubText = useCallback((value: string) => {
+        if (!excludedKeywords.length) return value;
+        let next = value;
+        for (const keyword of excludedKeywords) {
+            if (!keyword) continue;
+            const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            next = next.replace(new RegExp(escaped, 'gi'), '[hidden]');
+        }
+        return next;
+    }, [excludedKeywords]);
 
     return (
         <section className="panel analytics-panel">
@@ -135,7 +162,7 @@ export default function Analytics({ api }: AnalyticsProps) {
                         <h2>🧠 AI Insights</h2>
                         <ul className="insights-list">
                             {(overview?.insights ?? []).map((insight, idx) => (
-                                <li key={idx}>{insight}</li>
+                                <li key={idx}>{scrubText(insight)}</li>
                             ))}
                             {(overview?.insights ?? []).length === 0 && (
                                 <li className="subtle">Keep using the app to generate insights...</li>
@@ -257,12 +284,12 @@ export default function Analytics({ api }: AnalyticsProps) {
                                         <span className={`category-chip category-${pattern.fromContext.category ?? 'neutral'}`}>
                                             {pattern.fromContext.category ?? 'neutral'}
                                         </span>
-                                        <span className="pattern-domain">{pattern.fromContext.domain ?? 'Any'}</span>
+                                        <span className="pattern-domain">{scrubLabel(pattern.fromContext.domain) ?? 'Any'}</span>
                                     </div>
                                     <span className="pattern-arrow">→</span>
                                     <div className="pattern-to">
                                         <span className="category-chip category-frivolity">frivolity</span>
-                                        <span className="pattern-domain">{pattern.toContext.domain ?? 'Any'}</span>
+                                        <span className="pattern-domain">{scrubLabel(pattern.toContext.domain) ?? 'Any'}</span>
                                     </div>
                                     <div className="pattern-stats">
                                         <span className="pattern-frequency">{pattern.frequency}×</span>
@@ -280,7 +307,7 @@ export default function Analytics({ api }: AnalyticsProps) {
                     {overview?.topEngagementDomain && (
                         <div className="card top-domain-card">
                             <h2>🎯 Top Engagement</h2>
-                            <div className="top-domain-name">{overview.topEngagementDomain}</div>
+                            <div className="top-domain-name">{scrubLabel(overview.topEngagementDomain)}</div>
                             <p className="subtle">Most time spent domain this period</p>
                         </div>
                     )}

@@ -67,6 +67,33 @@ function capitalize(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
+function hashString(input: string) {
+  let hash = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = (hash << 5) - hash + input.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+function shortenUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+}
+
+function faviconUrl(url: string) {
+  const domain = shortenUrl(url);
+  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64`;
+}
+
+function thumbUrl(url: string) {
+  return `https://image.thum.io/get/width/640/${encodeURIComponent(url)}`;
+}
+
 export default function Library({ api }: Props) {
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -419,144 +446,188 @@ export default function Library({ api }: Props) {
               <p className="subtle">Tip: right-click a page or link and “Save to TimeWellSpent”.</p>
             </div>
           ) : (
-            <div className="store-grid">
-              {visible.map((item) => (
-                <div key={item.id} className="card store-item">
-                  <div className="store-item-headline">
-                    <div>
-                      <p className="store-item-domain">{item.domain}</p>
-                      <h3 className="store-item-title">{item.title || item.domain}</h3>
-                    </div>
-                    {typeof item.price === 'number' ? (
-                      <div className="store-item-price-pill">
-                        <strong>{item.price}</strong>
-                        <span>unlock</span>
-                      </div>
-                    ) : (
-                      <div className="store-item-price-pill">
-                        <strong>{purposeLabel(item.purpose)}</strong>
-                        <span>purpose</span>
-                      </div>
-                    )}
-                  </div>
+            <div className="library-grid">
+              {visible.map((item) => {
+                const title = item.title || item.domain || item.app || 'Saved item';
+                const subtitle = item.note || (item.url ? shortenUrl(item.url) : item.app || item.domain || '');
+                const urlLabel = item.url ? shortenUrl(item.url) : '';
+                const icon = item.url ? faviconUrl(item.url) : null;
+                const cover = item.url ? thumbUrl(item.url) : null;
+                const coverSeed = item.domain ?? item.app ?? title;
+                const coverHue = hashString(coverSeed) % 360;
+                const coverStyle = { '--cover-hue': `${coverHue}` } as React.CSSProperties;
+                const coverInitial = title.trim().charAt(0).toUpperCase() || 'T';
+                const isEditing = editingId === item.id;
+                const doneLabel = item.consumedAt ? 'Unmark done' : 'Mark done';
 
-                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                    <span className={`pill ${purposeTone(item.purpose)}`}>{purposeLabel(item.purpose)}</span>
-                    {typeof item.price === 'number' && <span className="pill">{item.price} f-coins unlock</span>}
-                    {item.kind === 'app' && <span className="pill">desktop app</span>}
-                  </div>
-
-                  {item.url && (
-                    <a className="store-item-url" href={item.url} target="_blank" rel="noopener noreferrer" title={item.url}>
-                      <span>{item.url.length > 60 ? item.url.slice(0, 60) + '…' : item.url}</span>
-                      <span aria-hidden>↗</span>
-                    </a>
-                  )}
-
-                  {item.note && <p className="subtle" style={{ marginTop: 4 }}>{item.note}</p>}
-
-                  <div className="store-item-meta">
-                    <span>Added {formatDate(item.createdAt)}</span>
-                    {item.consumedAt
-                      ? <span>Consumed {formatDate(item.consumedAt)}</span>
-                      : item.lastUsedAt
-                        ? <span>Last used {formatDate(item.lastUsedAt)}</span>
-                        : <span>Not used yet</span>}
-                  </div>
-
-                  <div className="store-item-actions">
-                    {item.url ? (
-                      <a href={item.url} target="_blank" rel="noopener noreferrer" className="ghost">
-                        Open link
-                      </a>
-                    ) : (
-                      <button className="ghost" type="button" disabled>
-                        Open
-                      </button>
-                    )}
-                    <button className="ghost" onClick={() => handleToggleConsumed(item)} disabled={isSaving}>
-                      {item.consumedAt ? 'Unmark' : 'Mark done'}
-                    </button>
-                    {editingId === item.id ? (
-                      <button className="ghost" onClick={cancelEdit} disabled={isSaving}>
-                        Cancel
-                      </button>
-                    ) : (
-                      <button className="ghost" onClick={() => startEdit(item)} disabled={isSaving}>
-                        Edit
-                      </button>
-                    )}
-                    <button className="ghost danger" onClick={() => handleRemove(item.id)} disabled={isSaving}>
-                      Remove
-                    </button>
-                  </div>
-
-                  {editingId === item.id && (
-                    <form className="store-item-edit" onSubmit={handleUpdate}>
-                      {editError && <p className="error-text">{editError}</p>}
-                      <div className="form-group" style={{ marginBottom: 0 }}>
-                        <label>Purpose</label>
-                        <select
-                          value={editPurpose}
-                          onChange={(e) => {
-                            const purpose = e.target.value as LibraryPurpose;
-                            setEditPurpose(purpose);
-                            if (purpose !== 'allow') setEditPriceEnabled(false);
-                          }}
-                          disabled={isSaving}
-                        >
-                          {PURPOSES.map((p) => (
-                            <option key={p.value} value={p.value}>
-                              {p.label}
-                            </option>
-                          ))}
-                        </select>
-                        <p className="subtle" style={{ margin: 0 }}>{PURPOSES.find((p) => p.value === editPurpose)?.hint}</p>
-                      </div>
-
-                      <div className="form-group" style={{ marginBottom: 0 }}>
-                        <label style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                          <input
-                            type="checkbox"
-                            checked={editPriceEnabled}
-                            disabled={isSaving || editPurpose !== 'allow'}
-                            onChange={(e) => setEditPriceEnabled(e.target.checked)}
-                          />
-                          One-time unlock price (optional)
-                        </label>
-                        <input
-                          type="number"
-                          min={1}
-                          max={500}
-                          step={1}
-                          value={editPrice}
-                          disabled={isSaving || editPurpose !== 'allow' || !editPriceEnabled}
-                          onChange={(e) => {
-                            const next = Number.parseInt(e.target.value, 10);
-                            setEditPrice(Number.isNaN(next) ? 1 : next);
+                return (
+                  <article key={item.id} className={`card library-card ${item.consumedAt ? 'is-done' : ''}`}>
+                    <div className={`library-thumb ${item.kind === 'app' ? 'app' : ''}`} style={coverStyle}>
+                      {cover && item.kind === 'url' && (
+                        <img
+                          src={cover}
+                          alt=""
+                          loading="lazy"
+                          onError={(event) => {
+                            event.currentTarget.style.display = 'none';
                           }}
                         />
+                      )}
+                      <div className="library-thumb-fallback">
+                        <span>{coverInitial}</span>
+                        {item.kind === 'app' && <small>App</small>}
+                      </div>
+                      {icon ? (
+                        <img className="library-favicon" src={icon} alt="" loading="lazy" />
+                      ) : (
+                        <div className="library-favicon library-favicon-placeholder" aria-hidden="true" />
+                      )}
+                      {item.consumedAt && (
+                        <div className="library-done-badge" title="Completed">
+                          ✓
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="library-body">
+                      <div className="library-title-row">
+                        <div>
+                          <h3>{title}</h3>
+                          <p className="subtle">{subtitle}</p>
+                        </div>
+                        <span className={`pill ${purposeTone(item.purpose)}`}>{purposeLabel(item.purpose)}</span>
                       </div>
 
-                      <div className="form-group" style={{ marginBottom: 0 }}>
-                        <label>Title</label>
-                        <input type="text" value={editTitle} onChange={(e) => setEditTitle(e.target.value)} disabled={isSaving} />
+                      <div className="library-meta">
+                        <span>{urlLabel || item.app || 'Saved item'}</span>
+                        {typeof item.price === 'number' && <span>{item.price} f-coins unlock</span>}
+                        {item.kind === 'app' && <span>Desktop app</span>}
                       </div>
 
-                      <div className="form-group" style={{ marginBottom: 0 }}>
-                        <label>Note</label>
-                        <textarea value={editNote} onChange={(e) => setEditNote(e.target.value)} disabled={isSaving} />
+                      <div className="library-dates">
+                        <span>Added {formatDate(item.createdAt)}</span>
+                        {item.consumedAt
+                          ? <span>Done {formatDate(item.consumedAt)}</span>
+                          : item.lastUsedAt
+                            ? <span>Last used {formatDate(item.lastUsedAt)}</span>
+                            : <span>Not used yet</span>}
                       </div>
 
-                      <div className="form-actions" style={{ justifyContent: 'flex-end' }}>
-                        <button type="submit" className="primary" disabled={isSaving}>
-                          Save
+                      <div className="library-actions">
+                        {item.url ? (
+                          <a
+                            href={item.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="icon-button"
+                            title="Open link"
+                            aria-label="Open link"
+                          >
+                            <IconOpen />
+                          </a>
+                        ) : (
+                          <button className="icon-button" type="button" disabled title="Open link" aria-label="Open link">
+                            <IconOpen />
+                          </button>
+                        )}
+                        <button
+                          className="icon-button"
+                          type="button"
+                          onClick={() => handleToggleConsumed(item)}
+                          disabled={isSaving}
+                          title={doneLabel}
+                          aria-label={doneLabel}
+                        >
+                          <IconCheck />
+                        </button>
+                        {isEditing ? (
+                          <button className="icon-button" onClick={cancelEdit} disabled={isSaving} title="Cancel edit" aria-label="Cancel edit">
+                            X
+                          </button>
+                        ) : (
+                          <button className="icon-button" onClick={() => startEdit(item)} disabled={isSaving} title="Edit" aria-label="Edit">
+                            <IconEdit />
+                          </button>
+                        )}
+                        <button
+                          className="icon-button danger"
+                          onClick={() => handleRemove(item.id)}
+                          disabled={isSaving}
+                          title="Remove"
+                          aria-label="Remove"
+                        >
+                          <IconTrash />
                         </button>
                       </div>
-                    </form>
-                  )}
-                </div>
-              ))}
+
+                      {isEditing && (
+                        <form className="library-edit" onSubmit={handleUpdate}>
+                          {editError && <p className="error-text">{editError}</p>}
+                          <div className="form-group" style={{ marginBottom: 0 }}>
+                            <label>Purpose</label>
+                            <select
+                              value={editPurpose}
+                              onChange={(e) => {
+                                const purpose = e.target.value as LibraryPurpose;
+                                setEditPurpose(purpose);
+                                if (purpose !== 'allow') setEditPriceEnabled(false);
+                              }}
+                              disabled={isSaving}
+                            >
+                              {PURPOSES.map((p) => (
+                                <option key={p.value} value={p.value}>
+                                  {p.label}
+                                </option>
+                              ))}
+                            </select>
+                            <p className="subtle" style={{ margin: 0 }}>{PURPOSES.find((p) => p.value === editPurpose)?.hint}</p>
+                          </div>
+
+                          <div className="form-group" style={{ marginBottom: 0 }}>
+                            <label style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                              <input
+                                type="checkbox"
+                                checked={editPriceEnabled}
+                                disabled={isSaving || editPurpose !== 'allow'}
+                                onChange={(e) => setEditPriceEnabled(e.target.checked)}
+                              />
+                              One-time unlock price (optional)
+                            </label>
+                            <input
+                              type="number"
+                              min={1}
+                              max={500}
+                              step={1}
+                              value={editPrice}
+                              disabled={isSaving || editPurpose !== 'allow' || !editPriceEnabled}
+                              onChange={(e) => {
+                                const next = Number.parseInt(e.target.value, 10);
+                                setEditPrice(Number.isNaN(next) ? 1 : next);
+                              }}
+                            />
+                          </div>
+
+                          <div className="form-group" style={{ marginBottom: 0 }}>
+                            <label>Title</label>
+                            <input type="text" value={editTitle} onChange={(e) => setEditTitle(e.target.value)} disabled={isSaving} />
+                          </div>
+
+                          <div className="form-group" style={{ marginBottom: 0 }}>
+                            <label>Note</label>
+                            <textarea value={editNote} onChange={(e) => setEditNote(e.target.value)} disabled={isSaving} />
+                          </div>
+
+                          <div className="form-actions" style={{ justifyContent: 'flex-end' }}>
+                            <button type="submit" className="primary" disabled={isSaving}>
+                              Save
+                            </button>
+                          </div>
+                        </form>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           )}
         </>
@@ -646,5 +717,37 @@ export default function Library({ api }: Props) {
         </div>
       )}
     </section>
+  );
+}
+
+function IconOpen() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M14 4h6v6M10 14l10-10M20 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4" />
+    </svg>
+  );
+}
+
+function IconCheck() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 13l4 4L19 7" />
+    </svg>
+  );
+}
+
+function IconEdit() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 20h4l10-10-4-4L4 16v4zM14 6l4 4" />
+    </svg>
+  );
+}
+
+function IconTrash() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6 7h12M9 7V5h6v2M8 7l1 12h6l1-12" />
+    </svg>
   );
 }

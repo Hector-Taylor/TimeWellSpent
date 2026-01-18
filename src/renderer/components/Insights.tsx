@@ -12,6 +12,7 @@ export default function Insights({ api, overview, loading, onRefresh }: Insights
     const isControlled = typeof overview !== 'undefined' || typeof loading !== 'undefined';
     const [localOverview, setLocalOverview] = useState<AnalyticsOverview | null>(null);
     const [localLoading, setLocalLoading] = useState(true);
+    const [excludedKeywords, setExcludedKeywords] = useState<string[]>([]);
 
     const refresh = useCallback(async () => {
         if (onRefresh) {
@@ -33,6 +34,10 @@ export default function Insights({ api, overview, loading, onRefresh }: Insights
             refresh();
         }
     }, [isControlled, refresh]);
+
+    useEffect(() => {
+        api.settings.excludedKeywords().then(setExcludedKeywords).catch(() => { });
+    }, [api]);
 
     const resolvedOverview = isControlled ? overview ?? null : localOverview;
     const resolvedLoading = isControlled ? Boolean(loading) : localLoading;
@@ -66,6 +71,17 @@ export default function Insights({ api, overview, loading, onRefresh }: Insights
     const trendIcon = resolvedOverview.focusTrend === 'improving' ? '📈' : resolvedOverview.focusTrend === 'declining' ? '📉' : '➡️';
     const trendLabel = resolvedOverview.focusTrend === 'improving' ? 'Improving' : resolvedOverview.focusTrend === 'declining' ? 'Declining' : 'Stable';
 
+    const scrubText = (value: string) => {
+        if (!excludedKeywords.length) return value;
+        let next = value;
+        for (const keyword of excludedKeywords) {
+            if (!keyword) continue;
+            const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            next = next.replace(new RegExp(escaped, 'gi'), '[hidden]');
+        }
+        return next;
+    };
+
     return (
         <div className="card insights-card">
             <div className="card-header-row">
@@ -93,7 +109,7 @@ export default function Insights({ api, overview, loading, onRefresh }: Insights
             <ul className="insights-list">
                 {resolvedOverview.insights.map((insight, idx) => (
                     <li key={idx} className="insight-item">
-                        {insight}
+                        {scrubText(insight)}
                     </li>
                 ))}
                 {resolvedOverview.insights.length === 0 && (

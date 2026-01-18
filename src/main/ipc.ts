@@ -1,15 +1,17 @@
 import { BrowserWindow, ipcMain } from 'electron';
 import type { BackendServices } from '@backend/server';
 import type { Database } from '@backend/storage';
+import type { SyncService } from './sync';
 import type { EmergencyPolicyId, JournalConfig, LibraryPurpose, PeekConfig, ZoteroIntegrationConfig } from '@shared/types';
 
 export type IpcContext = {
   backend: BackendServices;
   db: Database;
+  sync?: SyncService | null;
 };
 
 export function createIpc(context: IpcContext) {
-  const { backend } = context;
+  const { backend, sync, db } = context;
 
   ipcMain.handle('wallet:get', async () => {
     return backend.wallet.getSnapshot();
@@ -26,8 +28,27 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('activities:recent', async (_event, payload: { limit?: number }) => {
     return backend.activityTracker.getRecent(payload.limit ?? 50);
   });
-  ipcMain.handle('activities:summary', async (_event, payload: { windowHours?: number }) => {
-    return backend.activityTracker.getSummary(payload.windowHours ?? 24);
+  ipcMain.handle('activities:summary', async (_event, payload: { windowHours?: number; deviceId?: string | null }) => {
+    const windowHours = payload.windowHours ?? 24;
+    const deviceId = payload.deviceId ?? null;
+    const localDeviceId = backend.settings.getJson<string>('syncDeviceId') ?? null;
+    if (deviceId === 'all') {
+      return backend.activityRollups.getSummaryAll(windowHours);
+    }
+    if (deviceId && localDeviceId && deviceId !== localDeviceId) {
+      return backend.activityRollups.getSummary(deviceId, windowHours);
+    }
+    return backend.activityTracker.getSummary(windowHours);
+  });
+  ipcMain.handle('activities:journey', async (_event, payload: { windowHours?: number; deviceId?: string | null }) => {
+    const windowHours = payload.windowHours ?? 24;
+    const deviceId = payload.deviceId ?? null;
+    const localDeviceId = backend.settings.getJson<string>('syncDeviceId') ?? null;
+    if (deviceId === 'all') return null;
+    if (deviceId && localDeviceId && deviceId !== localDeviceId) {
+      return null;
+    }
+    return backend.activityTracker.getJourney(windowHours);
   });
 
   ipcMain.handle('focus:start', async (_event, payload: { duration: number }) => {
@@ -112,6 +133,8 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('settings:update-idle-threshold', (_event, value: number) => backend.settings.setIdleThreshold(value));
   ipcMain.handle('settings:frivolous-idle-threshold', () => backend.settings.getFrivolousIdleThreshold());
   ipcMain.handle('settings:update-frivolous-idle-threshold', (_event, value: number) => backend.settings.setFrivolousIdleThreshold(value));
+  ipcMain.handle('settings:excluded-keywords', () => backend.settings.getExcludedKeywords());
+  ipcMain.handle('settings:update-excluded-keywords', (_event, value: string[]) => backend.settings.setExcludedKeywords(value));
   ipcMain.handle('settings:emergency-policy', () => backend.settings.getEmergencyPolicy());
   ipcMain.handle('settings:update-emergency-policy', (_event, value: EmergencyPolicyId) => backend.settings.setEmergencyPolicy(value));
   ipcMain.handle('settings:emergency-reminder-interval', () => backend.settings.getEmergencyReminderInterval());
@@ -122,6 +145,12 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('settings:update-journal-config', (_event, value: JournalConfig) => backend.settings.setJournalConfig(value));
   ipcMain.handle('settings:peek-config', () => backend.settings.getPeekConfig());
   ipcMain.handle('settings:update-peek-config', (_event, value: PeekConfig) => backend.settings.setPeekConfig(value));
+  ipcMain.handle('settings:competitive-opt-in', () => backend.settings.getCompetitiveOptIn());
+  ipcMain.handle('settings:update-competitive-opt-in', (_event, value: boolean) => backend.settings.setCompetitiveOptIn(Boolean(value)));
+  ipcMain.handle('settings:competitive-min-hours', () => backend.settings.getCompetitiveMinActiveHours());
+  ipcMain.handle('settings:update-competitive-min-hours', (_event, value: number) => backend.settings.setCompetitiveMinActiveHours(value));
+  ipcMain.handle('settings:continuity-window', () => backend.settings.getContinuityWindowSeconds());
+  ipcMain.handle('settings:update-continuity-window', (_event, value: number) => backend.settings.setContinuityWindowSeconds(value));
 
   // Integrations
   ipcMain.handle('integrations:zotero-config', () => backend.reading.getZoteroIntegrationConfig());
@@ -151,15 +180,148 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('history:list', (_event, payload: { day: string }) => backend.consumption.listByDay(payload.day));
   ipcMain.handle('history:days', (_event, payload: { rangeDays?: number }) => backend.consumption.listDays(payload.rangeDays ?? 30));
 
-  // Friends (relay-backed feed)
-  ipcMain.handle('friends:identity', () => backend.friends.getIdentity());
-  ipcMain.handle('friends:enable', async (_event, payload: { relayUrl: string }) => backend.friends.enable({ relayUrl: payload.relayUrl }));
-  ipcMain.handle('friends:disable', () => backend.friends.disable());
-  ipcMain.handle('friends:publish', () => backend.friends.publishNow());
-  ipcMain.handle('friends:list', () => backend.friends.listFriends());
-  ipcMain.handle('friends:add', (_event, payload: { name: string; userId: string; readKey: string }) => backend.friends.addFriend(payload));
-  ipcMain.handle('friends:remove', (_event, payload: { id: string }) => backend.friends.removeFriend(payload.id));
-  ipcMain.handle('friends:fetch-all', () => backend.friends.fetchAll());
+  ipcMain.handle('system:reset', async (_event, payload: { scope?: 'trophies' | 'all' }) => {
+    const scope = payload?.scope === 'all' ? 'all' : 'trophies';
+    if (scope === 'trophies') {
+      backend.trophies.resetLocal();
+      backend.trophies.scheduleEvaluation('reset');
+      if (sync) {
+        await sync.resetTrophiesRemote();
+      }
+      return { cleared: 'trophies' as const };
+    }
+
+    const conn = db.connection;
+    conn.transaction(() => {
+      conn.prepare('DELETE FROM activities').run();
+      conn.prepare('DELETE FROM activity_rollups').run();
+      conn.prepare('DELETE FROM consumption_log').run();
+      conn.prepare('DELETE FROM focus_sessions').run();
+      conn.prepare('DELETE FROM intentions').run();
+      conn.prepare('DELETE FROM budgets').run();
+      conn.prepare('DELETE FROM transactions').run();
+      conn.prepare('DELETE FROM library_items').run();
+      conn.prepare('DELETE FROM trophies').run();
+      conn.prepare('DELETE FROM behavior_events').run();
+      conn.prepare('DELETE FROM session_analytics').run();
+      conn.prepare('DELETE FROM behavioral_patterns').run();
+      conn.prepare('INSERT INTO wallet(id, balance) VALUES (1, 0) ON CONFLICT(id) DO UPDATE SET balance = excluded.balance').run();
+    })();
+
+    backend.settings.setJson('trophiesPinned', []);
+    backend.settings.setJson('trophyStats', {
+      bestProductiveRunSec: 0,
+      bestIdleRatio: 1,
+      bestBalance: 0,
+      bestFrivolityStreakHours: 0
+    });
+    backend.settings.setJson('syncState', {});
+    backend.settings.setJson('syncFriendsCount', 0);
+
+    backend.trophies.scheduleEvaluation('reset');
+
+    if (sync) {
+      await sync.resetAllRemote();
+    }
+
+    return { cleared: 'all' as const };
+  });
+
+  // Friends (Supabase-backed)
+  ipcMain.handle('friends:profile', async () => {
+    if (!sync) return null;
+    return sync.getProfile();
+  });
+  ipcMain.handle('friends:update-profile', async (_event, payload: { handle?: string; displayName?: string; color?: string; pinnedTrophies?: string[] }) => {
+    if (!sync) throw new Error('Sync not available');
+    return sync.updateProfile(payload);
+  });
+  ipcMain.handle('friends:find-handle', async (_event, payload: { handle: string }) => {
+    if (!sync) return null;
+    return sync.findByHandle(payload.handle);
+  });
+  ipcMain.handle('friends:request', async (_event, payload: { handle: string }) => {
+    if (!sync) throw new Error('Sync not available');
+    return sync.requestFriend(payload.handle);
+  });
+  ipcMain.handle('friends:requests', async () => {
+    if (!sync) return { incoming: [], outgoing: [] };
+    return sync.listRequests();
+  });
+  ipcMain.handle('friends:accept', async (_event, payload: { id: string }) => {
+    if (!sync) throw new Error('Sync not available');
+    return sync.acceptRequest(payload.id);
+  });
+  ipcMain.handle('friends:decline', async (_event, payload: { id: string }) => {
+    if (!sync) throw new Error('Sync not available');
+    return sync.declineRequest(payload.id);
+  });
+  ipcMain.handle('friends:cancel', async (_event, payload: { id: string }) => {
+    if (!sync) throw new Error('Sync not available');
+    return sync.cancelRequest(payload.id);
+  });
+  ipcMain.handle('friends:list', async () => {
+    if (!sync) return [];
+    return sync.listFriends();
+  });
+  ipcMain.handle('friends:remove', async (_event, payload: { id: string }) => {
+    if (!sync) throw new Error('Sync not available');
+    return sync.removeFriend(payload.id);
+  });
+  ipcMain.handle('friends:summaries', async (_event, payload: { windowHours?: number }) => {
+    if (!sync) return {};
+    return sync.getFriendSummaries(payload.windowHours ?? 24);
+  });
+  ipcMain.handle('friends:me-summary', async (_event, payload: { windowHours?: number }) => {
+    const rangeHours = Number.isFinite(payload.windowHours) ? Number(payload.windowHours) : 24;
+    const summary = backend.activityTracker.getSummary(rangeHours);
+    const sinceIso = new Date(Date.now() - rangeHours * 60 * 60 * 1000).toISOString();
+    const emergencySessions = backend.consumption
+      .listSince(sinceIso)
+      .filter((entry) => entry.kind === 'emergency-session').length;
+    return {
+      userId: 'me',
+      updatedAt: new Date().toISOString(),
+      periodHours: summary.windowHours,
+      totalActiveSeconds: summary.totalSeconds,
+      categoryBreakdown: {
+        productive: summary.totalsByCategory.productive ?? 0,
+        neutral: summary.totalsByCategory.neutral ?? 0,
+        frivolity: summary.totalsByCategory.frivolity ?? 0,
+        idle: summary.totalsByCategory.idle ?? 0
+      },
+      productivityScore: summary.totalSeconds > 0
+        ? Math.round((summary.totalsByCategory.productive / summary.totalSeconds) * 100)
+        : 0,
+      emergencySessions
+    };
+  });
+  ipcMain.handle('friends:timeline', async (_event, payload: { userId: string; windowHours?: number }) => {
+    if (!sync) return null;
+    return sync.getFriendTimeline(payload.userId, payload.windowHours ?? 24);
+  });
+
+  ipcMain.handle('trophies:list', async () => {
+    return backend.trophies.listStatuses();
+  });
+
+  ipcMain.handle('trophies:profile', async () => {
+    await backend.trophies.listStatuses();
+    const profile = sync ? await sync.getProfile() : null;
+    return backend.trophies.getProfileSummary(profile);
+  });
+
+  ipcMain.handle('trophies:pin', async (_event, payload: { ids?: string[] }) => {
+    const pinned = backend.trophies.setPinned(payload?.ids ?? []);
+    if (sync) {
+      try {
+        await sync.updateProfile({ pinnedTrophies: pinned });
+      } catch {
+        // Keep local pins even if sync fails.
+      }
+    }
+    return pinned;
+  });
 
   // Analytics handlers
   ipcMain.handle('analytics:overview', (_event, payload: { days?: number }) => {
@@ -176,5 +338,30 @@ export function createIpc(context: IpcContext) {
   });
   ipcMain.handle('analytics:trends', (_event, payload: { granularity?: 'hour' | 'day' | 'week' }) => {
     return backend.analytics.getTrends(payload.granularity ?? 'day');
+  });
+
+  ipcMain.handle('sync:status', async () => {
+    if (!sync) return { configured: false, authenticated: false };
+    return sync.getStatus();
+  });
+  ipcMain.handle('sync:sign-in', async (_event, payload: { provider: 'google' | 'github' }) => {
+    if (!sync) return { ok: false, error: 'Sync not available' };
+    return sync.signIn(payload.provider);
+  });
+  ipcMain.handle('sync:sign-out', async () => {
+    if (!sync) return { ok: false, error: 'Sync not available' };
+    return sync.signOut();
+  });
+  ipcMain.handle('sync:sync-now', async () => {
+    if (!sync) return { ok: false, error: 'Sync not available' };
+    return sync.syncNow();
+  });
+  ipcMain.handle('sync:set-device-name', async (_event, payload: { name: string }) => {
+    if (!sync) return { ok: false, error: 'Sync not available' };
+    return sync.setDeviceName(payload.name);
+  });
+  ipcMain.handle('sync:devices', async () => {
+    if (!sync) return [];
+    return sync.listDevices();
   });
 }
