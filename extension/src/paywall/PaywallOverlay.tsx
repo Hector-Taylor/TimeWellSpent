@@ -85,6 +85,7 @@ type StatusResponse = {
   lastSync: number | null;
   desktopConnected: boolean;
   emergencyPolicy?: 'off' | 'gentle' | 'balanced' | 'strict';
+  discouragementEnabled?: boolean;
   rotMode?: { enabled: boolean; startedAt: number | null };
   emergency?: {
     lastEnded: { domain: string; justification?: string; endedAt: number } | null;
@@ -107,7 +108,9 @@ type FriendSummary = {
   periodHours: number;
   totalActiveSeconds: number;
   categoryBreakdown: { productive: number; neutral: number; frivolity: number; idle: number };
+  deepWorkSeconds?: number;
   productivityScore: number;
+  emergencySessions?: number;
 };
 
 type FriendTimeline = {
@@ -167,6 +170,29 @@ type TrophyProfileSummary = {
   };
   earnedToday: string[];
 };
+
+const SINISTER_PHRASES = [
+  'I thought better of you.',
+  'You should know better.',
+  'Not this.',
+  'We do not go here.',
+  'Choose again.',
+  'Turn back.',
+  'This is beneath you.',
+  'Remember your promise.',
+  'Does this end well?',
+  'Borrowed time, bad trade.',
+  'You already know how this feels.',
+  'Nothing here will help.',
+  'Is the scroll worth the bill?',
+  'You promised to be sharper.',
+  'The feed will not love you back.',
+  'You are not your urges.',
+  'Five minutes becomes fifty.',
+  'We leave this for future you?',
+  'Every click is a coin.',
+  'The void is patient. Are you?'
+];
 
 type Props = {
   domain: string;
@@ -367,6 +393,19 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const feedSentinelRef = useRef<HTMLDivElement | null>(null);
   const [rotModeEnabled, setRotModeEnabled] = useState(status.rotMode?.enabled ?? false);
   const [rotModeBusy, setRotModeBusy] = useState(false);
+  const [discouragementEnabled, setDiscouragementEnabled] = useState(status.discouragementEnabled ?? true);
+  const [discouragementBusy, setDiscouragementBusy] = useState(false);
+  const [theme, setTheme] = useState<'lavender' | 'olive'>(() => {
+    try {
+      const saved = localStorage.getItem('tws-theme');
+      return saved === 'olive' ? 'olive' : 'lavender';
+    } catch {
+      return 'lavender';
+    }
+  });
+  const [sinisterIndex, setSinisterIndex] = useState(() =>
+    SINISTER_PHRASES.length ? Math.floor(Math.random() * SINISTER_PHRASES.length) : 0
+  );
   const [overlayView, setOverlayView] = useState<string>('dashboard');
   const [friends, setFriends] = useState<FriendConnection[]>([]);
   const [friendSummaries, setFriendSummaries] = useState<Record<string, FriendSummary>>({});
@@ -471,6 +510,26 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   useEffect(() => {
     setRotModeEnabled(status.rotMode?.enabled ?? false);
   }, [status.rotMode?.enabled]);
+
+  useEffect(() => {
+    setDiscouragementEnabled(status.discouragementEnabled ?? true);
+  }, [status.discouragementEnabled]);
+
+  useEffect(() => {
+    if (!discouragementEnabled || SINISTER_PHRASES.length === 0) return;
+    const timer = window.setInterval(() => {
+      setSinisterIndex((index) => (index + 1) % SINISTER_PHRASES.length);
+    }, 4200);
+    return () => window.clearInterval(timer);
+  }, [discouragementEnabled]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('tws-theme', theme);
+    } catch {
+      // ignore
+    }
+  }, [theme]);
 
   const refreshFriends = async () => {
     try {
@@ -597,6 +656,8 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     setPeekActive(true);
   };
 
+  const sinisterPhrase = SINISTER_PHRASES[sinisterIndex] ?? 'You should know better.';
+
   const peekToggle = peekAllowed ? (
     <div className="tws-peek-controls">
       <button
@@ -608,6 +669,12 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
         {peekActive ? 'Hide peek' : 'Peek'}
       </button>
       {peekActive && <div className="tws-peek-hint">Move mouse to return</div>}
+    </div>
+  ) : null;
+
+  const discouragementBanner = discouragementEnabled && !peekActive ? (
+    <div className="tws-discourage-banner" aria-hidden="true">
+      <span>{sinisterPhrase}</span>
     </div>
   ) : null;
 
@@ -858,38 +925,21 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     }
   };
 
-  const sortedPacks = useMemo(() => {
-    return [...(status.rate?.packs ?? [])].sort((a, b) => a.minutes - b.minutes);
-  }, [status.rate?.packs]);
-
-  const sliderBounds = useMemo(() => {
-    if (sortedPacks.length) {
-      return {
-        min: sortedPacks[0].minutes,
-        max: sortedPacks[sortedPacks.length - 1].minutes,
-        step: 1
-      };
+  const quickPacks = useMemo(() => {
+    const base = [
+      { minutes: 5, price: Math.max(1, Math.round(5 * ratePerMin)) },
+      { minutes: 10, price: Math.max(1, Math.round(10 * ratePerMin)) }
+    ];
+    if (!status.rate?.packs?.length) return base;
+    const priceByMinutes = new Map<number, number>();
+    for (const pack of status.rate.packs) {
+      priceByMinutes.set(pack.minutes, pack.price);
     }
-    return { min: 5, max: 120, step: 5 };
-  }, [sortedPacks]);
-
-  useEffect(() => {
-    if (sortedPacks.length) setSelectedMinutes(sortedPacks[0].minutes);
-    else setSelectedMinutes(15);
-  }, [domain, sortedPacks]);
-
-  const snapMinutes = (value: number) => {
-    if (!sortedPacks.length) return value;
-    return sortedPacks.reduce((closest, pack) => {
-      const distance = Math.abs(pack.minutes - value);
-      const closestDistance = Math.abs(closest - value);
-      return distance < closestDistance ? pack.minutes : closest;
-    }, sortedPacks[0].minutes);
-  };
-
-  const matchedPack = sortedPacks.find((pack) => pack.minutes === selectedMinutes);
-  const sliderPrice = matchedPack ? matchedPack.price : Math.max(1, Math.round(selectedMinutes * ratePerMin));
-  const sliderAffordable = status.balance >= sliderPrice;
+    return base.map((p) => ({
+      minutes: p.minutes,
+      price: priceByMinutes.get(p.minutes) ?? p.price
+    }));
+  }, [ratePerMin, status.rate?.packs]);
 
   const handleBuyPack = async () => {
     if (isProcessing) return;
@@ -1009,6 +1059,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     return (
       <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''}`}>
         {peekToggle}
+        {discouragementBanner}
         <div className="tws-paywall-modal">
           <header className="tws-paywall-header">
             <div>
@@ -1095,14 +1146,13 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     return (
       <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''}`}>
         {peekToggle}
+        {discouragementBanner}
         <div className="tws-paywall-modal">
           <header className="tws-paywall-header">
             <div>
               <p className="tws-eyebrow">TimeWellSpent</p>
-              <h2>I need it</h2>
-              <p className="tws-subtle">
-                Emergency access is a safety hatch. Use it when you have a real purpose — not when you want a dopamine hit.
-              </p>
+              <h2>Emergency</h2>
+              <p className="tws-subtle">What do you need to do?</p>
             </div>
             <div className="tws-wallet-badge">
               <span>Balance</span>
@@ -1435,6 +1485,44 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     }
   };
 
+  const handleDiscouragementToggle = async () => {
+    if (discouragementBusy) return;
+    const next = !discouragementEnabled;
+    setDiscouragementBusy(true);
+    setError(null);
+    try {
+      const result = await chrome.runtime.sendMessage({ type: 'SET_DISCOURAGEMENT_MODE', payload: { enabled: next } });
+      if (!result?.success) {
+        throw new Error(result?.error ? String(result.error) : 'Failed to update discouragement mode');
+      }
+      setDiscouragementEnabled(next);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDiscouragementBusy(false);
+    }
+  };
+
+  const handleSetDomainCategory = async (category: 'productive' | 'neutral' | 'frivolous') => {
+    if (isProcessing) return;
+    setIsProcessing(true);
+    setError(null);
+    try {
+      const result = await chrome.runtime.sendMessage({
+        type: 'SET_DOMAIN_CATEGORY',
+        payload: { domain, category }
+      });
+      if (!result?.success) {
+        throw new Error(result?.error ? String(result.error) : 'Failed to update category');
+      }
+      // Optionally close the overlay or update UI
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   useEffect(() => {
     if (!navOpen) return;
     const handleKey = (event: KeyboardEvent) => {
@@ -1445,8 +1533,9 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   }, [navOpen]);
 
   return (
-    <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''}`}>
+    <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''} ${theme === 'olive' ? 'tws-theme-olive' : ''}`}>
       {peekToggle}
+      {discouragementBanner}
       <div
         className={`tws-nav-backdrop ${navOpen ? 'open' : ''}`}
         aria-hidden={!navOpen}
@@ -1574,10 +1663,8 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                 <section className="tws-paywall-option tws-attractors">
                   <div className="tws-option-header tws-attractors-header">
                     <div>
-                      <h3>Gentle redirection</h3>
-                      <p className="tws-subtle">
-                        You are not here because this site is irresistible. You are here because something else mattered - pick it.
-                      </p>
+                      <h3>Instead</h3>
+                      <p className="tws-subtle">Something better?</p>
                     </div>
                     <button className="tws-link" type="button" disabled={isProcessing} onClick={() => setSpinKey((k) => k + 1)}>
                       Spin
@@ -1586,7 +1673,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
 
                   {picks.length === 0 ? (
                     <p className="tws-subtle" style={{ margin: 0 }}>
-                      Your Replace pool is empty. Save a few links with right-click &rarr; "Save to TimeWellSpent" &rarr; "Replace".
+                      Empty. Right-click pages to save replacements.
                     </p>
                   ) : (
                     <div className="tws-attractors-grid">
@@ -1823,12 +1910,12 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                         Productive library{' '}
                         {productiveItems.length > 0 && <span className="tws-subtle">({productiveItems.length})</span>}
                       </h3>
-                      <p className="tws-subtle">Open something you already tagged as productive.</p>
+                      <p className="tws-subtle">Your productive bookmarks</p>
                     </div>
                   </div>
                   {productiveItems.length === 0 ? (
                     <p className="tws-subtle" style={{ margin: 0 }}>
-                      No productive items yet. Right-click a page and choose "Productive" to add it.
+                      Empty. Right-click pages to add.
                     </p>
                   ) : (
                     <div className="tws-library-scroll">
@@ -2032,11 +2119,11 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                   </div>
                   {!competitiveOptIn ? (
                     <p className="tws-subtle" style={{ margin: 0 }}>
-                      Competitive view is off. Enable it in the desktop app.
+                      Off. Enable in desktop app.
                     </p>
                   ) : friends.length === 0 ? (
                     <p className="tws-subtle" style={{ margin: 0 }}>
-                      Add a friend in the desktop app to compare here.
+                      No friends yet.
                     </p>
                   ) : (
                     <div className="tws-friends-list">
@@ -2079,13 +2166,13 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                                     <span>{formatMinutes(summary?.categoryBreakdown.productive ?? 0)} productive</span>
                                   </div>
                                   <div className="tws-head-to-head-meta">
-                                    <span>{formatCount(mySummary?.emergencySessions)} I need it</span>
-                                    <span>{formatCount(summary?.emergencySessions)} I need it</span>
+                                    <span>{formatCount(mySummary?.emergencySessions)} emergency</span>
+                                    <span>{formatCount(summary?.emergencySessions)} emergency</span>
                                   </div>
                                 </>
                               ) : (
                                 <p className="tws-subtle" style={{ margin: '6px 0 0' }}>
-                                  Head-to-head unlocks after both log {competitiveMinHours}h active today.
+                                  Both need {competitiveMinHours}h active to unlock.
                                 </p>
                               )}
                             </div>
@@ -2186,17 +2273,59 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                       <p className="tws-subtle">Syncs with your desktop app.</p>
                     </div>
                   </div>
-                  <div className="tws-rail-card">
-                    <div className="tws-rail-row">
-                      <span className="tws-rail-label">Rot mode</span>
+                  <div className="tws-rail-card tws-rail-toggles">
+                    <div className="tws-toggle-row">
+                      <div>
+                        <span className="tws-toggle-title">Rot mode</span>
+                        <span className="tws-subtle">All frivolous sites, metered.</span>
+                      </div>
                       <button
                         type="button"
-                        className={`tws-rot-toggle ${rotModeEnabled ? 'active' : ''}`}
+                        role="switch"
+                        aria-checked={rotModeEnabled}
+                        className={`tws-switch ${rotModeEnabled ? 'active' : ''}`}
                         onClick={handleRotModeToggle}
                         disabled={rotModeBusy || isProcessing}
                       >
-                        {rotModeEnabled ? 'On' : 'Off'}
+                        <span className="tws-switch-track" aria-hidden="true">
+                          <span className="tws-switch-knob" />
+                        </span>
+                        <span className="tws-switch-label">{rotModeEnabled ? 'On' : 'Off'}</span>
                       </button>
+                    </div>
+                    <div className="tws-toggle-row">
+                      <div>
+                        <span className="tws-toggle-title">Discouragement quotes</span>
+                        <span className="tws-subtle">Rotate a few ominous reminders.</span>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={discouragementEnabled}
+                        className={`tws-switch ${discouragementEnabled ? 'active' : ''}`}
+                        onClick={handleDiscouragementToggle}
+                        disabled={discouragementBusy || isProcessing}
+                      >
+                        <span className="tws-switch-track" aria-hidden="true">
+                          <span className="tws-switch-knob" />
+                        </span>
+                        <span className="tws-switch-label">{discouragementEnabled ? 'On' : 'Off'}</span>
+                      </button>
+                    </div>
+                    <div className="tws-toggle-row">
+                      <div>
+                        <span className="tws-toggle-title">Theme</span>
+                        <span className="tws-subtle">Lavender or Olive Garden.</span>
+                      </div>
+                      <select
+                        className="tws-select"
+                        value={theme}
+                        onChange={(e) => setTheme(e.target.value === 'olive' ? 'olive' : 'lavender')}
+                        disabled={isProcessing}
+                      >
+                        <option value="lavender">Lavender (default)</option>
+                        <option value="olive">Olive Garden Feast</option>
+                      </select>
                     </div>
                     <p className="tws-subtle" style={{ margin: 0 }}>Use the desktop app for full settings.</p>
                   </div>
@@ -2343,7 +2472,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
               <strong>{formatCoins(ratePerMin)} f-coins/min</strong>
             </div>
             <p className="tws-subtle" style={{ margin: 0 }}>
-              Proceed only when it matches your intention.
+              Frivolity costs.
             </p>
           </div>
 
@@ -2354,11 +2483,11 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
             </div>
             {!competitiveOptIn ? (
               <p className="tws-subtle" style={{ margin: 0 }}>
-                Competitive view is off. Enable it in the desktop app.
+                Off. Enable in desktop app.
               </p>
             ) : friends.length === 0 ? (
               <p className="tws-subtle" style={{ margin: 0 }}>
-                Add a friend in the desktop app to compare here.
+                No friends yet.
               </p>
             ) : (
               <div className="tws-friends-list">
@@ -2401,13 +2530,13 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                               <span>{formatMinutes(summary?.categoryBreakdown.productive ?? 0)} productive</span>
                             </div>
                             <div className="tws-head-to-head-meta">
-                              <span>{formatCount(mySummary?.emergencySessions)} I need it</span>
-                              <span>{formatCount(summary?.emergencySessions)} I need it</span>
+                              <span>{formatCount(mySummary?.emergencySessions)} emergency</span>
+                              <span>{formatCount(summary?.emergencySessions)} emergency</span>
                             </div>
                           </>
                         ) : (
                           <p className="tws-subtle" style={{ margin: '6px 0 0' }}>
-                            Head-to-head unlocks after both log {competitiveMinHours}h active today.
+                            Both need {competitiveMinHours}h active to unlock.
                           </p>
                         )}
                       </div>
@@ -2428,38 +2557,47 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
             )}
           </div>
 
-          <div className="tws-rail-card tws-rot-card">
-            <div className="tws-rot-header">
-              <strong>Rot mode</strong>
+          <div className="tws-rail-card tws-rail-toggles">
+            <div className="tws-rail-row">
+              <strong>Modes</strong>
+              <span className="tws-rail-label">Quick</span>
+            </div>
+            <div className="tws-toggle-row">
+              <div>
+                <span className="tws-toggle-title">Rot mode</span>
+                <span className="tws-subtle">All frivolous sites, metered.</span>
+              </div>
               <button
                 type="button"
-                className={`tws-rot-toggle ${rotModeEnabled ? 'active' : ''}`}
+                role="switch"
+                aria-checked={rotModeEnabled}
+                className={`tws-switch ${rotModeEnabled ? 'active' : ''}`}
                 onClick={handleRotModeToggle}
                 disabled={rotModeBusy || isProcessing}
               >
-                {rotModeEnabled ? 'On' : 'Off'}
+                <span className="tws-switch-track" aria-hidden="true">
+                  <span className="tws-switch-knob" />
+                </span>
+                <span className="tws-switch-label">{rotModeEnabled ? 'On' : 'Off'}</span>
               </button>
             </div>
-            <p className="tws-subtle" style={{ margin: 0 }}>
-              Opens all frivolous domains, metered and paused when you leave.
-            </p>
           </div>
 
           <div className="tws-proceed-dock">
             <details className="tws-details" open={proceedOpen} onToggle={(e) => setProceedOpen((e.target as HTMLDetailsElement).open)}>
               <summary>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <strong>Proceed anyway</strong>
-                  <span>Timebox recommended - metered and emergency are intentionally harder.</span>
+                <div className="tws-proceed-summary">
+                  <strong>Proceed</strong>
+                  <span className="tws-subtle">Timebox · Metered · Emergency</span>
                 </div>
-                <span>{proceedOpen ? '-' : '+'}</span>
+                <span className="tws-details-toggle" aria-hidden="true">{proceedOpen ? '-' : '+'}</span>
               </summary>
               <div className="tws-details-body">
                 {unlock && (
                   <section className="tws-paywall-option" style={{ margin: 0 }}>
                     <div className="tws-option-header">
                       <h3>Unlock your saved item</h3>
-                      <p className="tws-subtle">Pay once for this exact page, then leave when you are done.</p>
+                      <p className="tws-subtle">One-time unlock for this page.</p>
                     </div>
 
                     {unlock.url && (
@@ -2505,44 +2643,35 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
 
                 <section className="tws-paywall-option" style={{ margin: 0 }}>
                   <div className="tws-option-header">
-                    <h3>Timeboxed session (recommended)</h3>
-                    <p className="tws-subtle">Commit to a fixed time and leave when it ends.</p>
+                    <h3>Timebox</h3>
+                    <p className="tws-subtle">Fixed duration, auto-close.</p>
                   </div>
-
-                  <div className="tws-slider-container">
-                    <div className="tws-slider-labels">
-                      <span>{selectedMinutes} minutes</span>
-                      <span className="tws-subtle-info">timebox</span>
-                      <strong>{sliderPrice} f-coins</strong>
-                    </div>
-                    <input
-                      type="range"
-                      min={sliderBounds.min}
-                      max={sliderBounds.max}
-                      step={sliderBounds.step}
-                      value={selectedMinutes}
-                      onChange={(e) => setSelectedMinutes(snapMinutes(Number(e.target.value)))}
-                    />
-                    <div className="tws-slider-scale">
-                      <small>{sliderBounds.min}m</small>
-                      <small>{sliderBounds.max}m</small>
-                    </div>
-                  </div>
-
-                  <div className="tws-option-action">
-                    <button className="tws-primary" onClick={handleBuyPack} disabled={!sliderAffordable || isProcessing}>
-                      Proceed for {sliderPrice} f-coins
-                    </button>
-                    {!sliderAffordable && (
-                      <p className="tws-error-text">Need {sliderPrice - status.balance} more f-coins</p>
-                    )}
+                  <div className="tws-option-action tws-pack-buttons">
+                    {quickPacks.map((pack) => {
+                      const affordable = status.balance >= pack.price;
+                      const disabled = isProcessing || !affordable;
+                      return (
+                        <button
+                          key={pack.minutes}
+                          className="tws-primary"
+                          onClick={async () => {
+                            setSelectedMinutes(pack.minutes);
+                            await handleBuyPack();
+                          }}
+                          disabled={disabled}
+                          title={affordable ? undefined : 'Need more f-coins'}
+                        >
+                          {pack.minutes}m • {pack.price} f-coins
+                        </button>
+                      );
+                    })}
                   </div>
                 </section>
 
                 <section className="tws-paywall-option" style={{ margin: 0 }}>
                   <div className="tws-option-header">
                     <h3>Metered</h3>
-                    <p className="tws-subtle">Charges continuously while you stay. Use only if you trust yourself.</p>
+                    <p className="tws-subtle">Pay as you go.</p>
                   </div>
                   <div className="tws-option-action">
                     <div className="tws-price-tag">
@@ -2562,7 +2691,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                     </button>
                   ) : (
                     <button onClick={() => { setReviewed(false); setShowEmergencyForm(true); }}>
-                      I need it (Emergency)
+                      Emergency
                     </button>
                   )}
                 </div>

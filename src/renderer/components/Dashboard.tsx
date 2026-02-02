@@ -14,6 +14,7 @@ import type {
   TrophyStatus,
   WalletSnapshot
 } from '@shared/types';
+import PomodoroPanel from './PomodoroPanel';
 import DayCompass from './DayCompass';
 import ActivityChart from './ActivityChart';
 import DayJourney from './DayJourney';
@@ -56,6 +57,7 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
   const [excludedKeywords, setExcludedKeywords] = useState<string[]>([]);
   const [competitiveOptIn, setCompetitiveOptIn] = useState(false);
   const [competitiveMinHours, setCompetitiveMinHours] = useState(2);
+  const [pomodoroOpen, setPomodoroOpen] = useState(false);
 
   const refresh = useCallback(async (silent = false) => {
     if (!silent) setLoadingSummary(true);
@@ -348,12 +350,12 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
     }
     if (flowMetric === 'idle') {
       return timeline.map((slot) => {
-        const total = slot.productive + slot.neutral + slot.frivolity + slot.idle;
+        const total = slot.productive + slot.neutral + slot.frivolity + slot.draining + slot.idle;
         return total > 0 ? slot.idle / total : 0;
       });
     }
     return timeline.map((slot) => {
-      const active = slot.productive + slot.neutral + slot.frivolity;
+      const active = slot.productive + slot.neutral + slot.frivolity + slot.draining;
       return active > 0 ? slot.productive / active : 0;
     });
   }, [flowMetric, timeline, switchesByHour, thrashByHour]);
@@ -384,6 +386,7 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
   const streakHue = Math.round(20 + 30 * streakProgress);
   const streakLight = Math.round(48 + 18 * streakProgress);
   const streakColor = lastFrivolityAgeMs ? `hsl(${streakHue} 70% ${streakLight}%)` : 'rgba(200, 149, 108, 0.7)';
+  const deepWorkMinutes = useMemo(() => summary ? Math.round(summary.deepWorkSeconds / 60) : null, [summary]);
 
   const trophyById = useMemo(() => {
     const map = new Map<string, TrophyStatus>();
@@ -411,10 +414,16 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
           <div>
             <p className="eyebrow">Attention control</p>
             <h1>Your day at a glance</h1>
-            <div className="pill-row pill-row-tight">
-              <span className="pill">Now: {activeLabel}</span>
-              <span className="pill ghost">Wallet {wallet.balance} f-coins</span>
-              <span className="pill soft">{summary ? `${summary.windowHours}h sweep` : 'loading window...'}</span>
+            <div className="pill-row pill-row-tight topbar-actions">
+              <div className="pill-group">
+                <span className="pill ghost">Wallet {wallet.balance} f-coins</span>
+                <button type="button" className="pomodoro-trigger" onClick={() => setPomodoroOpen(true)}>
+                  Locking in?
+                </button>
+              </div>
+              <span className="pill ghost">
+                {deepWorkMinutes == null ? 'Deep work —' : `Deep work ${deepWorkMinutes} min`}
+              </span>
             </div>
             {devices.length > 0 && (
               <div className="dashboard-device-switch">
@@ -510,13 +519,13 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
                                   <span>{formatMinutes(friendSummaries[friend.userId]?.categoryBreakdown.productive ?? 0)} productive</span>
                                 </div>
                                 <div className="head-to-head-row subtle">
-                                  <span>{formatCount(myHeadToHeadSummary?.emergencySessions)} I need it</span>
-                                  <span>{formatCount(friendSummaries[friend.userId]?.emergencySessions)} I need it</span>
+                                  <span>{formatCount(myHeadToHeadSummary?.emergencySessions)} emergency</span>
+                                  <span>{formatCount(friendSummaries[friend.userId]?.emergencySessions)} emergency</span>
                                 </div>
                               </>
                             ) : (
                               <p className="subtle" style={{ marginTop: 6 }}>
-                                Head-to-head unlocks after both log {competitiveMinHours}h active today.
+                                Both need {competitiveMinHours}h active to unlock.
                               </p>
                             )}
                           </div>
@@ -622,6 +631,19 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
           )}
         </div>
       </header>
+
+      {pomodoroOpen && (
+        <div className="pomodoro-flyout">
+          <div className="pomodoro-flyout-bar">
+            <div>
+              <p className="eyebrow">Deep work</p>
+              <strong>Pomodoro control</strong>
+            </div>
+            <button type="button" className="ghost" onClick={() => setPomodoroOpen(false)}>Close</button>
+          </div>
+          <PomodoroPanel api={api} />
+        </div>
+      )}
 
       <div className="panel-body dashboard-grid">
         <div className="dashboard-orbit">
@@ -755,6 +777,7 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
               {renderCategoryBar('Productive', 'productive', overview)}
               {renderCategoryBar('Neutral', 'neutral', overview)}
               {renderCategoryBar('Frivolity', 'frivolity', overview)}
+              {renderCategoryBar('Draining', 'draining', overview)}
               {renderCategoryBar('Idle', 'idle', overview)}
             </div>
           </div>
@@ -852,10 +875,12 @@ function activityToFriendSummary(activity: ActivitySummary): FriendSummary {
     updatedAt: new Date().toISOString(),
     periodHours: activity.windowHours,
     totalActiveSeconds: activity.totalSeconds,
+    deepWorkSeconds: activity.deepWorkSeconds,
     categoryBreakdown: {
       productive: activity.totalsByCategory.productive ?? 0,
       neutral: activity.totalsByCategory.neutral ?? 0,
       frivolity: activity.totalsByCategory.frivolity ?? 0,
+      draining: (activity.totalsByCategory as any).draining ?? 0,
       idle: activity.totalsByCategory.idle ?? 0
     },
     productivityScore: activity.totalSeconds > 0
@@ -872,9 +897,9 @@ function headToHeadPercentFromSummary(me: FriendSummary | null, friend: FriendSu
   return Math.round((myProductive / total) * 100);
 }
 
-function renderCategoryBar(label: string, key: 'productive' | 'neutral' | 'frivolity' | 'idle', overview: AnalyticsOverview | null) {
-  const totals = overview?.categoryBreakdown ?? { productive: 0, neutral: 0, frivolity: 0, idle: 0 };
-  const total = totals.productive + totals.neutral + totals.frivolity + totals.idle;
+function renderCategoryBar(label: string, key: 'productive' | 'neutral' | 'frivolity' | 'draining' | 'idle', overview: AnalyticsOverview | null) {
+  const totals = overview?.categoryBreakdown ?? { productive: 0, neutral: 0, frivolity: 0, draining: 0, idle: 0 };
+  const total = totals.productive + totals.neutral + totals.frivolity + (totals as any).draining + totals.idle;
   const value = totals[key] ?? 0;
   const pct = total > 0 ? Math.round((value / total) * 100) : 0;
   return (

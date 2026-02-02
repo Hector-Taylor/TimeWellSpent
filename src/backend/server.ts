@@ -11,12 +11,13 @@ import { ActivityRollupService } from './activityRollups';
 import { PaywallManager } from './paywall';
 import { EconomyEngine } from './economy';
 import { FocusService } from './focus';
+import { PomodoroService } from './pomodoro';
 import { IntentionService } from './intentions';
 import { BudgetService } from './budgets';
 import { ActivityClassifier } from './activityClassifier';
 import { ActivityPipeline, type ActivityOrigin } from './activityPipeline';
 import type { Database } from './storage';
-import type { FriendConnection, FriendSummary, FriendTimeline, MarketRate } from '@shared/types';
+import type { FriendConnection, FriendProfile, FriendSummary, FriendTimeline, MarketRate, PomodoroAllowlistEntry, PomodoroOverride } from '@shared/types';
 import { logger } from '@shared/logger';
 import { AnalyticsService } from './analytics';
 import { EmergencyService } from './emergency';
@@ -56,6 +57,7 @@ export type BackendServices = {
   paywall: PaywallManager;
   economy: EconomyEngine;
   focus: FocusService;
+  pomodoro: PomodoroService;
   analytics: AnalyticsService;
   intentions: IntentionService;
   budgets: BudgetService;
@@ -94,6 +96,13 @@ export async function createBackend(
   database: Database,
   options?: BackendOptions
 ): Promise<BackendServices> {
+  const dayKey = (date: Date) => {
+    const year = date.getFullYear();
+    const month = `${date.getMonth() + 1}`.padStart(2, '0');
+    const day = `${date.getDate()}`.padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
   // Initialize all services
   const wallet = new WalletManager(database);
   const market = new MarketService(database);
@@ -102,6 +111,7 @@ export async function createBackend(
   const economy = new EconomyEngine(wallet, market, paywall, () => settings.getEmergencyReminderInterval(), {
     getProductiveRatePerMin: () => settings.getProductiveRatePerMin(),
     getNeutralRatePerMin: () => settings.getNeutralRatePerMin(),
+    getDrainingRatePerMin: () => settings.getDrainingRatePerMin(),
     getSpendIntervalSeconds: () => settings.getSpendIntervalSeconds()
   });
   const activityTracker = new ActivityTracker(database, () => settings.getExcludedKeywords());
@@ -147,17 +157,74 @@ export async function createBackend(
   library.on('updated', rebuildProductiveOverrides);
   library.on('removed', rebuildProductiveOverrides);
 
+  const applyDailyWalletReset = () => {
+    if (!settings.getDailyWalletResetEnabled()) return;
+    const today = dayKey(new Date());
+    const last = settings.getLastDailyWalletResetDay();
+    if (last === today) return;
+    const balance = wallet.getSnapshot().balance;
+    if (balance !== 0) {
+      wallet.adjust(-balance, { type: 'daily-reset', day: today, previousBalance: balance });
+      logger.info(`Applied daily wallet reset for ${today} (previous balance ${balance})`);
+    } else {
+      logger.info(`Daily wallet reset skipped for ${today} (already zero)`);
+    }
+    settings.setLastDailyWalletResetDay(today);
+  };
+
+  applyDailyWalletReset();
+  const dailyResetTimer = setInterval(applyDailyWalletReset, 60_000);
+
+  const isAllowedByPomodoro = (session: ReturnType<PomodoroService['status']> | null, event: ActivityEvent & { idleSeconds?: number }) => {
+    if (!session || session.state === 'ended') return true;
+    const now = Date.now();
+    const domain = (event.domain ?? '').toLowerCase().replace(/^www\./, '');
+    const appName = (event.appName ?? '').toLowerCase();
+
+    const matchSite = (entry: PomodoroAllowlistEntry) => {
+      if (entry.kind !== 'site' || !domain) return false;
+      const target = entry.value.toLowerCase();
+      return domain === target || domain.endsWith(`.${target}`);
+    };
+    const matchApp = (entry: PomodoroAllowlistEntry) => {
+      if (entry.kind !== 'app' || !appName) return false;
+      const target = entry.value.toLowerCase();
+      return appName.includes(target);
+    };
+    const hasOverride = (override: PomodoroOverride) => {
+      if (Date.parse(override.expiresAt) <= now) return false;
+      if (override.kind === 'site') {
+        const target = override.target.toLowerCase();
+        return domain === target || domain.endsWith(`.${target}`);
+      }
+      if (override.kind === 'app') {
+        const target = override.target.toLowerCase();
+        return appName.includes(target);
+      }
+      return false;
+    };
+
+    if (session.overrides.some(hasOverride)) return true;
+    return session.allowlist.some((entry) => matchSite(entry) || matchApp(entry));
+  };
+
   // Classifier and pipeline
-  const classifier = new ActivityClassifier(
+  let classifier: ActivityClassifier;
+  classifier = new ActivityClassifier(
     () => settings.getCategorisation(),
     () => settings.getIdleThreshold(),
     () => settings.getFrivolousIdleThreshold(),
     (event) => {
+      const config = settings.getCategorisation();
+      const domain = event.domain?.toLowerCase() ?? null;
+      const appName = (event.appName ?? '').toLowerCase();
+      if (classifier.matchesCategory(domain, appName, config, 'draining') || classifier.matchesCategory(domain, appName, config, 'frivolity')) {
+        return null;
+      }
       if (event.url) {
         const normalized = normaliseProductiveUrl(event.url);
         if (normalized && productiveOverrides.urls.has(normalized)) return 'productive';
       }
-      const appName = (event.appName ?? '').toLowerCase();
       if (appName) {
         for (const name of productiveOverrides.apps) {
           if (appName.includes(name)) return 'productive';
@@ -179,8 +246,31 @@ export async function createBackend(
       return keywords.some((keyword) => keyword && haystack.includes(keyword));
     }
   );
-  const activityPipeline = new ActivityPipeline(activityTracker, economy, classifier, () => settings.getContinuityWindowSeconds());
+  const activityPipeline = new ActivityPipeline(
+    activityTracker,
+    economy,
+    classifier,
+    () => settings.getContinuityWindowSeconds(),
+    (event) => {
+      const session = pomodoro.status();
+      if (!session || session.state === 'ended') return false;
+      const allowed = isAllowedByPomodoro(session, event);
+      if (!allowed) {
+        const target = (event.appName ?? event.domain ?? 'Unknown').toString();
+        const kind = event.appName ? 'app' : 'site';
+        pomodoro.recordBlock({
+          target,
+          kind: kind as 'app' | 'site',
+          reason: 'not-allowlisted',
+          mode: session.mode
+        });
+        return true;
+      }
+      return false;
+    }
+  );
   const focus = new FocusService(database, wallet);
+  const pomodoro = new PomodoroService(database);
   const intentions = new IntentionService(database);
   const budgets = new BudgetService(database);
   const analytics = new AnalyticsService(database, () => settings.getExcludedKeywords());
@@ -271,6 +361,7 @@ export async function createBackend(
     paywall,
     wallet,
     focus,
+    pomodoro,
     library,
     emergency,
     handleActivity
@@ -287,7 +378,7 @@ export async function createBackend(
   app.use('/library', createLibraryRoutes(library));
   app.use('/analytics', createAnalyticsRoutes(analytics));
   app.use('/settings', createSettingsRoutes({ settings }));
-  app.use('/extension', createExtensionSyncRoutes({ settings, market, wallet, paywall, library, consumption }));
+  app.use('/extension', createExtensionSyncRoutes({ settings, market, wallet, paywall, library, consumption, pomodoro }));
   app.use('/trophies', createTrophyRoutes({ trophies, profile: options?.friendsProvider?.profile }));
   if (options?.friendsProvider) {
     app.use('/friends', createFriendsRoutes({
@@ -316,8 +407,10 @@ export async function createBackend(
   });
 
   const stop = async () => {
+    clearInterval(dailyResetTimer);
     economy.destroy();
     focus.dispose();
+    pomodoro.dispose();
     activityTracker.stop();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   };
@@ -345,6 +438,7 @@ export async function createBackend(
     paywall,
     economy,
     focus,
+    pomodoro,
     intentions,
     budgets,
     library,

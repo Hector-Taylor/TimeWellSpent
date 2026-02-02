@@ -5,6 +5,7 @@ type ConnectionState = {
   desktopConnected: boolean;
   lastSync: number;
   lastFrivolityAt: number | null;
+  rotMode?: { enabled: boolean; startedAt: number | null };
   sessions: Record<string, {
     domain: string;
     mode: 'metered' | 'pack' | 'emergency' | 'store';
@@ -71,6 +72,8 @@ type FriendConnection = {
   userId: string;
   handle: string | null;
   displayName?: string | null;
+  color?: string | null;
+  pinnedTrophies?: string[] | null;
 };
 
 type FriendSummary = {
@@ -79,7 +82,9 @@ type FriendSummary = {
   periodHours: number;
   totalActiveSeconds: number;
   categoryBreakdown: { productive: number; neutral: number; frivolity: number; idle: number };
+  deepWorkSeconds?: number;
   productivityScore: number;
+  emergencySessions?: number;
 };
 
 type FriendTimeline = {
@@ -129,12 +134,15 @@ function App() {
   const [noteInput, setNoteInput] = useState('');
   const [priceEnabled, setPriceEnabled] = useState(false);
   const [priceInput, setPriceInput] = useState(12);
+  const [rotEnabled, setRotEnabled] = useState(false);
+  const [rotBusy, setRotBusy] = useState(false);
 
   const refreshState = useCallback(async () => {
     const tab = await getActiveTabInfo();
     setActiveTab(tab);
     const conn = await chrome.runtime.sendMessage({ type: 'GET_CONNECTION' }) as ConnectionState;
     setConnection(conn);
+    setRotEnabled(conn?.rotMode?.enabled ?? false);
     if (tab) {
       const stat = await chrome.runtime.sendMessage({ type: 'GET_STATUS', payload: { domain: tab.domain, url: tab.url } }) as StatusResponse;
       setStatus(stat);
@@ -159,6 +167,39 @@ function App() {
       setFriendSummaries({});
       setMyProfile(null);
       setMySummary(null);
+    }
+  }, []);
+
+  const toggleRotMode = useCallback(async () => {
+    if (rotBusy) return;
+    setRotBusy(true);
+    setNotice(null);
+    try {
+      const next = !rotEnabled;
+      const result = await chrome.runtime.sendMessage({ type: 'SET_ROT_MODE', payload: { enabled: next } });
+      if (!result?.success) throw new Error(result?.error ? String(result.error) : 'Failed to update rot mode');
+      setRotEnabled(next);
+      setNotice({ kind: 'success', text: next ? 'Rot mode enabled' : 'Rot mode disabled' });
+    } catch (error) {
+      setNotice({ kind: 'error', text: (error as Error).message ?? 'Failed to update rot mode' });
+    } finally {
+      setRotBusy(false);
+    }
+  }, [rotBusy, rotEnabled]);
+
+  const openPomodoroView = useCallback(async () => {
+    try {
+      setWorking(true);
+      const result = await chrome.runtime.sendMessage({ type: 'OPEN_DESKTOP_VIEW', payload: { view: 'pomodoro' } }) as { success?: boolean; error?: string } | undefined;
+      if (result && result.success === false) {
+        setNotice({ kind: 'error', text: result.error ?? 'Failed to open desktop' });
+      } else {
+        setNotice({ kind: 'success', text: 'Pomodoro controls opened on desktop.' });
+      }
+    } catch (error) {
+      setNotice({ kind: 'error', text: (error as Error).message });
+    } finally {
+      setWorking(false);
     }
   }, []);
 
@@ -355,6 +396,7 @@ function App() {
       <div className="pill-row">
         <span className="pill">{status?.balance ?? 0} f-coins</span>
         <span className="pill ghost">Last sync {connection?.lastSync ? formatTimeSince(connection.lastSync) : 'never'}</span>
+        <button className="primary" onClick={openPomodoroView} disabled={working}>Lock in</button>
       </div>
 
       <section
@@ -616,6 +658,19 @@ function App() {
           </button>
         </section>
       )}
+
+      <section className="card">
+        <div className="card-header">
+          <div>
+            <p className="eyebrow">Rot mode</p>
+            <h2>Auto-start metered</h2>
+            <p className="subtle">If enabled, frivolous domains auto-start metered sessions instead of hard blocking.</p>
+          </div>
+          <button className={rotEnabled ? 'primary' : 'secondary'} onClick={toggleRotMode} disabled={rotBusy}>
+            {rotBusy ? 'Working…' : rotEnabled ? 'Disable' : 'Enable'}
+          </button>
+        </div>
+      </section>
 
       {activeTab && (
         <details className="card collapse">

@@ -1,7 +1,19 @@
 :root {
   font-family: "Avenir Next", "Avenir", "SF Pro Text", "Segoe UI", sans-serif;
-  background: #0b0d0f;
-  color: #f2eee8;
+  background: #0e0d12;
+  color: #e8e6ed;
+
+  /* Pastel lavender theme */
+  --accent: #b8a8d8;
+  --accent-strong: #d0c4e8;
+  --accent-rose: #d4a8c8;
+  --accent-mint: #a8d4c8;
+  --accent-peach: #d8c4a8;
+
+  /* Lock-in gold */
+  --lockin-gold: #f6c452;
+  --lockin-gold-light: #ffd970;
+  --lockin-gold-dark: #c99a2e;
 }
 
 * {
@@ -11,8 +23,24 @@
 body {
   margin: 0;
   background:
-    radial-gradient(120% 90% at 0% 0%, rgba(200, 149, 108, 0.12), transparent 55%),
-    #0b0d0f;
+    radial-gradient(120% 90% at 0% 0%, rgba(184, 168, 216, 0.12), transparent 55%),
+    radial-gradient(80% 60% at 100% 100%, rgba(212, 168, 200, 0.08), transparent 50%),
+    #0e0d12;
+}
+
+/* Soft dithering overlay for popup */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(rgba(184, 168, 216, 0.04) 1px, transparent 1px),
+    radial-gradient(rgba(212, 168, 200, 0.03) 1px, transparent 1px);
+  background-size: 4px 4px, 6px 6px;
+  background-position: 0 0, 2px 2px;
+  z-index: 0;
+  opacity: 0.7;
 }
 
 #root {
@@ -92,8 +120,8 @@ h2 {
 .card {
   padding: 14px;
   border-radius: 16px;
-  background: rgba(18, 18, 20, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(20, 19, 26, 0.92);
+  border: 1px solid rgba(184, 168, 216, 0.1);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -102,18 +130,18 @@ h2 {
 .streak-card {
   position: relative;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(184, 168, 216, 0.15);
   background:
-    radial-gradient(circle at 15% 20%, rgba(255, 255, 255, 0.08), transparent 60%),
-    linear-gradient(140deg, rgba(20, 20, 24, 0.92), rgba(10, 10, 12, 0.92));
-  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.45);
+    radial-gradient(circle at 15% 20%, rgba(184, 168, 216, 0.1), transparent 60%),
+    linear-gradient(140deg, rgba(20, 19, 26, 0.95), rgba(14, 13, 18, 0.95));
+  box-shadow: 0 18px 36px rgba(14, 13, 18, 0.45);
 }
 
 .streak-card::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at 75% 10%, rgba(255, 255, 255, 0.08), transparent 45%);
+  background: radial-gradient(circle at 75% 10%, rgba(212, 168, 200, 0.08), transparent 45%);
   opacity: 0.7;
   pointer-events: none;
 }
@@ -122,7 +150,7 @@ h2 {
   border-color: color-mix(in srgb, var(--streak-color) 70%, transparent);
   box-shadow:
     0 0 30px color-mix(in srgb, var(--streak-color) 45%, transparent),
-    0 20px 40px rgba(0, 0, 0, 0.55);
+    0 20px 40px rgba(14, 13, 18, 0.55);
 }
 
 .streak-header {
@@ -267,9 +295,9 @@ h2 {
 }
 
 .chip.active {
-  background: rgba(200, 149, 108, 0.22);
-  border-color: rgba(200, 149, 108, 0.4);
-  color: #f6e8da;
+  background: rgba(184, 168, 216, 0.22);
+  border-color: rgba(184, 168, 216, 0.4);
+  color: #e8e0f4;
 }
 
 .field {
@@ -318,27 +346,54 @@ button {
   font-weight: 700;
   cursor: pointer;
   font-size: 13px;
-  transition: transform 0.15s ease, background 0.2s ease;
+  transition: transform 0.15s ease, background 0.2s ease, box-shadow 0.2s ease;
 }
 
 button.primary {
-  background: linear-gradient(140deg, #c8956c, #e0b389);
-  color: #101010;
+  background: linear-gradient(135deg, #5d6bff, #3fc2ff);
+  color: #0b0d12;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 6px 18px rgba(63, 194, 255, 0.25);
+}
+
+button.primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #6b7cff, #57d1ff);
+  box-shadow: 0 8px 22px rgba(63, 194, 255, 0.35);
+  transform: translateY(-1px);
+}
+
+button.primary:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: 0 4px 14px rgba(63, 194, 255, 0.25);
 }
 
 button.secondary {
-  background: rgba(255, 255, 255, 0.08);
-  color: #f2eee8;
+  background: rgba(184, 168, 216, 0.1);
+  border: 1px solid rgba(184, 168, 216, 0.2);
+  color: #e8e6ed;
+}
+
+button.secondary:hover:not(:disabled) {
+  background: rgba(184, 168, 216, 0.18);
+  border-color: rgba(184, 168, 216, 0.35);
 }
 
 button.danger {
-  background: linear-gradient(140deg, #ff8c8c, #ff4b4b);
-  color: #101010;
+  background: linear-gradient(140deg, #d4a8a8, #c77171);
+  color: #1a0a0a;
 }
 
 button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+button.primary:disabled {
+  animation: none;
+}
+
+button.primary:disabled::after {
+  animation: none;
 }
 
 .button-stack {
@@ -430,25 +485,26 @@ button:disabled {
 }
 
 .cat-productive {
-  background: #7cf4d4;
+  background: #a8d4b8;
 }
 
 .cat-neutral {
-  background: #7aa3ff;
+  background: #b8c4d8;
 }
 
 .cat-frivolity {
-  background: #d4a574;
+  background: #d8c4a8;
 }
 
 .cat-idle {
-  background: #4f5058;
+  background: #4a4850;
 }
 
 .friend-modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(5, 8, 14, 0.7);
+  background: rgba(14, 13, 18, 0.75);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -460,9 +516,9 @@ button:disabled {
   width: min(360px, 100%);
   max-height: 92vh;
   overflow-y: auto;
-  background: rgba(18, 18, 20, 0.98);
+  background: rgba(20, 19, 26, 0.98);
   border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(184, 168, 216, 0.12);
   padding: 16px;
   display: flex;
   flex-direction: column;

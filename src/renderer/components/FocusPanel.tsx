@@ -144,7 +144,7 @@ export default function FocusPanel({ api, wallet, onWallet, economy, onEconomy }
           <div className="card">
             <h2>Neutral clock-in</h2>
             <p className="subtle">Earn on neutral tools when you intentionally clock in.</p>
-            <button className={neutralClockedIn ? 'primary' : ''} onClick={toggleNeutralClock}>
+            <button className={`lockin-button ${neutralClockedIn ? 'active' : ''}`} onClick={toggleNeutralClock}>
               {neutralClockedIn ? 'Clock out' : 'Clock in'}
             </button>
           </div>

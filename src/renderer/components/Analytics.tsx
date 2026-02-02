@@ -60,7 +60,7 @@ export default function Analytics({ api }: AnalyticsProps) {
     };
 
     const maxHourValue = useMemo(() => {
-        return Math.max(...timeOfDay.map(h => h.productive + h.neutral + h.frivolity + h.idle), 1);
+        return Math.max(...timeOfDay.map(h => h.productive + h.neutral + h.frivolity + h.draining + h.idle), 1);
     }, [timeOfDay]);
 
     // Find patterns leading to frivolity
@@ -139,6 +139,10 @@ export default function Analytics({ api }: AnalyticsProps) {
                                 {overview?.focusTrend === 'stable' && '→ Stable'}
                             </div>
                         </div>
+                        <div className="overview-card glow">
+                            <div className="overview-value">{overview ? Math.round((overview.deepWorkSeconds / 3600) * 10) / 10 : 0}h</div>
+                            <div className="overview-label">Deep Work</div>
+                        </div>
                         <div className="overview-card">
                             <div className="overview-value">{overview?.totalActiveHours ?? 0}h</div>
                             <div className="overview-label">Active Time</div>
@@ -178,22 +182,25 @@ export default function Analytics({ api }: AnalyticsProps) {
                         </div>
                         <div className="time-heatmap">
                             {timeOfDay.map((hour) => {
-                                const total = hour.productive + hour.neutral + hour.frivolity + hour.idle;
+                                const total = hour.productive + hour.neutral + hour.frivolity + hour.draining + hour.idle;
                                 const height = total > 0 ? Math.max(8, Math.round((total / maxHourValue) * 100)) : 4;
                                 const prodPct = total > 0 ? (hour.productive / total) * 100 : 0;
                                 const neutPct = total > 0 ? (hour.neutral / total) * 100 : 0;
                                 const frivPct = total > 0 ? (hour.frivolity / total) * 100 : 0;
+                                const drainPct = total > 0 ? (hour.draining / total) * 100 : 0;
+                                const dominantClass = hour.dominantCategory;
 
                                 return (
                                     <div
                                         key={hour.hour}
-                                        className={`heatmap-col ${hour.dominantCategory}`}
+                                        className={`heatmap-col ${dominantClass}`}
                                         title={`${formatHour(hour.hour)}: ${Math.round(total / 60)}m total`}
                                     >
                                         <div className="heatmap-bar" style={{ height: `${height}%` }}>
                                             <span className="bar-segment productive" style={{ height: `${prodPct}%` }} />
                                             <span className="bar-segment neutral" style={{ height: `${neutPct}%` }} />
                                             <span className="bar-segment frivolity" style={{ height: `${frivPct}%` }} />
+                                            <span className="bar-segment draining" style={{ height: `${drainPct}%` }} />
                                         </div>
                                         <span className="heatmap-label">
                                             {hour.hour % 6 === 0 ? formatHour(hour.hour) : ''}
@@ -206,6 +213,8 @@ export default function Analytics({ api }: AnalyticsProps) {
                             <span><span className="dot productive" /> Productive</span>
                             <span><span className="dot neutral" /> Neutral</span>
                             <span><span className="dot frivolity" /> Frivolity</span>
+                            <span><span className="dot draining" /> Draining</span>
+                            <span><span className="dot deepwork" /> Deep work</span>
                         </div>
                     </div>
 
@@ -213,15 +222,17 @@ export default function Analytics({ api }: AnalyticsProps) {
                     <div className="card breakdown-card">
                         <h2>Category Breakdown</h2>
                         <div className="breakdown-bars">
-                            {overview && (['productive', 'neutral', 'frivolity', 'idle'] as const).map((cat) => {
-                                const value = overview.categoryBreakdown[cat] ?? 0;
-                                const total = Object.values(overview.categoryBreakdown).reduce((a, b) => a + b, 0);
-                                const percent = total > 0 ? Math.round((value / total) * 100) : 0;
+                            {overview && (['productive', 'deepWork', 'neutral', 'frivolity', 'draining', 'idle'] as const).map((cat) => {
+                                const baseTotal = Object.values(overview.categoryBreakdown).reduce((a, b) => a + b, 0);
+                                const value = cat === 'deepWork'
+                                    ? overview.deepWorkSeconds
+                                    : (overview.categoryBreakdown[cat as keyof typeof overview.categoryBreakdown] ?? 0);
+                                const percent = baseTotal > 0 ? Math.round((value / baseTotal) * 100) : 0;
                                 const hours = Math.round((value / 3600) * 10) / 10;
 
                                 return (
                                     <div key={cat} className="breakdown-row">
-                                        <span className="breakdown-label">{cat}</span>
+                                        <span className="breakdown-label">{cat === 'deepWork' ? 'deep work' : cat}</span>
                                         <div className="breakdown-bar-track">
                                             <div
                                                 className={`breakdown-bar-fill ${cat}`}
@@ -244,9 +255,17 @@ export default function Analytics({ api }: AnalyticsProps) {
                         </div>
                         <div className="trends-chart">
                             {trends.map((point, idx) => {
-                                const total = point.productive + point.neutral + point.frivolity;
-                                const maxTotal = Math.max(...trends.map(t => t.productive + t.neutral + t.frivolity), 1);
+                                const draining = (point as any).draining ?? 0;
+                                const total = point.productive + point.neutral + point.frivolity + draining;
+                                const maxTotal = Math.max(...trends.map(t => t.productive + t.neutral + t.frivolity + ((t as any).draining ?? 0)), 1);
                                 const height = Math.max(4, Math.round((total / maxTotal) * 100));
+                                const deepPct = total > 0 ? (point.deepWork / total) * 100 : 0;
+                                const drainPct = total > 0 ? (draining / total) * 100 : 0;
+                                const frivPct = total > 0 ? (point.frivolity / total) * 100 : 0;
+                                const neutralPct = total > 0 ? (point.neutral / total) * 100 : 0;
+                                const drainStop = drainPct;
+                                const frivStop = drainPct + frivPct;
+                                const neutralStop = drainPct + frivPct + neutralPct;
 
                                 return (
                                     <div
@@ -259,11 +278,19 @@ export default function Analytics({ api }: AnalyticsProps) {
                                             style={{
                                                 height: `${height}%`,
                                                 background: `linear-gradient(to top, 
-                          var(--cat-frivolity) ${point.frivolity / total * 100 || 0}%, 
-                          var(--cat-neutral) ${(point.frivolity + point.neutral) / total * 100 || 50}%, 
+                          var(--cat-draining) ${drainStop || 0}%, 
+                          var(--cat-frivolity) ${frivStop || 0}%, 
+                          var(--cat-neutral) ${neutralStop || 50}%, 
                           var(--cat-productive) 100%)`
                                             }}
-                                        />
+                                        >
+                                            {deepPct > 0 && (
+                                                <span
+                                                    className="trend-deepwork-overlay"
+                                                    style={{ height: `${deepPct}%` }}
+                                                />
+                                            )}
+                                        </div>
                                         <span className="trend-label">{point.label}</span>
                                     </div>
                                 );

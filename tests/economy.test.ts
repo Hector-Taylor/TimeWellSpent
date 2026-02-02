@@ -46,7 +46,7 @@ describe('EconomyEngine', () => {
     const paywall = new PaywallManager(wallet as any, market as any);
     const economy = new EconomyEngine(wallet as any, market as any, paywall);
     const classifier = new ActivityClassifier(
-      () => ({ productive: ['docs'], neutral: [], frivolity: [] }),
+      () => ({ productive: ['docs'], neutral: [], frivolity: [], draining: [] }),
       () => 10,
       () => 10
     );
@@ -71,7 +71,7 @@ describe('EconomyEngine', () => {
     const paywall = new PaywallManager(wallet as any, market as any);
     const economy = new EconomyEngine(wallet as any, market as any, paywall);
     const classifier = new ActivityClassifier(
-      () => ({ productive: [], neutral: ['slack'], frivolity: [] }),
+      () => ({ productive: [], neutral: ['slack'], frivolity: [], draining: [] }),
       () => 10,
       () => 10
     );
@@ -108,7 +108,7 @@ describe('EconomyEngine', () => {
     const paywall = new PaywallManager(wallet as any, market as any);
     const economy = new EconomyEngine(wallet as any, market as any, paywall);
     const classifier = new ActivityClassifier(
-      () => ({ productive: [], neutral: [], frivolity: ['twitter.com'] }),
+      () => ({ productive: [], neutral: [], frivolity: ['twitter.com'], draining: [] }),
       () => 10,
       () => 10
     );
@@ -137,7 +137,7 @@ describe('EconomyEngine', () => {
     const paywall = new PaywallManager(wallet as any, market as any);
     const economy = new EconomyEngine(wallet as any, market as any, paywall);
     const classifier = new ActivityClassifier(
-      () => ({ productive: [], neutral: [], frivolity: ['twitter.com', 'x.com'] }),
+      () => ({ productive: [], neutral: [], frivolity: ['twitter.com', 'x.com'], draining: [] }),
       () => 10,
       () => 10
     );
@@ -169,7 +169,7 @@ describe('EconomyEngine', () => {
     const paywall = new PaywallManager(wallet as any, market as any);
     const economy = new EconomyEngine(wallet as any, market as any, paywall);
     const classifier = new ActivityClassifier(
-      () => ({ productive: [], neutral: [], frivolity: ['twitter.com'] }),
+      () => ({ productive: [], neutral: [], frivolity: ['twitter.com'], draining: [] }),
       () => 5,
       () => 5
     );

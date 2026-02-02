@@ -15,6 +15,8 @@ import EconomyTuner from './EconomyTuner';
 
 interface SettingsProps {
   api: RendererApi;
+  theme: 'lavender' | 'olive';
+  onThemeChange(theme: 'lavender' | 'olive'): void;
 }
 
 const SETTINGS_PANES = [
@@ -57,7 +59,7 @@ const SETTINGS_PANES = [
 
 type SettingsPaneId = typeof SETTINGS_PANES[number]['id'];
 
-export default function Settings({ api }: SettingsProps) {
+export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -87,7 +89,7 @@ export default function Settings({ api }: SettingsProps) {
   });
   const [zoteroCollections, setZoteroCollections] = useState<ZoteroCollection[]>([]);
   const [zoteroCollectionsLoading, setZoteroCollectionsLoading] = useState(false);
-  const [resetScope, setResetScope] = useState<'trophies' | 'all'>('trophies');
+  const [resetScope, setResetScope] = useState<'trophies' | 'wallet' | 'all'>('trophies');
   const [resetBusy, setResetBusy] = useState(false);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
 
@@ -190,18 +192,24 @@ export default function Settings({ api }: SettingsProps) {
   async function handleReset() {
     if (resetBusy) return;
     setResetMessage(null);
-    const warning =
-      resetScope === 'trophies'
-        ? 'This will clear all earned trophies, pinned trophies, and personal bests.'
-        : 'This will clear trophies, activity history, wallet, library, and sync state. This cannot be undone.';
-    if (!window.confirm(`${warning}\n\nContinue?`)) return;
+    const warnings: Record<'trophies' | 'wallet' | 'all', string> = {
+      trophies: 'This will clear all earned trophies, pinned trophies, and personal bests.',
+      wallet: 'This will zero your bank balance and erase wallet transactions.',
+      all: 'This will clear trophies, activity history, wallet, library, and sync state. This cannot be undone.'
+    };
+    if (!window.confirm(`${warnings[resetScope]}\n\nContinue?`)) return;
     if (resetScope === 'all' && !window.confirm('Final check: erase all local/cloud stats now?')) return;
 
     setResetBusy(true);
     setError(null);
     try {
       await api.system.reset(resetScope);
-      setResetMessage(resetScope === 'trophies' ? 'Trophy case reset locally and in sync.' : 'All stats reset locally and in sync.');
+      const messages: Record<'trophies' | 'wallet' | 'all', string> = {
+        trophies: 'Trophy case reset locally and in sync.',
+        wallet: 'Bank reset locally and in sync.',
+        all: 'All stats reset locally and in sync.'
+      };
+      setResetMessage(messages[resetScope]);
       await refreshSync();
     } catch (err) {
       setError((err as Error).message || 'Failed to reset');
@@ -623,6 +631,35 @@ export default function Settings({ api }: SettingsProps) {
 
           {activePane === 'system' && (
             <div className="settings-pane-body">
+              <section className="card settings-section">
+                <div className="settings-section-header">
+                  <h3>Theme</h3>
+                  <p className="subtle">Choose your vibe.</p>
+                </div>
+                <div className="settings-stack">
+                  <label className="settings-inline">
+                    <input
+                      type="radio"
+                      name="theme"
+                      value="lavender"
+                      checked={theme === 'lavender'}
+                      onChange={() => onThemeChange('lavender')}
+                    />
+                    <span>Lavender (default)</span>
+                  </label>
+                  <label className="settings-inline">
+                    <input
+                      type="radio"
+                      name="theme"
+                      value="olive"
+                      checked={theme === 'olive'}
+                      onChange={() => onThemeChange('olive')}
+                    />
+                    <span>Olive Garden Feast</span>
+                  </label>
+                </div>
+              </section>
+
               {resetMessage && (
                 <div className={`settings-banner ${resetScope === 'all' ? 'danger' : 'success'}`}>
                   <div>
@@ -646,6 +683,16 @@ export default function Settings({ api }: SettingsProps) {
                       onChange={() => setResetScope('trophies')}
                     />
                     <span className="subtle">Reset trophy case only</span>
+                  </label>
+                  <label className="settings-inline">
+                    <input
+                      type="radio"
+                      name="reset-scope"
+                      value="wallet"
+                      checked={resetScope === 'wallet'}
+                      onChange={() => setResetScope('wallet')}
+                    />
+                    <span className="subtle">Reset bank only (wallet balance and transactions)</span>
                   </label>
                   <label className="settings-inline">
                     <input

@@ -19,7 +19,8 @@ export class ActivityPipeline {
     private readonly tracker: ActivityTracker,
     private readonly economy: EconomyEngine,
     private readonly classifier: ActivityClassifier,
-    private readonly getContinuityWindowSeconds: () => number
+    private readonly getContinuityWindowSeconds: () => number,
+    private readonly onBlocked?: (event: ClassifiedActivity) => boolean | void
   ) { }
 
   handle(event: ActivityEvent & { idleSeconds?: number }, origin: ActivityOrigin = 'system') {
@@ -36,6 +37,9 @@ export class ActivityPipeline {
 
     const classified: ClassifiedActivity = this.classifier.classify(event);
     const withContinuity = this.applyContinuity(classified);
+    if (this.onBlocked && this.onBlocked(withContinuity)) {
+      return;
+    }
     this.tracker.recordActivity(withContinuity);
     this.economy.handleActivity(withContinuity);
   }
@@ -59,7 +63,7 @@ export class ActivityPipeline {
     const windowMs = Math.max(0, windowSeconds) * 1000;
     const now = event.timestamp.getTime();
 
-    if (event.category === 'frivolity') {
+    if (event.category === 'frivolity' || event.category === 'draining') {
       this.lastProductiveAt = null;
       return event;
     }
@@ -69,16 +73,14 @@ export class ActivityPipeline {
       return event;
     }
 
-    if (
+    const withinContinuityWindow =
       windowMs > 0 &&
-      !event.isIdle &&
-      event.category === 'neutral' &&
       this.lastProductiveAt != null &&
-      now - this.lastProductiveAt <= windowMs
-    ) {
+      now - this.lastProductiveAt <= windowMs;
+
+    if (!event.isIdle && event.category === 'neutral' && withinContinuityWindow) {
       // Treat quick research/wayfinding hops as productive-supporting to avoid
       // breaking runs (e.g., editor → search → reference).
-      this.lastProductiveAt = now;
       return { ...event, category: 'productive', continuityApplied: true };
     }
 

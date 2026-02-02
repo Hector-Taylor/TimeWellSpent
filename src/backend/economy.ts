@@ -9,6 +9,7 @@ import type { ClassifiedActivity } from './activityClassifier';
 export type EconomyRateGetters = {
   getProductiveRatePerMin: () => number;
   getNeutralRatePerMin: () => number;
+  getDrainingRatePerMin: () => number;
   getSpendIntervalSeconds: () => number;
 };
 
@@ -16,6 +17,7 @@ export type EconomyRateGetters = {
 const DEFAULT_RATES: EconomyRateGetters = {
   getProductiveRatePerMin: () => 5,
   getNeutralRatePerMin: () => 3,
+  getDrainingRatePerMin: () => 1,
   getSpendIntervalSeconds: () => 15
 };
 
@@ -40,6 +42,7 @@ export class EconomyEngine extends EventEmitter {
   private earnTimer: NodeJS.Timeout;
   private spendTimer: NodeJS.Timeout;
   private rates: EconomyRateGetters;
+  private drainingRemainder = 0;
 
   constructor(
     private wallet: WalletManager,
@@ -122,7 +125,7 @@ export class EconomyEngine extends EventEmitter {
 
   private tickEarn() {
     if (!this.state.activeCategory || this.state.activeCategory === 'idle') return;
-    if (this.state.activeCategory === 'frivolity') return; // never earn while on a spendy domain
+    if (this.state.activeCategory === 'frivolity' || this.state.activeCategory === 'draining') return; // never earn while on spendy or draining domains
     if (this.state.activeCategory === 'neutral' && !this.state.neutralClockedIn) return;
     if (!this.state.lastUpdated || Date.now() - this.state.lastUpdated > 60_000 * 5) {
       return; // stale
@@ -159,7 +162,36 @@ export class EconomyEngine extends EventEmitter {
   private tickSpend() {
     const activeDomain = this.state.activeCategory === 'idle' ? null : this.state.activeDomain;
     const activeUrl = this.state.activeCategory === 'idle' ? null : this.state.activeUrl;
-    this.paywall.tick(this.rates.getSpendIntervalSeconds(), activeDomain, activeUrl, this.getReminderInterval());
+    const intervalSec = this.rates.getSpendIntervalSeconds();
+    this.paywall.tick(intervalSec, activeDomain, activeUrl, this.getReminderInterval());
+
+    if (
+      this.state.activeCategory === 'draining' &&
+      this.state.lastUpdated &&
+      Date.now() - this.state.lastUpdated <= 60_000 * 5
+    ) {
+      const perSecond = this.rates.getDrainingRatePerMin() / 60;
+      const accrued = perSecond * intervalSec + this.drainingRemainder;
+      const spend = Math.floor(accrued);
+      this.drainingRemainder = accrued - spend;
+      if (spend > 0) {
+        const balance = this.wallet.getSnapshot().balance;
+        const debit = Math.max(0, Math.min(spend, balance));
+        if (debit > 0) {
+          try {
+            const snapshot = this.wallet.spend(debit, {
+              type: 'draining-tick',
+              domain: this.state.activeDomain,
+              app: this.state.activeApp,
+              rateApplied: this.rates.getDrainingRatePerMin()
+            });
+            this.emit('wallet-updated', snapshot);
+          } catch (error) {
+            logger.warn('Failed to apply draining tick', error);
+          }
+        }
+      }
+    }
   }
 
   private ensureRate(domain: string): MarketRate {

@@ -1,0 +1,196 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+	AA1APP0001 /* TimeWellSpentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1APPF001 /* TimeWellSpentApp.swift */; };
+	AA1APP0002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1APPF002 /* ContentView.swift */; };
+	AA1SHR0001 /* AppGroupContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF001 /* AppGroupContainer.swift */; };
+	AA1SHR0002 /* DateFormatter+Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF002 /* DateFormatter+Extensions.swift */; };
+	AA1SHR0003 /* WalletModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF003 /* WalletModels.swift */; };
+	AA1SHR0004 /* TargetModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF004 /* TargetModels.swift */; };
+	AA1SHR0005 /* MarketModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF005 /* MarketModels.swift */; };
+	AA1SHR0006 /* PaywallSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF006 /* PaywallSession.swift */; };
+	AA1SHR0007 /* DatabaseProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF007 /* DatabaseProvider.swift */; };
+	AA1SHR0008 /* WalletService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF008 /* WalletService.swift */; };
+	AA1SHR0009 /* MarketService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF009 /* MarketService.swift */; };
+	AA1SHR0010 /* FamilyControlsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF010 /* FamilyControlsService.swift */; };
+	AA1SHR0011 /* PaywallService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF011 /* PaywallService.swift */; };
+	AA1SHR0012 /* ShieldingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF012 /* ShieldingService.swift */; };
+	AA1SHR0013 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF013 /* NotificationService.swift */; };
+	AA1SHR0014 /* SupabaseClientProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF014 /* SupabaseClientProvider.swift */; };
+	AA1SHR0015 /* SyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF015 /* SyncCoordinator.swift */; };
+	AA1SHR0016 /* FriendsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF016 /* FriendsService.swift */; };
+	AA1SHR0017 /* ActivityMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1SHRF017 /* ActivityMonitor.swift */; };
+	AA1EXT0001 /* ActivityMonitorExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1EXTF001 /* ActivityMonitorExtension.swift */; };
+	AA1EXT0002 /* ShieldConfigurationExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1EXTF002 /* ShieldConfigurationExtension.swift */; };
+	AA1EXT0003 /* ShieldActionExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1EXTF003 /* ShieldActionExtension.swift */; };
+	AA1PKG0001 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = AA1PKGREF1 /* GRDB */; };
+	AA1PKG0002 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = AA1PKGREF2 /* Supabase */; };
+	AA1PKG1001 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = AA1PKGREF1 /* GRDB */; };
+	AA1PKG1002 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = AA1PKGREF2 /* Supabase */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+	AA1APPF001 /* TimeWellSpentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/TimeWellSpentApp.swift; sourceTree = "<group>"; };
+	AA1APPF002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/ContentView.swift; sourceTree = "<group>"; };
+	AA1APPPLIST /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = App/Info.plist; sourceTree = "<group>"; };
+	AA1APPENT /* TimeWellSpentIOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App/TimeWellSpentIOS.entitlements; sourceTree = "<group>"; };
+	AA1SHRF001 /* AppGroupContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Utilities/AppGroupContainer.swift; sourceTree = "<group>"; };
+	AA1SHRF002 /* DateFormatter+Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Utilities/DateFormatter+Extensions.swift; sourceTree = "<group>"; };
+	AA1SHRF003 /* WalletModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Models/WalletModels.swift; sourceTree = "<group>"; };
+	AA1SHRF004 /* TargetModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Models/TargetModels.swift; sourceTree = "<group>"; };
+	AA1SHRF005 /* MarketModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Models/MarketModels.swift; sourceTree = "<group>"; };
+	AA1SHRF006 /* PaywallSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Models/PaywallSession.swift; sourceTree = "<group>"; };
+	AA1SHRF007 /* DatabaseProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Services/Database/DatabaseProvider.swift; sourceTree = "<group>"; };
+	AA1SHRF008 /* WalletService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Services/Database/WalletService.swift; sourceTree = "<group>"; };
+	AA1SHRF009 /* MarketService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Services/Market/MarketService.swift; sourceTree = "<group>"; };
+	AA1SHRF010 /* FamilyControlsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Services/FamilyControls/FamilyControlsService.swift; sourceTree = "<group>"; };
+	AA1SHRF011 /* PaywallService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Services/Paywall/PaywallService.swift; sourceTree = "<group>"; };
+	AA1SHRF012 /* ShieldingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Services/Paywall/ShieldingService.swift; sourceTree = "<group>"; };
+	AA1SHRF013 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Services/Notifications/NotificationService.swift; sourceTree = "<group>"; };
+	AA1SHRF014 /* SupabaseClientProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Services/Supabase/SupabaseClientProvider.swift; sourceTree = "<group>"; };
+	AA1SHRF015 /* SyncCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Services/Sync/SyncCoordinator.swift; sourceTree = "<group>"; };
+	AA1SHRF016 /* FriendsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Services/Friends/FriendsService.swift; sourceTree = "<group>"; };
+	AA1SHRF017 /* ActivityMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/Services/DeviceActivity/ActivityMonitor.swift; sourceTree = "<group>"; };
+	AA1EXTF001 /* ActivityMonitorExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions/ActivityMonitor/ActivityMonitorExtension.swift; sourceTree = "<group>"; };
+	AA1EXTF002 /* ShieldConfigurationExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions/ShieldConfiguration/ShieldConfigurationExtension.swift; sourceTree = "<group>"; };
+	AA1EXTF003 /* ShieldActionExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions/ShieldActions/ShieldActionExtension.swift; sourceTree = "<group>"; };
+	AA1EXTPLIST1 /* Extensions/ActivityMonitor/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Extensions/ActivityMonitor/Info.plist; sourceTree = "<group>"; };
+	AA1EXTPLIST2 /* Extensions/ShieldConfiguration/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Extensions/ShieldConfiguration/Info.plist; sourceTree = "<group>"; };
+	AA1EXTPLIST3 /* Extensions/ShieldActions/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Extensions/ShieldActions/Info.plist; sourceTree = "<group>"; };
+	AA1EXTENT1 /* Extensions/ActivityMonitor/ActivityMonitorExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Extensions/ActivityMonitor/ActivityMonitorExtension.entitlements; sourceTree = "<group>"; };
+	AA1EXTENT2 /* Extensions/ShieldConfiguration/ShieldConfiguration.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Extensions/ShieldConfiguration/ShieldConfiguration.entitlements; sourceTree = "<group>"; };
+	AA1EXTENT3 /* Extensions/ShieldActions/ShieldAction.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Extensions/ShieldActions/ShieldAction.entitlements; sourceTree = "<group>"; };
+	AA1CFGBASE /* Config/Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Base.xcconfig; sourceTree = "<group>"; };
+	AA1CFGDBG /* Config/Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Debug.xcconfig; sourceTree = "<group>"; };
+	AA1CFGREL /* Config/Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Release.xcconfig; sourceTree = "<group>"; };
+	AA1CFGSEC /* Config/Secrets.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Secrets.xcconfig.example; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+	AA1FRAME0 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (AA1PKG0001, AA1PKG0002, ); runOnlyForDeploymentPostprocessing = 0; };
+	AA1FRAME1 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (AA1PKG1001, AA1PKG1002, ); runOnlyForDeploymentPostprocessing = 0; };
+	AA1FRAME2 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+	AA1FRAME3 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+	AA1ROOT /* Project */ = {isa = PBXGroup; children = (AA1APP /* App */, AA1SHARED /* Shared */, AA1EXT /* Extensions */, AA1CFG /* Config */); sourceTree = "<group>"; };
+	AA1APP /* App */ = {isa = PBXGroup; children = (AA1APPF001, AA1APPF002, AA1APPPLIST, AA1APPENT); path = App; sourceTree = "<group>"; };
+	AA1SHARED /* Shared */ = {isa = PBXGroup; children = (AA1MODELS /* Models */, AA1SERVICES /* Services */, AA1UTIL /* Utilities */); path = Shared; sourceTree = "<group>"; };
+	AA1MODELS /* Models */ = {isa = PBXGroup; children = (AA1SHRF003, AA1SHRF004, AA1SHRF005, AA1SHRF006); path = Models; sourceTree = "<group>"; };
+	AA1SERVICES /* Services */ = {isa = PBXGroup; children = (AA1SRVDB /* Database */, AA1SRVMKT /* Market */, AA1SRVFAM /* FamilyControls */, AA1SRVPAY /* Paywall */, AA1SRVNOTIF /* Notifications */, AA1SRVSUPA /* Supabase */, AA1SRVSYNC /* Sync */, AA1SRVFRI /* Friends */, AA1SRVDEVACT /* DeviceActivity */); path = Services; sourceTree = "<group>"; };
+	AA1SRVDB /* Database */ = {isa = PBXGroup; children = (AA1SHRF007, AA1SHRF008); path = Database; sourceTree = "<group>"; };
+	AA1SRVMKT /* Market */ = {isa = PBXGroup; children = (AA1SHRF009); path = Market; sourceTree = "<group>"; };
+	AA1SRVFAM /* FamilyControls */ = {isa = PBXGroup; children = (AA1SHRF010); path = FamilyControls; sourceTree = "<group>"; };
+	AA1SRVPAY /* Paywall */ = {isa = PBXGroup; children = (AA1SHRF011, AA1SHRF012); path = Paywall; sourceTree = "<group>"; };
+	AA1SRVNOTIF /* Notifications */ = {isa = PBXGroup; children = (AA1SHRF013); path = Notifications; sourceTree = "<group>"; };
+	AA1SRVSUPA /* Supabase */ = {isa = PBXGroup; children = (AA1SHRF014); path = Supabase; sourceTree = "<group>"; };
+	AA1SRVSYNC /* Sync */ = {isa = PBXGroup; children = (AA1SHRF015); path = Sync; sourceTree = "<group>"; };
+	AA1SRVFRI /* Friends */ = {isa = PBXGroup; children = (AA1SHRF016); path = Friends; sourceTree = "<group>"; };
+	AA1SRVDEVACT /* DeviceActivity */ = {isa = PBXGroup; children = (AA1SHRF017); path = DeviceActivity; sourceTree = "<group>"; };
+	AA1UTIL /* Utilities */ = {isa = PBXGroup; children = (AA1SHRF001, AA1SHRF002); path = Utilities; sourceTree = "<group>"; };
+	AA1EXT /* Extensions */ = {isa = PBXGroup; children = (AA1EXTMON /* ActivityMonitor */, AA1EXTSHCONF /* ShieldConfiguration */, AA1EXTSHACT /* ShieldActions */); path = Extensions; sourceTree = "<group>"; };
+	AA1EXTMON /* ActivityMonitor */ = {isa = PBXGroup; children = (AA1EXTF001, AA1EXTPLIST1, AA1EXTENT1); path = ActivityMonitor; sourceTree = "<group>"; };
+	AA1EXTSHCONF /* ShieldConfiguration */ = {isa = PBXGroup; children = (AA1EXTF002, AA1EXTPLIST2, AA1EXTENT2); path = ShieldConfiguration; sourceTree = "<group>"; };
+	AA1EXTSHACT /* ShieldActions */ = {isa = PBXGroup; children = (AA1EXTF003, AA1EXTPLIST3, AA1EXTENT3); path = ShieldActions; sourceTree = "<group>"; };
+	AA1CFG /* Config */ = {isa = PBXGroup; children = (AA1CFGBASE, AA1CFGDBG, AA1CFGREL, AA1CFGSEC); path = Config; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+	AA1TARGETAPP /* TimeWellSpent */ = {isa = PBXNativeTarget; buildConfigurationList = AA1BCLAPP /* Build configuration list */; buildPhases = (
+		AA1SRC0,
+		AA1FRAME0,
+		AA1RES0,
+		AA1COPYEXT,
+	); buildRules = (); dependencies = (); name = TimeWellSpent; productName = TimeWellSpent; productReference = AA1PRODUCTAPP /* TimeWellSpent.app */; productType = "com.apple.product-type.application"; packageProductDependencies = (AA1PKGREF1, AA1PKGREF2); };
+	AA1TARGETMON /* ActivityMonitor */ = {isa = PBXNativeTarget; buildConfigurationList = AA1BCLMON; buildPhases = (
+		AA1SRC1,
+		AA1FRAME1,
+		AA1RES1,
+	); buildRules = (); dependencies = (); name = ActivityMonitor; productName = ActivityMonitor; productReference = AA1PRODUCTMON /* ActivityMonitor.appex */; productType = "com.apple.product-type.app-extension"; packageProductDependencies = (AA1PKGREF1, AA1PKGREF2); };
+	AA1TARGETSHCONF /* ShieldConfiguration */ = {isa = PBXNativeTarget; buildConfigurationList = AA1BCLSHCONF; buildPhases = (
+		AA1SRC2,
+		AA1FRAME2,
+		AA1RES2,
+	); buildRules = (); dependencies = (); name = ShieldConfiguration; productName = ShieldConfiguration; productReference = AA1PRODUCTSHCONF /* ShieldConfiguration.appex */; productType = "com.apple.product-type.app-extension"; };
+	AA1TARGETSHACT /* ShieldActions */ = {isa = PBXNativeTarget; buildConfigurationList = AA1BCLSHACT; buildPhases = (
+		AA1SRC3,
+		AA1FRAME3,
+		AA1RES3,
+	); buildRules = (); dependencies = (); name = ShieldActions; productName = ShieldActions; productReference = AA1PRODUCTSHACT /* ShieldActions.appex */; productType = "com.apple.product-type.app-extension"; };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+	AA1PROJECT /* Project object */ = {isa = PBXProject; attributes = {LastUpgradeCheck = 1500;}; buildConfigurationList = AA1BCLPROJECT; compatibilityVersion = "Xcode 15.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en); mainGroup = AA1ROOT; productRefGroup = AA1ROOT; projectDirPath = ""; projectRoot = ""; targets = (AA1TARGETAPP, AA1TARGETMON, AA1TARGETSHCONF, AA1TARGETSHACT); packageReferences = (AA1PKGREPO1, AA1PKGREPO2); };
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+	AA1RES0 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+	AA1RES1 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+	AA1RES2 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+	AA1RES3 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+	AA1SRC0 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (AA1APP0001, AA1APP0002, AA1SHR0001, AA1SHR0002, AA1SHR0003, AA1SHR0004, AA1SHR0005, AA1SHR0006, AA1SHR0007, AA1SHR0008, AA1SHR0009, AA1SHR0010, AA1SHR0011, AA1SHR0012, AA1SHR0013, AA1SHR0014, AA1SHR0015, AA1SHR0016, AA1SHR0017); runOnlyForDeploymentPostprocessing = 0; };
+	AA1SRC1 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (AA1EXT0001); runOnlyForDeploymentPostprocessing = 0; };
+	AA1SRC2 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (AA1EXT0002); runOnlyForDeploymentPostprocessing = 0; };
+	AA1SRC3 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (AA1EXT0003); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+	AA1COPYEXT /* Embed App Extensions */ = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (AA1COPYFILE1, AA1COPYFILE2, AA1COPYFILE3); name = "Embed App Extensions"; runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXBuildFile (copy) section */
+	AA1COPYFILE1 /* ActivityMonitor.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA1PRODUCTMON; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, );}; };
+	AA1COPYFILE2 /* ShieldConfiguration.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA1PRODUCTSHCONF; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, );}; };
+	AA1COPYFILE3 /* ShieldActions.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA1PRODUCTSHACT; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, );}; };
+/* End PBXBuildFile (copy) section */
+
+/* Begin PBXFileReference (products) */
+	AA1PRODUCTAPP /* TimeWellSpent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TimeWellSpent.app; sourceTree = BUILT_PRODUCTS_DIR; };
+	AA1PRODUCTMON /* ActivityMonitor.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ActivityMonitor.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+	AA1PRODUCTSHCONF /* ShieldConfiguration.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ShieldConfiguration.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+	AA1PRODUCTSHACT /* ShieldActions.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ShieldActions.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference (products) */
+
+/* Begin XCBuildConfiguration section */
+	AA1BCAPPD /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = AA1CFGDBG; buildSettings = { ASSETCATALOG_COMPILER_APPICON_NAME = ""; CODE_SIGN_ENTITLEMENTS = App/TimeWellSpentIOS.entitlements; CODE_SIGN_STYLE = Automatic; INFOPLIST_FILE = App/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = com.timewellspent.ios; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.9; TARGETED_DEVICE_FAMILY = "1,2"; SUPPORTS_MACCATALYST = NO; IPHONEOS_DEPLOYMENT_TARGET = 17.0; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 0.1.0; OTHER_LDFLAGS = "$(inherited)"; }; };
+	AA1BCAPPR /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = AA1CFGREL; buildSettings = { ASSETCATALOG_COMPILER_APPICON_NAME = ""; CODE_SIGN_ENTITLEMENTS = App/TimeWellSpentIOS.entitlements; CODE_SIGN_STYLE = Automatic; INFOPLIST_FILE = App/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = com.timewellspent.ios; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.9; TARGETED_DEVICE_FAMILY = "1,2"; SUPPORTS_MACCATALYST = NO; IPHONEOS_DEPLOYMENT_TARGET = 17.0; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 0.1.0; OTHER_LDFLAGS = "$(inherited)"; }; };
+	AA1BCMOND /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = AA1CFGDBG; buildSettings = { CODE_SIGN_ENTITLEMENTS = Extensions/ActivityMonitor/ActivityMonitorExtension.entitlements; INFOPLIST_FILE = Extensions/ActivityMonitor/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = com.timewellspent.ios.monitor; PRODUCT_NAME = "$(TARGET_NAME)"; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SKIP_INSTALL = YES; SWIFT_VERSION = 5.9; }; };
+	AA1BCMONR /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = AA1CFGREL; buildSettings = { CODE_SIGN_ENTITLEMENTS = Extensions/ActivityMonitor/ActivityMonitorExtension.entitlements; INFOPLIST_FILE = Extensions/ActivityMonitor/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = com.timewellspent.ios.monitor; PRODUCT_NAME = "$(TARGET_NAME)"; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SKIP_INSTALL = YES; SWIFT_VERSION = 5.9; }; };
+	AA1BCSHCD /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = AA1CFGDBG; buildSettings = { CODE_SIGN_ENTITLEMENTS = Extensions/ShieldConfiguration/ShieldConfiguration.entitlements; INFOPLIST_FILE = Extensions/ShieldConfiguration/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = com.timewellspent.ios.shieldconfig; PRODUCT_NAME = "$(TARGET_NAME)"; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SKIP_INSTALL = YES; SWIFT_VERSION = 5.9; }; };
+	AA1BCSHCR /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = AA1CFGREL; buildSettings = { CODE_SIGN_ENTITLEMENTS = Extensions/ShieldConfiguration/ShieldConfiguration.entitlements; INFOPLIST_FILE = Extensions/ShieldConfiguration/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = com.timewellspent.ios.shieldconfig; PRODUCT_NAME = "$(TARGET_NAME)"; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SKIP_INSTALL = YES; SWIFT_VERSION = 5.9; }; };
+	AA1BCSHAD /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = AA1CFGDBG; buildSettings = { CODE_SIGN_ENTITLEMENTS = Extensions/ShieldActions/ShieldAction.entitlements; INFOPLIST_FILE = Extensions/ShieldActions/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = com.timewellspent.ios.shieldactions; PRODUCT_NAME = "$(TARGET_NAME)"; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SKIP_INSTALL = YES; SWIFT_VERSION = 5.9; }; };
+	AA1BCSHAR /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = AA1CFGREL; buildSettings = { CODE_SIGN_ENTITLEMENTS = Extensions/ShieldActions/ShieldAction.entitlements; INFOPLIST_FILE = Extensions/ShieldActions/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = com.timewellspent.ios.shieldactions; PRODUCT_NAME = "$(TARGET_NAME)"; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SKIP_INSTALL = YES; SWIFT_VERSION = 5.9; }; };
+	AA1BCPROJD /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES; CODE_SIGN_IDENTITY = ""; ENABLE_TESTABILITY = YES; PRODUCT_NAME = TimeWellSpent; SWIFT_VERSION = 5.9; IPHONEOS_DEPLOYMENT_TARGET = 17.0; }; name = Debug; };
+	AA1BCPROJR /* Release */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES; CODE_SIGN_IDENTITY = ""; PRODUCT_NAME = TimeWellSpent; SWIFT_VERSION = 5.9; IPHONEOS_DEPLOYMENT_TARGET = 17.0; }; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+	AA1BCLAPP /* Build configuration list for TimeWellSpent */ = {isa = XCConfigurationList; buildConfigurations = (AA1BCAPPD, AA1BCAPPR); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+	AA1BCLMON = {isa = XCConfigurationList; buildConfigurations = (AA1BCMOND, AA1BCMONR); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+	AA1BCLSHCONF = {isa = XCConfigurationList; buildConfigurations = (AA1BCSHCD, AA1BCSHCR); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+	AA1BCLSHACT = {isa = XCConfigurationList; buildConfigurations = (AA1BCSHAD, AA1BCSHAR); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+	AA1BCLPROJECT = {isa = XCConfigurationList; buildConfigurations = (AA1BCPROJD, AA1BCPROJR); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+/* End XCConfigurationList section */
+
+/* Begin XCSwiftPackageProductDependency section */
+	AA1PKGREF1 /* GRDB */ = {isa = XCSwiftPackageProductDependency; productName = GRDB; package = AA1PKGREPO1; };
+	AA1PKGREF2 /* Supabase */ = {isa = XCSwiftPackageProductDependency; productName = Supabase; package = AA1PKGREPO2; };
+/* End XCSwiftPackageProductDependency section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+	AA1PKGREPO1 /* GRDB */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/groue/GRDB.swift"; requirement = { kind = upToNextMajorVersion; minimumVersion = 6.0.0; }; };
+	AA1PKGREPO2 /* Supabase */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/supabase-community/supabase-swift"; requirement = { kind = upToNextMajorVersion; minimumVersion = 2.0.0; }; };
+/* End XCRemoteSwiftPackageReference section */
+
+};
+	rootObject = AA1PROJECT /* Project object */;
+}

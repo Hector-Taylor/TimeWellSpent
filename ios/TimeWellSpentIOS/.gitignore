@@ -1,0 +1,18 @@
+# Xcode
+*.xcworkspace
+*.xcuserstate
+xcuserdata/
+DerivedData/
+Build/
+*.xcuserdatad
+
+# SwiftPM
+.swiftpm/
+.build/
+Package.resolved
+
+# Secrets
+Config/Secrets.xcconfig
+
+# Logs
+*.log

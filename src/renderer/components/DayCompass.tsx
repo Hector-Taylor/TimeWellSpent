@@ -20,6 +20,7 @@ const categoryColors: Record<string, string> = {
   productive: 'var(--cat-productive)',
   neutral: 'var(--cat-neutral)',
   frivolity: 'var(--cat-frivolity)',
+  draining: 'var(--cat-draining)',
   idle: 'var(--cat-idle)'
 };
 
@@ -34,6 +35,7 @@ export default function DayCompass({ summary, economy }: DayCompassProps) {
       { key: 'productive', label: 'Productive', seconds: totals.productive ?? 0, color: categoryColors.productive },
       { key: 'neutral', label: 'Neutral', seconds: (totals.neutral ?? 0) + (totals.uncategorised ?? 0), color: categoryColors.neutral },
       { key: 'frivolity', label: 'Frivolity', seconds: totals.frivolity ?? 0, color: categoryColors.frivolity },
+      { key: 'draining', label: 'Draining', seconds: (totals as any).draining ?? 0, color: categoryColors.draining },
       { key: 'idle', label: 'Idle', seconds: totals.idle ?? 0, color: categoryColors.idle }
     ].filter((item) => item.seconds > 0);
 
@@ -68,7 +70,7 @@ export default function DayCompass({ summary, economy }: DayCompassProps) {
         color,
         label: slot.hour,
         slot,
-        seconds: slot.productive + slot.neutral + slot.frivolity + slot.idle
+        seconds: slot.productive + slot.neutral + slot.frivolity + slot.draining + slot.idle
       };
     });
     const centerSeconds = Math.min(
@@ -91,6 +93,7 @@ export default function DayCompass({ summary, economy }: DayCompassProps) {
     view === 'timeline'
       ? (hoveredIndex !== null ? summary.timeline[hoveredIndex] : summary.timeline[summary.timeline.length - 1])
       : null;
+  const activeTimelineDominant = activeTimelineSlot?.dominant;
 
   const breakdown = view === 'aggregate'
     ? (aggregate?.slices ?? [])
@@ -98,6 +101,7 @@ export default function DayCompass({ summary, economy }: DayCompassProps) {
       { label: 'Productive', seconds: activeTimelineSlot.productive, color: categoryColors.productive },
       { label: 'Neutral', seconds: activeTimelineSlot.neutral, color: categoryColors.neutral },
       { label: 'Frivolity', seconds: activeTimelineSlot.frivolity, color: categoryColors.frivolity },
+      { label: 'Draining', seconds: activeTimelineSlot.draining, color: categoryColors.draining },
       { label: 'Idle', seconds: activeTimelineSlot.idle, color: categoryColors.idle }
     ] : [];
 
@@ -159,7 +163,7 @@ export default function DayCompass({ summary, economy }: DayCompassProps) {
             <div className="compass-tooltip">
               <div>
                 <span className="tooltip-hour">{activeTimelineSlot.hour}</span>
-                <span className="tooltip-dominant">{activeTimelineSlot.dominant}</span>
+                <span className="tooltip-dominant">{activeTimelineDominant}</span>
               </div>
               {activeTimelineSlot.topContext ? (
                 <p>

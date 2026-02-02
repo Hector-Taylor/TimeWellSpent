@@ -3,8 +3,15 @@ node_modules/
 .cache/
 .DS_Store
 *.log
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
 sqlite.db
 coverage/
 web-ext-artifacts/
 out/
 extension/dist/
+.env
+.env.*

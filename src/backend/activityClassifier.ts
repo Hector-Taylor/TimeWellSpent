@@ -5,6 +5,7 @@ import type { ActivityEvent } from './activity-tracker';
 export type ClassifiedActivity = ActivityEvent & {
   category: ActivityCategory;
   isIdle: boolean;
+  idleThresholdSeconds: number;
   suppressContext?: boolean;
   continuityApplied?: boolean;
 };
@@ -40,23 +41,47 @@ export class ActivityClassifier {
       domain,
       appName,
       isIdle,
+      idleThresholdSeconds: idleThreshold,
       suppressContext
     };
   }
 
+  public matchesCategory(domain: string | null, appName: string, config: CategorisationConfig, category: ActivityCategory): boolean {
+    const domainCandidates = this.expandDomainCandidates(domain);
+    const normalizedApp = appName.toLowerCase();
+    const patterns =
+      category === 'productive' ? config.productive
+        : category === 'neutral' ? config.neutral
+          : category === 'draining' ? (config as any).draining ?? []
+            : config.frivolity;
+    return this.matches(domainCandidates, normalizedApp, patterns);
+  }
+
   private resolveCategory(domain: string | null, appName: string, config: CategorisationConfig): ActivityCategory {
-    const aliasMap: Record<string, string> = {
-      'x.com': 'twitter.com'
-    };
-    const normalizedDomain = domain ?? '';
-    const expandedDomain = aliasMap[normalizedDomain] ?? normalizedDomain;
-    const domainCandidates = Array.from(new Set([normalizedDomain, expandedDomain])).filter(Boolean);
+    const domainCandidates = this.expandDomainCandidates(domain);
     const normalizedApp = appName.toLowerCase();
 
     if (this.matches(domainCandidates, normalizedApp, config.productive)) return 'productive';
     if (this.matches(domainCandidates, normalizedApp, config.neutral)) return 'neutral';
+    if (this.matches(domainCandidates, normalizedApp, (config as any).draining ?? [])) return 'draining';
     if (this.matches(domainCandidates, normalizedApp, config.frivolity)) return 'frivolity';
     return 'neutral';
+  }
+
+  private expandDomainCandidates(domain: string | null): string[] {
+    // Aliases map subdomains/variants to their canonical domain for consistent matching
+    const aliasMap: Record<string, string> = {
+      'x.com': 'twitter.com',
+      'web.whatsapp.com': 'whatsapp.com',
+      'wa.me': 'whatsapp.com',
+      'web.telegram.org': 'telegram.org',
+      'm.facebook.com': 'facebook.com',
+      'mobile.twitter.com': 'twitter.com',
+      'm.youtube.com': 'youtube.com'
+    };
+    const normalizedDomain = domain?.toLowerCase() ?? '';
+    const expandedDomain = aliasMap[normalizedDomain] ?? normalizedDomain;
+    return Array.from(new Set([normalizedDomain, expandedDomain])).filter(Boolean);
   }
 
   private matches(domains: string[], appName: string, patterns: string[]) {
@@ -70,6 +95,13 @@ export class ActivityClassifier {
           // Exact match or subdomain (e.g. "maps.google.com" matches "google.com")
           return domain === needle || domain.endsWith('.' + needle);
         });
+      }
+
+      // Require minimum 4 characters to prevent overly broad matches
+      // (e.g. "app" matching "whatsapp", "not" matching "notion")
+      if (needle.length < 4) {
+        // For short patterns, require exact app name match only
+        return appName === needle;
       }
 
       // Fallback to loose matching for app names or simple keywords

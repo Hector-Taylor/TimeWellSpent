@@ -23,6 +23,8 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
     const [exchangeTarget, setExchangeTarget] = useState<number | null>(null);
     const [exchangeApplying, setExchangeApplying] = useState(false);
     const [exchangeMessage, setExchangeMessage] = useState<string | null>(null);
+    const [dailyResetEnabled, setDailyResetEnabled] = useState(true);
+    const [dailyResetSaving, setDailyResetSaving] = useState(false);
 
     const [isAdding, setIsAdding] = useState(false);
     const [newDomain, setNewDomain] = useState('');
@@ -35,6 +37,7 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
         api.settings.economyExchangeRate().then((value) => {
             if (typeof value === 'number' && Number.isFinite(value)) setExchangeTarget(value);
         }).catch(() => { });
+        api.settings.dailyWalletResetEnabled().then(setDailyResetEnabled).catch(() => { });
     }, []);
 
     useEffect(() => {
@@ -143,6 +146,20 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
     const handleCurveChange = (newModifiers: number[]) => {
         if (!selectedItem || locked) return;
         updateItemRate(selectedItem.id, { ...selectedItem.rate, hourlyModifiers: newModifiers });
+    };
+
+    const toggleDailyReset = async (next: boolean) => {
+        if (dailyResetSaving) return;
+        setDailyResetSaving(true);
+        try {
+            await api.settings.updateDailyWalletResetEnabled(next);
+            setDailyResetEnabled(next);
+            setExchangeMessage(next ? 'Daily coin reset enabled — wallet starts at 0 each day.' : 'Daily coin reset disabled.');
+        } catch (err) {
+            setError((err as Error).message);
+        } finally {
+            setDailyResetSaving(false);
+        }
     };
 
     const updateItemRate = (id: string, newRate: MarketRate) => {
@@ -332,6 +349,24 @@ export default function EconomyTuner({ api }: EconomyTunerProps) {
                     {exchangeMessage}
                 </div>
             )}
+
+            <section className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+                <div>
+                    <h2 style={{ margin: 0 }}>Daily coin reset</h2>
+                    <p className="subtle" style={{ margin: 0 }}>
+                        Start each day at 0 f-coins so frivolity must be re-earned today.
+                    </p>
+                </div>
+                <label className="settings-inline" style={{ margin: 0 }}>
+                    <input
+                        type="checkbox"
+                        checked={dailyResetEnabled}
+                        onChange={(e) => toggleDailyReset(e.target.checked)}
+                        disabled={dailyResetSaving}
+                    />
+                    <span className="subtle">{dailyResetEnabled ? 'Enabled' : 'Disabled'}</span>
+                </label>
+            </section>
 
             <section className="card economy-exchange-card">
                 <div className="economy-exchange-header">

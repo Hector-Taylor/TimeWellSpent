@@ -21,6 +21,16 @@ const api: RendererApi = {
       };
     }
   },
+  pomodoro: {
+    start: (config) => ipcRenderer.invoke('pomodoro:start', { config }),
+    stop: (reason) => ipcRenderer.invoke('pomodoro:stop', { reason }),
+    status: () => ipcRenderer.invoke('pomodoro:status'),
+    grantOverride: (payload) => ipcRenderer.invoke('pomodoro:grant-override', payload),
+    pause: () => ipcRenderer.invoke('pomodoro:pause'),
+    resume: () => ipcRenderer.invoke('pomodoro:resume'),
+    startBreak: (durationSec?: number) => ipcRenderer.invoke('pomodoro:break', { durationSec }),
+    summaries: (limit?: number) => ipcRenderer.invoke('pomodoro:summaries', { limit })
+  },
   activities: {
     recent: (limit) => ipcRenderer.invoke('activities:recent', { limit }),
     summary: (windowHours, deviceId) => ipcRenderer.invoke('activities:summary', { windowHours, deviceId }),
@@ -71,6 +81,8 @@ const api: RendererApi = {
     updateEmergencyReminderInterval: (value) => ipcRenderer.invoke('settings:update-emergency-reminder-interval', value),
     economyExchangeRate: () => ipcRenderer.invoke('settings:economy-exchange-rate'),
     updateEconomyExchangeRate: (value) => ipcRenderer.invoke('settings:update-economy-exchange-rate', value),
+    dailyWalletResetEnabled: () => ipcRenderer.invoke('settings:daily-wallet-reset-enabled'),
+    updateDailyWalletResetEnabled: (value) => ipcRenderer.invoke('settings:update-daily-wallet-reset-enabled', value),
     journalConfig: () => ipcRenderer.invoke('settings:journal-config'),
     updateJournalConfig: (value) => ipcRenderer.invoke('settings:update-journal-config', value),
     peekConfig: () => ipcRenderer.invoke('settings:peek-config'),

@@ -1,4 +1,4 @@
-import { storage, type LibraryItem, type LibraryPurpose, type PendingActivityEvent } from './storage';
+import { storage, type LibraryItem, type LibraryPurpose, type PendingActivityEvent, type PomodoroSession, type PomodoroAllowlistEntry } from './storage';
 
 type IdleState = 'active' | 'idle' | 'locked';
 type EmergencyPolicyId = 'off' | 'gentle' | 'balanced' | 'strict';
@@ -7,6 +7,7 @@ const DESKTOP_API_URL = 'http://127.0.0.1:17600';
 const DESKTOP_WS_URL = 'ws://127.0.0.1:17600/events';
 const DEFAULT_UNLOCK_PRICE = 12;
 const NOTIFICATION_ICON = chrome.runtime.getURL('assets/notification.png');
+const POMODORO_STALE_MS = 15000;
 const CONTEXT_MENU_IDS = {
     rootSave: 'tws-save',
     rootDomain: 'tws-domain',
@@ -112,6 +113,47 @@ function baseUrl(urlString: string): string | null {
     }
 }
 
+function normalizeDomain(domain: string) {
+    return domain.replace(/^www\./, '').toLowerCase();
+}
+
+function matchesAllowlist(entry: PomodoroAllowlistEntry, url: URL): boolean {
+    if (entry.kind !== 'site') return false;
+    const domain = normalizeDomain(url.hostname);
+    const target = normalizeDomain(entry.value);
+    const hostAllowed = domain === target || domain.endsWith(`.${target}`);
+    if (!hostAllowed) return false;
+    if (!entry.pathPattern) return true;
+    const pattern = entry.pathPattern;
+    try {
+        const re = new RegExp(pattern);
+        return re.test(url.pathname);
+    } catch {
+        return url.pathname.startsWith(pattern);
+    }
+}
+
+function isPomodoroAllowed(session: PomodoroSession, urlString: string): boolean {
+    try {
+        const url = new URL(urlString);
+        const domain = normalizeDomain(url.hostname);
+
+        // Active overrides
+        const now = Date.now();
+        const override = session.overrides.find((o) => {
+            if (o.kind !== 'site') return false;
+            const target = normalizeDomain(o.target);
+            if (!(domain === target || domain.endsWith(`.${target}`))) return false;
+            return Date.parse(o.expiresAt) > now;
+        });
+        if (override) return true;
+
+        return session.allowlist.some((entry) => matchesAllowlist(entry, url));
+    } catch {
+        return false;
+    }
+}
+
 function createSyncId() {
     try {
         if (crypto?.randomUUID) return crypto.randomUUID();
@@ -144,6 +186,25 @@ async function queueConsumptionEvent(payload: { kind: string; title?: string | n
         meta: payload.meta
     });
     schedulePendingUsageFlush();
+}
+
+async function emitPomodoroBlock(payload: { target: string; kind: 'app' | 'site'; reason: 'not-allowlisted' | 'override-expired' | 'unknown-session' | 'verification-failed'; remainingMs?: number; mode: 'strict' | 'soft' }) {
+    const message = { type: 'pomodoro:block', payload };
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        try {
+            ws.send(JSON.stringify(message));
+            return;
+        } catch {
+            // fallthrough to queue
+        }
+    }
+    await storage.queuePomodoroBlock({
+        target: payload.target,
+        kind: payload.kind,
+        reason: payload.reason,
+        remainingMs: payload.remainingMs,
+        mode: payload.mode
+    });
 }
 
 function estimatePackRefund(session: { mode: 'metered' | 'pack' | 'emergency' | 'store'; purchasePrice?: number; purchasedSeconds?: number; remainingSeconds: number }) {
@@ -222,6 +283,7 @@ function tryConnectToDesktop() {
         await syncPendingCategorisation();
         await flushPendingUsage();
         await flushPendingActivity();
+        await flushPendingPomodoroBlocks();
     };
 
     ws.onclose = () => {
@@ -362,6 +424,31 @@ function handleDesktopMessage(data: any) {
             title: 'Emergency access reminder',
             message: `You are on borrowed time for ${domain}${justification ? ` — Reason: ${justification}` : ''}.`
         });
+    } else if (data.type === 'pomodoro-start' && data.payload) {
+        const session = data.payload as PomodoroSession;
+        storage.setPomodoroSession({ ...session, lastUpdated: Date.now() }).catch(() => { });
+    } else if (data.type === 'pomodoro-tick' && data.payload) {
+        const session = data.payload as PomodoroSession;
+        storage.updatePomodoroSession({
+            remainingMs: session.remainingMs,
+            overrides: session.overrides,
+            state: session.state,
+            breakRemainingMs: session.breakRemainingMs
+        }).catch(() => { });
+    } else if (data.type === 'pomodoro-stop') {
+        storage.setPomodoroSession(null).catch(() => { });
+    } else if (data.type === 'pomodoro-override' && data.payload?.overrides) {
+        const overrides = data.payload.overrides as PomodoroSession['overrides'];
+        storage.updatePomodoroSession({ overrides }).catch(() => { });
+    } else if (data.type === 'pomodoro-block' && data.payload) {
+        const evt = data.payload as { target: string; kind: 'app' | 'site'; reason: string; remainingMs?: number; mode?: 'strict' | 'soft' };
+        storage.queuePomodoroBlock({
+            target: evt.target,
+            kind: evt.kind,
+            reason: evt.reason === 'override-expired' || evt.reason === 'verification-failed' ? evt.reason : 'not-allowlisted',
+            remainingMs: evt.remainingMs,
+            mode: evt.mode ?? 'strict'
+        }).catch(() => { });
     }
 }
 
@@ -434,6 +521,33 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
         const domain = url.hostname.replace(/^www\./, '');
 
         // console.log(`🔍 Checking ${domain} (source: ${source})`);
+
+        const pomodoroSession = await storage.getPomodoroSession();
+        if (pomodoroSession && pomodoroSession.state !== 'ended') {
+            const stale = pomodoroSession.lastUpdated && Date.now() - pomodoroSession.lastUpdated > POMODORO_STALE_MS;
+            const allowed = !stale && isPomodoroAllowed(pomodoroSession, urlString);
+            if (!allowed) {
+                const reason = stale ? 'verification-failed' : 'not-allowlisted';
+                await emitPomodoroBlock({
+                    target: domain,
+                    kind: 'site',
+                    reason,
+                    remainingMs: pomodoroSession.remainingMs,
+                    mode: pomodoroSession.mode
+                });
+                if (tabId != null) {
+                    await showPomodoroBlockScreen(tabId, {
+                        domain,
+                        remainingMs: pomodoroSession.remainingMs,
+                        mode: pomodoroSession.mode,
+                        softUnlockMs: pomodoroSession.temporaryUnlockSec * 1000,
+                        reason
+                    });
+                    await notifyPomodoroBlock(domain, pomodoroSession.mode, reason);
+                }
+                return;
+            }
+        }
 
         const isFrivolous = await storage.isFrivolous(domain);
 
@@ -585,6 +699,9 @@ async function tickSessions() {
         } else {
             await storage.setSession(activeDomain, session);
         }
+        if (activeTab.id) {
+            await maybeSendSessionFade(activeTab.id, session);
+        }
         return;
     } else if (session.mode === 'metered') {
         // Pay-as-you-go: deduct coins using the latest rate
@@ -624,6 +741,9 @@ async function tickSessions() {
                 await showBlockScreen(activeTab.id, activeDomain, 'insufficient-funds', 'session-insufficient-funds');
             }
         }
+        if (activeTab.id) {
+            await maybeSendSessionFade(activeTab.id, session);
+        }
     } else {
         // Pack mode: countdown time using actual elapsed time
         const lastTick = session.lastTick ?? session.startedAt;
@@ -638,6 +758,9 @@ async function tickSessions() {
             }
         } else {
             await storage.setSession(activeDomain, session);
+        }
+        if (activeTab.id) {
+            await maybeSendSessionFade(activeTab.id, session);
         }
     }
 }
@@ -684,12 +807,12 @@ async function pushActivitySample(reason: string) {
     const domain = new URL(tab.url).hostname.replace(/^www\./, '');
     const idleSeconds = idleState === 'active' ? 0 : Math.floor((Date.now() - lastIdleChange) / 1000);
 
-    const payload = {
+    const activityEvent: PendingActivityEvent = {
         type: 'activity',
         reason,
         payload: {
             timestamp: Date.now(),
-            source: 'url' as const,
+            source: 'url',
             appName: getBrowserLabel(),
             windowTitle: tab.title ?? domain,
             url: tab.url,
@@ -698,7 +821,7 @@ async function pushActivitySample(reason: string) {
         }
     };
 
-    emitActivity(payload);
+    emitActivity(activityEvent);
 }
 
 async function getActiveHttpTab(): Promise<chrome.tabs.Tab | null> {
@@ -742,6 +865,28 @@ async function flushPendingActivity() {
         if (sent < pending.length) {
             return;
         }
+    }
+}
+
+async function flushPendingPomodoroBlocks() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    while (ws && ws.readyState === WebSocket.OPEN) {
+        const pending = await storage.getPendingPomodoroBlocks(PENDING_USAGE_FLUSH_LIMIT);
+        if (!pending.length) return;
+        let sent = 0;
+        for (const event of pending) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) break;
+            try {
+                ws.send(JSON.stringify({ type: 'pomodoro:block', payload: event }));
+                sent += 1;
+            } catch {
+                break;
+            }
+        }
+        if (sent > 0) {
+            await storage.clearPendingPomodoroBlocks(sent);
+        }
+        if (sent < pending.length) return;
     }
 }
 
@@ -803,6 +948,41 @@ async function ensureContentScript(tabId: number) {
     }
 }
 
+async function preHidePage(tabId: number) {
+    try {
+        await chrome.scripting.executeScript({
+            target: { tabId },
+            func: () => {
+                const STYLE_ID = 'tws-page-hide';
+                if (document.getElementById(STYLE_ID)) return;
+                const styleTag = document.createElement('style');
+                styleTag.id = STYLE_ID;
+                styleTag.textContent = `
+                  html, body { background: #000 !important; }
+                  body > :not(#tws-shadow-host) { display: none !important; }
+                `;
+                document.documentElement.prepend(styleTag);
+            }
+        });
+    } catch {
+        // Ignore scripting errors (not permitted or not ready)
+    }
+}
+
+async function clearPreHidePage(tabId: number) {
+    try {
+        await chrome.scripting.executeScript({
+            target: { tabId },
+            func: () => {
+                const styleTag = document.getElementById('tws-page-hide');
+                styleTag?.remove();
+            }
+        });
+    } catch {
+        // Ignore scripting errors
+    }
+}
+
 async function getPeekPayload(tabId: number, source?: string) {
     const state = await storage.getState();
     const enabled = state.settings?.peekEnabled !== false;
@@ -815,14 +995,8 @@ async function getPeekPayload(tabId: number, source?: string) {
 }
 
 async function showBlockScreen(tabId: number, domain: string, reason?: string, source?: string) {
+    await preHidePage(tabId);
     await ensureContentScript(tabId);
-
-    // Ping to give the content script a chance to attach
-    try {
-        await chrome.tabs.sendMessage(tabId, { type: 'TWS_PING' });
-    } catch {
-        await new Promise((resolve) => setTimeout(resolve, 150));
-    }
 
     try {
         const peek = await getPeekPayload(tabId, source);
@@ -833,6 +1007,70 @@ async function showBlockScreen(tabId: number, domain: string, reason?: string, s
         console.log(`🔒 Block screen message sent to tab ${tabId} for ${domain}`);
     } catch (error) {
         console.warn('Failed to send block message', error);
+        await clearPreHidePage(tabId);
+    }
+}
+
+async function showPomodoroBlockScreen(
+    tabId: number,
+    payload: { domain: string; remainingMs?: number; mode: 'strict' | 'soft'; softUnlockMs?: number; reason?: string }
+) {
+    await ensureContentScript(tabId);
+    try {
+        await chrome.tabs.sendMessage(tabId, { type: 'POMODORO_BLOCK', payload });
+    } catch (error) {
+        console.warn('Failed to send pomodoro block message', error);
+    }
+}
+
+async function maybeSendSessionFade(tabId: number, session: PaywallSession) {
+    const fadeSeconds = await storage.getSessionFadeSeconds();
+    const remaining = session.remainingSeconds;
+    if (!Number.isFinite(remaining) || remaining <= 0 || fadeSeconds <= 0) {
+        await ensureContentScript(tabId);
+        try {
+            await chrome.tabs.sendMessage(tabId, { type: 'SESSION_FADE', payload: { active: false } });
+        } catch {
+            // ignore
+        }
+        return;
+    }
+    if (remaining <= fadeSeconds) {
+        await ensureContentScript(tabId);
+        try {
+            await chrome.tabs.sendMessage(tabId, {
+                type: 'SESSION_FADE',
+                payload: { active: true, remainingSeconds: remaining, fadeSeconds }
+            });
+        } catch {
+            // ignore
+        }
+    } else {
+        await ensureContentScript(tabId);
+        try {
+            await chrome.tabs.sendMessage(tabId, { type: 'SESSION_FADE', payload: { active: false } });
+        } catch {
+            // ignore
+        }
+    }
+}
+
+async function notifyPomodoroBlock(domain: string, mode: PomodoroSession['mode'], reason?: string) {
+    try {
+        const message = `Deep work (${mode}) is active. ${domain} is blocked${reason ? ` (${reason})` : ''}.`;
+        if (chrome.notifications) {
+            await chrome.notifications.create(`pomodoro-block-${Date.now()}`, {
+                type: 'basic',
+                iconUrl: 'icon-128.png',
+                title: 'Stay focused',
+                message,
+                priority: 2
+            });
+        } else {
+            console.warn(message);
+        }
+    } catch (error) {
+        console.warn('Failed to notify pomodoro block', error);
     }
 }
 
@@ -991,6 +1229,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message.type === 'SET_ROT_MODE') {
         handleSetRotMode(message.payload).then(sendResponse);
         return true;
+    } else if (message.type === 'SET_DISCOURAGEMENT_MODE') {
+        handleSetDiscouragementMode(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'REQUEST_POMODORO_OVERRIDE') {
+        handlePomodoroOverrideRequest(message.payload).then(sendResponse);
+        return true;
     }
 });
 
@@ -1005,7 +1249,7 @@ function emitUrlActivitySample(payload: { url: string; title?: string | null; me
         return;
     }
 
-    const idleSeconds = payload.mediaPlaying ? 0 : (idleState === 'active' ? 0 : Math.floor((Date.now() - lastIdleChange) / 1000));
+    const idleSeconds = idleState === 'active' ? 0 : Math.floor((Date.now() - lastIdleChange) / 1000);
 
     emitActivity({
         type: 'activity',
@@ -1082,6 +1326,23 @@ async function handleOpenDesktopView(payload: { view?: string }) {
             return { success: false, error: data?.error ?? 'Failed to open desktop view' };
         }
         return { success: true };
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+}
+
+async function handlePomodoroOverrideRequest(payload: { target?: string }) {
+    try {
+        const activeTab = await getActiveHttpTab();
+        const url = payload?.target ?? activeTab?.url ?? '';
+        if (!url) return { success: false, error: 'No active URL' };
+        const domain = new URL(url).hostname.replace(/^www\./, '');
+        const message = { type: 'pomodoro:grant-override', payload: { kind: 'site', target: domain } };
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(message));
+            return { success: true };
+        }
+        return { success: false, error: 'Desktop not connected' };
     } catch (error) {
         return { success: false, error: (error as Error).message };
     }
@@ -1790,18 +2051,19 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
     const consumedReading = state.consumedReading ?? {};
     readingItems = readingItems.filter((item: any) => item?.id && !consumedReading[String(item.id)]);
 
-    return {
-        balance,
-        rate,
-        session,
-        matchedPricedItem,
-        lastSync,
-        desktopConnected: ws?.readyState === WebSocket.OPEN,
-        rotMode: state.rotMode,
-        emergencyPolicy: state.settings.emergencyPolicy ?? 'balanced',
-        emergency: state.emergency,
-        journal: state.settings.journal ?? { url: null, minutes: 10 },
-        library: {
+        return {
+            balance,
+            rate,
+            session,
+            matchedPricedItem,
+            lastSync,
+            desktopConnected: ws?.readyState === WebSocket.OPEN,
+            rotMode: state.rotMode,
+            emergencyPolicy: state.settings.emergencyPolicy ?? 'balanced',
+            discouragementEnabled: state.settings.discouragementEnabled ?? true,
+            emergency: state.emergency,
+            journal: state.settings.journal ?? { url: null, minutes: 10 },
+            library: {
             items: libraryItems,
             replaceItems: libraryItems.filter((item) => item.purpose === 'replace' && !item.consumedAt),
             productiveItems: libraryItems.filter((item) => item.purpose === 'productive' && !item.consumedAt),
@@ -1860,6 +2122,12 @@ async function handleSetRotMode(payload: { enabled?: boolean }) {
     const enabled = Boolean(payload?.enabled);
     const rotMode = await storage.setRotMode(enabled);
     return { success: true, rotMode };
+}
+
+async function handleSetDiscouragementMode(payload: { enabled?: boolean }) {
+    const enabled = Boolean(payload?.enabled);
+    const discouragementEnabled = await storage.setDiscouragementEnabled(enabled);
+    return { success: true, discouragementEnabled };
 }
 
 async function handleStartStoreSession(payload: { domain: string; price: number; url?: string }) {
@@ -1933,11 +2201,13 @@ async function handleGetConnection() {
     const lastSync = await storage.getLastSyncTime();
     const sessions = await storage.getAllSessions();
     const lastFrivolityAt = await storage.getLastFrivolityAt();
+    const rotMode = await storage.getRotMode();
     return {
         desktopConnected: ws?.readyState === WebSocket.OPEN,
         lastSync,
         sessions,
-        lastFrivolityAt
+        lastFrivolityAt,
+        rotMode
     };
 }
 

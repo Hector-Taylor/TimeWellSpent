@@ -13,28 +13,50 @@ body,
 html {
     margin: 0;
     min-height: 100vh;
-    background: var(--bg-base);
+    background: #262040;
     color: var(--fg);
 }
 
 body {
     background:
-        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(200, 149, 108, 0.08), transparent),
+        radial-gradient(ellipse 90% 60% at 50% -10%, rgba(212, 196, 255, 0.25), transparent),
+        radial-gradient(ellipse 70% 50% at 100% 100%, rgba(255, 184, 224, 0.15), transparent),
+        radial-gradient(ellipse 60% 40% at 0% 80%, rgba(184, 255, 224, 0.12), transparent),
         var(--bg-base);
     background-attachment: fixed;
 }
 
-/* Subtle grid overlay for skeletal tech feel */
+/* Soft dithering dot pattern overlay - retro CRT feel */
 body::before {
     content: '';
     position: fixed;
     inset: 0;
     pointer-events: none;
     background-image:
-        linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
-    background-size: 60px 60px;
+        radial-gradient(rgba(212, 196, 255, 0.06) 1px, transparent 1px),
+        radial-gradient(rgba(255, 184, 224, 0.04) 1px, transparent 1px),
+        radial-gradient(rgba(184, 255, 224, 0.04) 1px, transparent 1px);
+    background-size: 4px 4px, 6px 6px, 8px 8px;
+    background-position: 0 0, 2px 2px, 4px 0;
     z-index: 0;
+    opacity: 1;
+}
+
+/* Scanline effect for retro feel */
+body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, 0.03) 2px,
+        rgba(0, 0, 0, 0.03) 4px
+    );
+    z-index: 0;
+    opacity: 0.5;
 }
 
 #root {

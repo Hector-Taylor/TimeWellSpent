@@ -1,5 +1,5 @@
 export type ActivitySource = 'app' | 'url';
-export type ActivityCategory = 'productive' | 'neutral' | 'frivolity';
+export type ActivityCategory = 'productive' | 'neutral' | 'frivolity' | 'draining';
 
 export type ActivityRecord = {
   id: number;
@@ -20,6 +20,7 @@ export type ActivitySummary = {
   windowHours: number;
   sampleCount: number;
   totalSeconds: number;
+  deepWorkSeconds: number;
   totalsByCategory: Record<ActivityCategory | 'idle' | 'uncategorised', number>;
   totalsBySource: Record<ActivitySource, number>;
   topContexts: Array<{
@@ -36,7 +37,9 @@ export type ActivitySummary = {
     productive: number;
     neutral: number;
     frivolity: number;
+    draining: number;
     idle: number;
+    deepWork: number;
     dominant: ActivityCategory | 'idle';
     topContext: {
       label: string;
@@ -90,6 +93,7 @@ export type CategorisationConfig = {
   productive: string[];
   neutral: string[];
   frivolity: string[];
+  draining: string[];
 };
 
 export type EconomyState = {
@@ -107,6 +111,75 @@ export type FocusSession = {
   durationSec: number;
   completed: boolean;
   multiplier: number;
+};
+
+// ----------------------------------------------------------------------------
+// Pomodoro (per-session allowlist with strict/soft modes)
+// ----------------------------------------------------------------------------
+
+export type PomodoroMode = 'strict' | 'soft';
+export type PomodoroSessionState = 'active' | 'paused' | 'break' | 'ended';
+
+export type PomodoroAllowlistEntry = {
+  id: string;
+  kind: 'app' | 'site';
+  value: string;
+  pathPattern?: string | null;
+  label?: string | null;
+};
+
+export type PomodoroOverride = {
+  id: string;
+  kind: 'app' | 'site';
+  target: string;
+  grantedAt: string;
+  expiresAt: string;
+  durationSec: number;
+};
+
+export type PomodoroSessionConfig = {
+  durationSec: number;
+  breakDurationSec?: number;
+  mode: PomodoroMode;
+  allowlist: PomodoroAllowlistEntry[];
+  temporaryUnlockSec?: number;
+  presetId?: string | null;
+};
+
+export type PomodoroSession = {
+  id: string;
+  state: PomodoroSessionState;
+  startedAt: string;
+  endedAt: string | null;
+  plannedDurationSec: number;
+  breakDurationSec: number;
+  mode: PomodoroMode;
+  allowlist: PomodoroAllowlistEntry[];
+  temporaryUnlockSec: number;
+  overrides: PomodoroOverride[];
+  remainingMs: number;
+  presetId?: string | null;
+  completedReason?: 'completed' | 'canceled' | 'expired';
+  breakRemainingMs?: number | null;
+};
+
+export type PomodoroBlockEventReason = 'not-allowlisted' | 'override-expired' | 'unknown-session' | 'verification-failed';
+
+export type PomodoroBlockEvent = {
+  id?: number;
+  sessionId: string;
+  occurredAt: string;
+  target: string;
+  kind: 'app' | 'site';
+  reason: PomodoroBlockEventReason;
+  remainingMs?: number;
+  mode: PomodoroMode;
+};
+
+export type PomodoroSessionSummary = {
+  session: PomodoroSession;
+  blockCount: number;
+  overrideCount: number;
 };
 
 export type Intention = {
@@ -295,6 +368,7 @@ export type FriendSummary = {
   periodHours: number;
   totalActiveSeconds: number;
   categoryBreakdown: Record<ActivityCategory | 'idle', number>;
+  deepWorkSeconds: number;
   productivityScore: number;
   emergencySessions?: number;
 };
@@ -305,6 +379,7 @@ export type FriendTimelinePoint = {
   productive: number;
   neutral: number;
   frivolity: number;
+  draining: number;
   idle: number;
   dominant: ActivityCategory | 'idle';
 };
@@ -314,6 +389,7 @@ export type FriendTimeline = {
   windowHours: number;
   updatedAt: string;
   totalsByCategory: Record<ActivityCategory | 'idle', number>;
+  deepWorkSeconds: number;
   timeline: FriendTimelinePoint[];
 };
 
@@ -361,6 +437,16 @@ export type RendererApi = {
     start(duration: number): Promise<FocusSession>;
     stop(completed: boolean): Promise<FocusSession | null>;
     onTick(callback: (payload: { remaining: number; progress: number }) => void): () => void;
+  };
+  pomodoro: {
+    start(config: PomodoroSessionConfig): Promise<PomodoroSession>;
+    stop(reason?: 'completed' | 'canceled' | 'expired'): Promise<PomodoroSession | null>;
+    status(): Promise<PomodoroSession | null>;
+    grantOverride(payload: { kind: 'app' | 'site'; target: string; durationSec?: number }): Promise<PomodoroSession | null>;
+    pause(): Promise<PomodoroSession | null>;
+    resume(): Promise<PomodoroSession | null>;
+    startBreak(durationSec?: number): Promise<PomodoroSession | null>;
+    summaries(limit?: number): Promise<PomodoroSessionSummary[]>;
   };
   activities: {
     recent(limit?: number): Promise<ActivityRecord[]>;
@@ -412,6 +498,8 @@ export type RendererApi = {
     updateEmergencyReminderInterval(value: number): Promise<void>;
     economyExchangeRate(): Promise<number>;
     updateEconomyExchangeRate(value: number): Promise<void>;
+    dailyWalletResetEnabled(): Promise<boolean>;
+    updateDailyWalletResetEnabled(value: boolean): Promise<void>;
     journalConfig(): Promise<JournalConfig>;
     updateJournalConfig(value: JournalConfig): Promise<void>;
     peekConfig(): Promise<PeekConfig>;
@@ -480,7 +568,7 @@ export type RendererApi = {
     listDevices(): Promise<SyncDevice[]>;
   };
   system: {
-    reset(scope: 'trophies' | 'all'): Promise<{ cleared: 'trophies' | 'all' }>;
+    reset(scope: 'trophies' | 'wallet' | 'all'): Promise<{ cleared: 'trophies' | 'wallet' | 'all' }>;
   };
   events: {
     on<T = unknown>(channel: string, callback: (payload: T) => void): () => void;
@@ -542,6 +630,7 @@ export type TimeOfDayStats = {
   productive: number;
   neutral: number;
   frivolity: number;
+  draining: number;
   idle: number;
   avgEngagement: number;
   dominantCategory: ActivityCategory | 'idle';
@@ -579,6 +668,7 @@ export type AnalyticsOverview = {
   periodDays: number;
   totalActiveHours: number;
   productivityScore: number;
+  deepWorkSeconds: number;
   topEngagementDomain: string | null;
   focusTrend: FocusTrend;
   peakProductiveHour: number;
@@ -596,6 +686,7 @@ export type TrendPoint = {
   neutral: number;
   frivolity: number;
   idle: number;
+  deepWork: number;
   engagement: number;
   qualityScore: number;
 };

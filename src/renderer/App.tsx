@@ -24,6 +24,14 @@ export default function App() {
   const [wallet, setWallet] = useState<WalletSnapshot>({ balance: 0 });
   const [marketRates, setMarketRates] = useState<MarketRate[]>([]);
   const [economyState, setEconomyState] = useState<EconomyState | null>(null);
+  const [theme, setTheme] = useState<'lavender' | 'olive'>(() => {
+    try {
+      const saved = localStorage.getItem('tws-theme');
+      return saved === 'olive' ? 'olive' : 'lavender';
+    } catch {
+      return 'lavender';
+    }
+  });
   const [extensionStatus, setExtensionStatus] = useState<{ connected: boolean; lastSeen: number | null }>({ connected: true, lastSeen: null });
   const [paywallBlock, setPaywallBlock] = useState<{
     domain: string;
@@ -37,6 +45,17 @@ export default function App() {
     api.market.list().then(setMarketRates);
     api.economy.state().then(setEconomyState);
   }, []);
+
+  useEffect(() => {
+    const body = document.body;
+    body.classList.remove('theme-olive');
+    if (theme === 'olive') body.classList.add('theme-olive');
+    try {
+      localStorage.setItem('tws-theme', theme);
+    } catch {
+      // ignore
+    }
+  }, [theme]);
 
   useEffect(() => {
     const unsubscribe = api.events.on<{ view?: string }>('ui:navigate', (payload) => {
@@ -195,6 +214,8 @@ export default function App() {
         {view === 'settings' && (
           <Settings
             api={api}
+            theme={theme}
+            onThemeChange={(next) => setTheme(next)}
           />
         )}
         {view === 'library' && (

@@ -4,7 +4,18 @@ import type { CategorisationConfig, MarketRate } from '@shared/types';
 export const DEFAULT_CATEGORISATION: CategorisationConfig = {
   productive: ['Code', 'Notes', 'Documentation', 'vscode', 'obsidian', 'notion', 'linear.app'],
   neutral: ['Mail', 'Calendar', 'Slack', 'Figma'],
-  frivolity: ['twitter.com', 'x.com', 'youtube.com', 'reddit.com']
+  frivolity: [
+    'twitter.com', 'x.com', 'youtube.com', 'reddit.com',
+    'instagram.com', 'tiktok.com', 'snapchat.com',
+    // News/entertainment
+    'facebook.com', 'netflix.com', 'twitch.tv'
+  ],
+  draining: [
+    // Messaging / chatter that should passively drain
+    'whatsapp.com', 'web.whatsapp.com', 'wa.me',
+    'messenger.com', 'discord.com', 'telegram.org', 'web.telegram.org',
+    'signal.org', 'wechat.com'
+  ]
 };
 
 // Reasonable starting rates for common time sinks.

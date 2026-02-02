@@ -17,6 +17,7 @@ import type {
     TrendPoint,
 } from '@shared/types';
 import { logger } from '@shared/logger';
+import { HOUR_MS, overlapMs, floorToHourMs } from './activityTime';
 
 type ActivityRow = {
     id: number;
@@ -68,6 +69,7 @@ export class AnalyticsService {
     private insertPatternStmt: Statement;
     private clearPatternsStmt: Statement;
     private getPatternsStmt: Statement;
+    private pomodorosInRangeStmt: Statement;
 
     constructor(database: Database, getExcludedKeywords?: () => string[]) {
         this.db = database.connection;
@@ -79,7 +81,7 @@ export class AnalyticsService {
         domain, app_name as appName, category, 
         seconds_active as secondsActive, idle_seconds as idleSeconds
       FROM activities 
-      WHERE started_at >= ? 
+      WHERE started_at <= ? AND (ended_at IS NULL OR ended_at >= ?)
       ORDER BY started_at DESC
     `);
 
@@ -130,6 +132,33 @@ export class AnalyticsService {
       ORDER BY transition_count DESC
       LIMIT 50
     `);
+
+        this.pomodorosInRangeStmt = this.db.prepare(`
+      SELECT started_at as startedAt, ended_at as endedAt, planned_duration_sec as plannedDurationSec
+      FROM pomodoro_sessions
+      WHERE (ended_at IS NULL OR ended_at >= ?) AND started_at <= ?
+    `);
+    }
+
+    private clipActivity(activity: ActivityRow, rangeStartMs: number, rangeEndMs: number) {
+        const startMs = new Date(activity.startedAt).getTime();
+        if (!Number.isFinite(startMs)) return null;
+        const activeSecondsRaw = Math.max(0, activity.secondsActive ?? 0);
+        const idleSecondsRaw = Math.max(0, activity.idleSeconds ?? 0);
+        const totalSeconds = activeSecondsRaw + idleSecondsRaw;
+        if (totalSeconds <= 0) return null;
+        const rawEnd = activity.endedAt ? new Date(activity.endedAt).getTime() : NaN;
+        const endMs = Number.isFinite(rawEnd) ? rawEnd : startMs + totalSeconds * 1000;
+        if (!Number.isFinite(endMs)) return null;
+        const overlapTotalMs = overlapMs(startMs, endMs, rangeStartMs, rangeEndMs);
+        if (overlapTotalMs <= 0) return null;
+        const rowDurationMs = Math.max(1, endMs - startMs);
+        const clipRatio = Math.min(1, overlapTotalMs / rowDurationMs);
+        const activeSeconds = activeSecondsRaw * clipRatio;
+        const idleSeconds = idleSecondsRaw * clipRatio;
+        const overlapStartMs = Math.max(startMs, rangeStartMs);
+        const overlapEndMs = Math.min(endMs, rangeEndMs);
+        return { startMs, endMs, overlapStartMs, overlapEndMs, activeSeconds, idleSeconds };
     }
 
     private shouldSuppress(domain: string | null, appName: string | null) {
@@ -165,8 +194,11 @@ export class AnalyticsService {
      * Get time-of-day analysis for the past N days
      */
     getTimeOfDayAnalysis(days: number = 7): TimeOfDayStats[] {
-        const rangeStart = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-        const activities = this.activitiesInRangeStmt.all(rangeStart) as ActivityRow[];
+        const rangeEndMs = Date.now();
+        const rangeStartMs = rangeEndMs - days * 24 * 60 * 60 * 1000;
+        const rangeStart = new Date(rangeStartMs).toISOString();
+        const rangeEnd = new Date(rangeEndMs).toISOString();
+        const activities = this.activitiesInRangeStmt.all(rangeEnd, rangeStart) as ActivityRow[];
 
         // Initialize 24 hour buckets
         const buckets: TimeOfDayStats[] = Array.from({ length: 24 }, (_, hour) => ({
@@ -174,6 +206,7 @@ export class AnalyticsService {
             productive: 0,
             neutral: 0,
             frivolity: 0,
+            draining: 0,
             idle: 0,
             avgEngagement: 0,
             dominantCategory: 'idle' as ActivityCategory | 'idle',
@@ -187,24 +220,38 @@ export class AnalyticsService {
         }
 
         for (const activity of activities) {
-            const startDate = new Date(activity.startedAt);
-            const hour = startDate.getHours();
-            const bucket = buckets[hour];
-
-            bucket.sampleCount++;
-            bucket.idle += activity.idleSeconds;
+            const clip = this.clipActivity(activity, rangeStartMs, rangeEndMs);
+            if (!clip) continue;
+            const overlapSpanMs = clip.overlapEndMs - clip.overlapStartMs;
+            if (overlapSpanMs <= 0) continue;
 
             const suppressed = this.shouldSuppress(activity.domain, activity.appName);
             const category = suppressed ? 'neutral' : (activity.category ?? 'neutral');
-            if (category === 'productive') bucket.productive += activity.secondsActive;
-            else if (category === 'frivolity') bucket.frivolity += activity.secondsActive;
-            else bucket.neutral += activity.secondsActive;
+            const domain = activity.domain ?? activity.appName ?? 'Unknown';
 
-            // Track domain frequency
-            if (!suppressed) {
-                const domain = activity.domain ?? activity.appName ?? 'Unknown';
-                const hourDomains = domainCounts.get(hour)!;
-                hourDomains.set(domain, (hourDomains.get(domain) ?? 0) + activity.secondsActive);
+            const firstHourStart = floorToHourMs(clip.overlapStartMs);
+            const lastHourStart = floorToHourMs(clip.overlapEndMs - 1);
+            for (let hourStartMs = firstHourStart; hourStartMs <= lastHourStart; hourStartMs += HOUR_MS) {
+                const bucketOverlapMs = overlapMs(clip.overlapStartMs, clip.overlapEndMs, hourStartMs, hourStartMs + HOUR_MS);
+                if (bucketOverlapMs <= 0) continue;
+                const fraction = bucketOverlapMs / overlapSpanMs;
+                const activeSlice = clip.activeSeconds * fraction;
+                const idleSlice = clip.idleSeconds * fraction;
+                const hour = new Date(hourStartMs).getHours();
+                const bucket = buckets[hour];
+
+                bucket.sampleCount += 1;
+                bucket.idle += idleSlice;
+
+                if (category === 'productive') bucket.productive += activeSlice;
+                else if (category === 'frivolity') bucket.frivolity += activeSlice;
+                else if (category === 'draining') bucket.draining += activeSlice;
+                else bucket.neutral += activeSlice;
+
+                if (!suppressed) {
+                    const hourDomains = domainCounts.get(hour)!;
+                    hourDomains.set(domain, (hourDomains.get(domain) ?? 0) + activeSlice);
+                }
             }
         }
 
@@ -215,6 +262,7 @@ export class AnalyticsService {
                 { cat: 'productive' as const, val: bucket.productive },
                 { cat: 'neutral' as const, val: bucket.neutral },
                 { cat: 'frivolity' as const, val: bucket.frivolity },
+                { cat: 'draining' as const, val: bucket.draining },
                 { cat: 'idle' as const, val: bucket.idle },
             ];
             const dominant = totals.reduce((a, b) => (b.val > a.val ? b : a));
@@ -233,7 +281,7 @@ export class AnalyticsService {
             bucket.dominantDomain = maxDomain;
 
             // Calculate engagement (ratio of active to idle)
-            const totalActive = bucket.productive + bucket.neutral + bucket.frivolity;
+            const totalActive = bucket.productive + bucket.neutral + bucket.frivolity + bucket.draining;
             const totalTime = totalActive + bucket.idle;
             bucket.avgEngagement = totalTime > 0 ? Math.round((totalActive / totalTime) * 100) : 0;
         }
@@ -245,8 +293,9 @@ export class AnalyticsService {
      * Compute behavioral patterns (what leads to what)
      */
     computeTransitionPatterns(days: number = 30): void {
+        const rangeEnd = new Date().toISOString();
         const rangeStart = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-        const activities = this.activitiesInRangeStmt.all(rangeStart) as ActivityRow[];
+        const activities = this.activitiesInRangeStmt.all(rangeEnd, rangeStart) as ActivityRow[];
 
         // Sort by start time
         const sorted = activities.sort(
@@ -377,10 +426,15 @@ export class AnalyticsService {
         const rangeStart = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
         const activities = this.db.prepare(`
-      SELECT seconds_active as secondsActive, idle_seconds as idleSeconds
+      SELECT started_at as startedAt, ended_at as endedAt, seconds_active as secondsActive, idle_seconds as idleSeconds
       FROM activities
-      WHERE domain = ? AND started_at >= ?
-    `).all(domain, rangeStart) as Array<{ secondsActive: number; idleSeconds: number }>;
+      WHERE domain = ? AND started_at <= ? AND (ended_at IS NULL OR ended_at >= ?)
+    `).all(domain, new Date().toISOString(), rangeStart) as Array<{
+            startedAt: string;
+            endedAt: string | null;
+            secondsActive: number;
+            idleSeconds: number;
+        }>;
 
         const behaviorData = this.db.prepare(`
       SELECT event_type, value_int, value_float
@@ -388,9 +442,25 @@ export class AnalyticsService {
       WHERE domain = ? AND timestamp >= ?
     `).all(domain, rangeStart) as Array<{ event_type: string; value_int: number | null; value_float: number | null }>;
 
-        const totalSeconds = activities.reduce((acc, a) => acc + a.secondsActive, 0);
+        const rangeStartMs = new Date(rangeStart).getTime();
+        const rangeEndMs = Date.now();
+        let sessionCount = 0;
+        const totalSeconds = activities.reduce((acc, a) => {
+            const clip = this.clipActivity({
+                id: 0,
+                startedAt: a.startedAt,
+                endedAt: a.endedAt,
+                domain,
+                appName: null,
+                category: null,
+                secondsActive: a.secondsActive,
+                idleSeconds: a.idleSeconds
+            }, rangeStartMs, rangeEndMs);
+            if (clip) sessionCount += 1;
+            return acc + (clip?.activeSeconds ?? 0);
+        }, 0);
         const totalMinutes = Math.max(1, totalSeconds / 60);
-        const sessionCount = activities.length;
+        const sessionCountLocal = sessionCount;
 
         // Aggregate behavior events
         let totalScrollDepth = 0;
@@ -446,7 +516,7 @@ export class AnalyticsService {
             avgKeystrokesPerMinute,
             fixationScore,
             engagementLevel,
-            sessionCount,
+            sessionCount: sessionCountLocal,
         };
     }
 
@@ -454,8 +524,11 @@ export class AnalyticsService {
      * Get analytics overview
      */
     getOverview(days: number = 7): AnalyticsOverview {
-        const rangeStart = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-        const activities = this.activitiesInRangeStmt.all(rangeStart) as ActivityRow[];
+        const rangeEndMs = Date.now();
+        const rangeStartMs = rangeEndMs - days * 24 * 60 * 60 * 1000;
+        const rangeStart = new Date(rangeStartMs).toISOString();
+        const rangeEnd = new Date(rangeEndMs).toISOString();
+        const activities = this.activitiesInRangeStmt.all(rangeEnd, rangeStart) as ActivityRow[];
 
         // Calculate totals
         let totalActive = 0;
@@ -464,31 +537,48 @@ export class AnalyticsService {
             productive: 0,
             neutral: 0,
             frivolity: 0,
+            draining: 0,
             idle: 0,
         };
         const domainTotals = new Map<string, number>();
         const hourlyProductive = new Map<number, number>();
         const hourlyFrivolity = new Map<number, number>();
+        let sessionCount = 0;
 
         for (const activity of activities) {
-            totalActive += activity.secondsActive;
-            totalIdle += activity.idleSeconds;
-            categoryTotals.idle += activity.idleSeconds;
+            const clip = this.clipActivity(activity, rangeStartMs, rangeEndMs);
+            if (!clip) continue;
+            sessionCount += 1;
+            totalActive += clip.activeSeconds;
+            totalIdle += clip.idleSeconds;
+            categoryTotals.idle += clip.idleSeconds;
 
             const suppressed = this.shouldSuppress(activity.domain, activity.appName);
-            const category = suppressed ? 'neutral' : (activity.category ?? 'neutral');
-            categoryTotals[category] += activity.secondsActive;
+            const rawCategory = suppressed ? 'neutral' : (activity.category ?? 'neutral');
+            const category = rawCategory === 'draining' ? 'draining' : rawCategory;
+            categoryTotals[category] += clip.activeSeconds;
 
             if (!suppressed) {
                 const domain = activity.domain ?? activity.appName ?? 'Unknown';
-                domainTotals.set(domain, (domainTotals.get(domain) ?? 0) + activity.secondsActive);
+                domainTotals.set(domain, (domainTotals.get(domain) ?? 0) + clip.activeSeconds);
             }
 
-            const hour = new Date(activity.startedAt).getHours();
-            if (category === 'productive') {
-                hourlyProductive.set(hour, (hourlyProductive.get(hour) ?? 0) + activity.secondsActive);
-            } else if (category === 'frivolity') {
-                hourlyFrivolity.set(hour, (hourlyFrivolity.get(hour) ?? 0) + activity.secondsActive);
+            const overlapSpanMs = clip.overlapEndMs - clip.overlapStartMs;
+            if (overlapSpanMs > 0) {
+                const firstHourStart = floorToHourMs(clip.overlapStartMs);
+                const lastHourStart = floorToHourMs(clip.overlapEndMs - 1);
+                for (let hourStartMs = firstHourStart; hourStartMs <= lastHourStart; hourStartMs += HOUR_MS) {
+                    const bucketOverlapMs = overlapMs(clip.overlapStartMs, clip.overlapEndMs, hourStartMs, hourStartMs + HOUR_MS);
+                    if (bucketOverlapMs <= 0) continue;
+                    const fraction = bucketOverlapMs / overlapSpanMs;
+                    const activeSlice = clip.activeSeconds * fraction;
+                    const hour = new Date(hourStartMs).getHours();
+                    if (category === 'productive') {
+                        hourlyProductive.set(hour, (hourlyProductive.get(hour) ?? 0) + activeSlice);
+                    } else if (category === 'frivolity' || category === 'draining') {
+                        hourlyFrivolity.set(hour, (hourlyFrivolity.get(hour) ?? 0) + activeSlice);
+                    }
+                }
             }
         }
 
@@ -523,7 +613,7 @@ export class AnalyticsService {
         });
 
         // Calculate productivity score (0-100)
-        const totalCategorized = categoryTotals.productive + categoryTotals.neutral + categoryTotals.frivolity;
+        const totalCategorized = categoryTotals.productive + categoryTotals.neutral + categoryTotals.frivolity + categoryTotals.draining;
         const productivityScore = totalCategorized > 0
             ? Math.round((categoryTotals.productive / totalCategorized) * 100)
             : 50;
@@ -550,17 +640,19 @@ export class AnalyticsService {
 
         // Generate insights
         const insights = this.generateInsights(categoryTotals, peakProductiveHour, riskHour, focusTrend);
+        const deepWorkSeconds = this.computeDeepWork(rangeStart, new Date().toISOString());
 
         return {
             periodDays: days,
             totalActiveHours: Math.round((totalActive / 3600) * 10) / 10,
             productivityScore,
+            deepWorkSeconds,
             topEngagementDomain: topDomain,
             focusTrend,
             peakProductiveHour,
             riskHour,
-            avgSessionLength: activities.length > 0 ? Math.round(totalActive / activities.length) : 0,
-            totalSessions: activities.length,
+            avgSessionLength: sessionCount > 0 ? Math.round(totalActive / sessionCount) : 0,
+            totalSessions: sessionCount,
             categoryBreakdown: categoryTotals,
             insights,
         };
@@ -574,8 +666,11 @@ export class AnalyticsService {
         const msPerUnit = granularity === 'hour' ? 3600000 : granularity === 'day' ? 86400000 : 604800000;
         const bucketCount = granularity === 'hour' ? 24 : granularity === 'day' ? 30 : 12;
 
-        const rangeStart = new Date(now - bucketCount * msPerUnit).toISOString();
-        const activities = this.activitiesInRangeStmt.all(rangeStart) as ActivityRow[];
+        const rangeStartMs = now - bucketCount * msPerUnit;
+        const rangeEndMs = now;
+        const rangeStart = new Date(rangeStartMs).toISOString();
+        const rangeEnd = new Date(rangeEndMs).toISOString();
+        const activities = this.activitiesInRangeStmt.all(rangeEnd, rangeStart) as ActivityRow[];
 
         // Initialize buckets
         const buckets: TrendPoint[] = [];
@@ -594,6 +689,7 @@ export class AnalyticsService {
                 neutral: 0,
                 frivolity: 0,
                 idle: 0,
+                deepWork: 0,
                 engagement: 0,
                 qualityScore: 0,
             });
@@ -601,19 +697,56 @@ export class AnalyticsService {
 
         // Populate buckets
         for (const activity of activities) {
-            const activityTime = new Date(activity.startedAt).getTime();
-            const bucketIndex = Math.floor((activityTime - (now - bucketCount * msPerUnit)) / msPerUnit);
+            const clip = this.clipActivity(activity, rangeStartMs, rangeEndMs);
+            if (!clip) continue;
+            const overlapSpanMs = clip.overlapEndMs - clip.overlapStartMs;
+            if (overlapSpanMs <= 0) continue;
 
-            if (bucketIndex >= 0 && bucketIndex < bucketCount) {
-                const bucket = buckets[bucketIndex];
-                const suppressed = this.shouldSuppress(activity.domain, activity.appName);
-                const category = suppressed ? 'neutral' : (activity.category ?? 'neutral');
+            const suppressed = this.shouldSuppress(activity.domain, activity.appName);
+            const category = suppressed ? 'neutral' : (activity.category ?? 'neutral');
 
-                if (category === 'productive') bucket.productive += activity.secondsActive;
-                else if (category === 'frivolity') bucket.frivolity += activity.secondsActive;
-                else bucket.neutral += activity.secondsActive;
+            const startIdx = Math.max(0, Math.floor((clip.overlapStartMs - rangeStartMs) / msPerUnit));
+            const endIdx = Math.min(bucketCount - 1, Math.floor((clip.overlapEndMs - 1 - rangeStartMs) / msPerUnit));
+            for (let idx = startIdx; idx <= endIdx; idx += 1) {
+                const bucketStart = rangeStartMs + idx * msPerUnit;
+                const bucketEnd = bucketStart + msPerUnit;
+                const bucketOverlapMs = overlapMs(clip.overlapStartMs, clip.overlapEndMs, bucketStart, bucketEnd);
+                if (bucketOverlapMs <= 0) continue;
+                const fraction = bucketOverlapMs / overlapSpanMs;
+                const activeSlice = clip.activeSeconds * fraction;
+                const idleSlice = clip.idleSeconds * fraction;
 
-                bucket.idle += activity.idleSeconds;
+                const bucket = buckets[idx];
+                if (category === 'productive') bucket.productive += activeSlice;
+                else if (category === 'frivolity' || category === 'draining') bucket.frivolity += activeSlice;
+                else bucket.neutral += activeSlice;
+                bucket.idle += idleSlice;
+            }
+        }
+
+        // Overlay deep work onto trend buckets
+        const deepWorkSessions = this.pomodorosInRangeStmt.all(rangeStart, new Date().toISOString()) as Array<{
+            startedAt: string;
+            endedAt: string | null;
+            plannedDurationSec: number;
+        }>;
+        for (const session of deepWorkSessions) {
+            const startMs = new Date(session.startedAt).getTime();
+            const plannedEnd = startMs + Math.max(0, session.plannedDurationSec) * 1000;
+            const rawEnd = session.endedAt ? new Date(session.endedAt).getTime() : Date.now();
+            const endMs = Math.min(plannedEnd, rawEnd, rangeEndMs);
+            const clippedStart = Math.max(startMs, rangeStartMs);
+            const clippedEnd = Math.max(clippedStart, endMs);
+            if (clippedEnd <= clippedStart) continue;
+            const startBucket = Math.max(0, Math.floor((clippedStart - rangeStartMs) / msPerUnit));
+            const endBucket = Math.min(bucketCount - 1, Math.floor((clippedEnd - rangeStartMs) / msPerUnit));
+            for (let idx = startBucket; idx <= endBucket; idx += 1) {
+                const bucketStart = rangeStartMs + idx * msPerUnit;
+                const bucketEnd = bucketStart + msPerUnit;
+                const overlap = Math.min(clippedEnd, bucketEnd) - Math.max(clippedStart, bucketStart);
+                if (overlap > 0) {
+                    buckets[idx].deepWork += Math.round(overlap / 1000);
+                }
             }
         }
 
@@ -652,7 +785,8 @@ export class AnalyticsService {
         insights.push(`🎯 Your peak focus hour is ${formatHour(peakHour)} — schedule deep work here`);
 
         // Risk hour insight
-        if (categories.frivolity > categories.productive * 0.3) {
+        const distraction = categories.frivolity + (categories.draining ?? 0);
+        if (distraction > categories.productive * 0.3) {
             insights.push(`⚠️ ${formatHour(riskHour)} is your highest risk hour for distraction`);
         }
 
@@ -664,20 +798,42 @@ export class AnalyticsService {
         }
 
         // Idle insight
-        const totalActive = categories.productive + categories.neutral + categories.frivolity;
+        const totalActive = categories.productive + categories.neutral + categories.frivolity + (categories.draining ?? 0);
         const idleRatio = categories.idle / (totalActive + categories.idle);
         if (idleRatio > 0.3) {
             insights.push(`💤 ${Math.round(idleRatio * 100)}% idle time detected — are you stepping away often?`);
         }
 
         // Frivolity insight
-        const frivolityRatio = categories.frivolity / Math.max(1, totalActive);
-        if (frivolityRatio > 0.25) {
-            insights.push(`🔴 ${Math.round(frivolityRatio * 100)}% frivolity — that's higher than average`);
-        } else if (frivolityRatio < 0.1) {
-            insights.push(`✨ Only ${Math.round(frivolityRatio * 100)}% frivolity — excellent discipline!`);
+        const distractionRatio = distraction / Math.max(1, totalActive);
+        if (distractionRatio > 0.25) {
+            insights.push(`🔴 ${Math.round(distractionRatio * 100)}% distraction (frivolous + draining) — that's higher than average`);
+        } else if (distractionRatio < 0.1) {
+            insights.push(`✨ Only ${Math.round(distractionRatio * 100)}% distraction — excellent discipline!`);
         }
 
         return insights.slice(0, 5);
+    }
+
+    private computeDeepWork(rangeStartIso: string, rangeEndIso: string): number {
+        const sessions = this.pomodorosInRangeStmt.all(rangeStartIso, rangeEndIso) as Array<{
+            startedAt: string;
+            endedAt: string | null;
+            plannedDurationSec: number;
+        }>;
+        const rangeStartMs = new Date(rangeStartIso).getTime();
+        const rangeEndMs = new Date(rangeEndIso).getTime();
+        let total = 0;
+        for (const row of sessions) {
+            const startMs = new Date(row.startedAt).getTime();
+            const plannedEnd = startMs + Math.max(0, row.plannedDurationSec) * 1000;
+            const rawEnd = row.endedAt ? new Date(row.endedAt).getTime() : Date.now();
+            const endMs = Math.min(plannedEnd, rawEnd, rangeEndMs);
+            const clippedStart = Math.max(startMs, rangeStartMs);
+            const clippedEnd = Math.max(clippedStart, endMs);
+            if (clippedEnd <= clippedStart) continue;
+            total += Math.round((clippedEnd - clippedStart) / 1000);
+        }
+        return total;
     }
 }

@@ -67,6 +67,7 @@ type RollupRow = {
   productive: number;
   neutral: number;
   frivolity: number;
+  draining: number;
   idle: number;
   updated_at: string;
 };
@@ -262,7 +263,7 @@ export class SyncService {
       id: created.id,
       userId: profile.id,
       handle: profile.handle,
-      displayName: profile.display_name,
+      displayName: profile.displayName,
       direction: 'outgoing',
       status: created.status,
       createdAt: created.created_at
@@ -449,7 +450,7 @@ export class SyncService {
     const sinceIso = new Date(now.getTime() - rangeHours * 60 * 60 * 1000).toISOString();
     const { data: rollups, error: rollupError } = await this.supabase
       .from('activity_rollups')
-      .select('device_id, hour_start, productive, neutral, frivolity, idle, updated_at')
+      .select('device_id, hour_start, productive, neutral, frivolity, draining, idle, updated_at')
       .in('device_id', deviceIds)
       .gte('hour_start', sinceIso);
     if (rollupError || !rollups) return {};
@@ -483,7 +484,8 @@ export class SyncService {
           updatedAt: row.updated_at,
           periodHours: rangeHours,
           totalActiveSeconds: 0,
-          categoryBreakdown: { productive: 0, neutral: 0, frivolity: 0, idle: 0 },
+          categoryBreakdown: { productive: 0, neutral: 0, frivolity: 0, draining: 0, idle: 0 },
+          deepWorkSeconds: 0,
           productivityScore: 0,
           emergencySessions: 0
         };
@@ -492,8 +494,10 @@ export class SyncService {
       summary.categoryBreakdown.productive += row.productive;
       summary.categoryBreakdown.neutral += row.neutral;
       summary.categoryBreakdown.frivolity += row.frivolity;
+      summary.categoryBreakdown.draining += row.draining;
       summary.categoryBreakdown.idle += row.idle;
-      summary.totalActiveSeconds += row.productive + row.neutral + row.frivolity;
+      summary.totalActiveSeconds += row.productive + row.neutral + row.frivolity + row.draining;
+      summary.deepWorkSeconds += 0;
       if (row.updated_at > summary.updatedAt) {
         summary.updatedAt = row.updated_at;
       }
@@ -543,15 +547,19 @@ export class SyncService {
       productive: 0,
       neutral: 0,
       frivolity: 0,
+      draining: 0,
       idle: 0
     };
+    let deepWorkSeconds = 0;
     let updatedAt = sinceIso;
 
     for (const row of rollups as RollupRow[]) {
       totalsByCategory.productive += row.productive;
       totalsByCategory.neutral += row.neutral;
       totalsByCategory.frivolity += row.frivolity;
+      totalsByCategory.draining += row.draining;
       totalsByCategory.idle += row.idle;
+      deepWorkSeconds += 0;
       if (row.updated_at > updatedAt) updatedAt = row.updated_at;
 
       const index = timelineIndex.get(row.hour_start);
@@ -560,6 +568,7 @@ export class SyncService {
         slot.productive += row.productive;
         slot.neutral += row.neutral;
         slot.frivolity += row.frivolity;
+        slot.draining += row.draining;
         slot.idle += row.idle;
       }
     }
@@ -568,7 +577,7 @@ export class SyncService {
       const counts: Array<{ key: FriendTimelinePoint['dominant']; value: number }> = [
         { key: 'productive', value: slot.productive },
         { key: 'neutral', value: slot.neutral },
-        { key: 'frivolity', value: slot.frivolity },
+        { key: 'frivolity', value: slot.frivolity + slot.draining },
         { key: 'idle', value: slot.idle }
       ];
       const dominant = counts.reduce((prev, curr) => (curr.value > prev.value ? curr : prev), counts[0]);
@@ -580,6 +589,7 @@ export class SyncService {
       windowHours: rangeHours,
       updatedAt,
       totalsByCategory,
+      deepWorkSeconds,
       timeline
     };
   }
@@ -617,6 +627,7 @@ export class SyncService {
         } else {
           console.log('[auth] exchangeCodeForSession success');
           this.lastError = null;
+          await this.syncNow();
         }
       } else {
         console.warn('[auth] No code param in callback URL');
@@ -973,8 +984,9 @@ export class SyncService {
     if (!this.supabase) return;
     const state = this.getSyncState();
     const since = state.lastRollupSyncAt ?? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const refreshWindowStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const nowIso = new Date().toISOString();
-    const localRollups = this.backend.activityRollups.generateLocalRollups(deviceId, since, nowIso);
+    const localRollups = this.backend.activityRollups.generateLocalRollups(deviceId, refreshWindowStart, nowIso);
     if (localRollups.length) {
       const payload = localRollups.map((rollup) => ({
         device_id: rollup.deviceId,
@@ -982,6 +994,7 @@ export class SyncService {
         productive: rollup.productive,
         neutral: rollup.neutral,
         frivolity: rollup.frivolity,
+        draining: rollup.draining,
         idle: rollup.idle,
         updated_at: rollup.updatedAt
       }));
@@ -996,7 +1009,7 @@ export class SyncService {
 
     const { data, error } = await this.supabase
       .from('activity_rollups')
-      .select('device_id, hour_start, productive, neutral, frivolity, idle, updated_at')
+      .select('device_id, hour_start, productive, neutral, frivolity, draining, idle, updated_at')
       .gt('updated_at', since)
       .order('updated_at', { ascending: true });
     if (error) throw error;
@@ -1006,6 +1019,7 @@ export class SyncService {
       productive: row.productive,
       neutral: row.neutral,
       frivolity: row.frivolity,
+      draining: row.draining ?? 0,
       idle: row.idle,
       updatedAt: row.updated_at
     }));
@@ -1110,6 +1124,17 @@ export class SyncService {
     this.setSyncState(state);
   }
 
+  async resetWalletRemote() {
+    if (!this.supabase || !this.configured) return;
+    const { data } = await this.supabase.auth.getSession();
+    const user = data.session?.user;
+    if (!user) return;
+    await this.supabase.from('wallet_transactions').delete().eq('user_id', user.id);
+    const state = this.getSyncState();
+    state.lastWalletSyncAt = undefined;
+    this.setSyncState(state);
+  }
+
   async resetAllRemote() {
     if (!this.supabase || !this.configured) return;
     const { data } = await this.supabase.auth.getSession();
@@ -1146,6 +1171,7 @@ function buildHourTimeline(startIso: string, hours: number): FriendTimelinePoint
       productive: 0,
       neutral: 0,
       frivolity: 0,
+      draining: 0,
       idle: 0,
       dominant: 'idle'
     });

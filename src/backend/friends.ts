@@ -145,6 +145,7 @@ export class FriendsService extends EventEmitter {
       periodDays: overview.periodDays,
       totalActiveHours: overview.totalActiveHours,
       productivityScore: overview.productivityScore,
+      deepWorkSeconds: overview.deepWorkSeconds,
       categoryBreakdown: overview.categoryBreakdown,
       focusTrend: overview.focusTrend,
       peakProductiveHour: overview.peakProductiveHour,
@@ -213,4 +214,3 @@ export class FriendsService extends EventEmitter {
     return cache;
   }
 }
-

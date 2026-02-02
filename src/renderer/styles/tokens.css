@@ -1,53 +1,72 @@
 /* ============================================================================
    TimeWellSpent — Design Tokens
    Core variables for the visual design system
-   Aesthetic: Mid-century skeletal tech meets modern precision
+   Aesthetic: Dreamy pastel lavender with retro terminal vibes
    ============================================================================ */
 
 :root {
     color-scheme: dark;
 
-    /* Typography */
-    --font-mono: 'JetBrains Mono', 'Berkeley Mono', 'SF Mono', monospace;
-    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    /* Typography — Retro tech monospace feel */
+    --font-mono: 'IBM Plex Mono', 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+    --font-sans: 'IBM Plex Sans', 'Inter', -apple-system, system-ui, sans-serif;
 
-    font-family: var(--font-sans);
+    font-family: var(--font-mono);
     line-height: 1.6;
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 400;
     -webkit-font-smoothing: antialiased;
+    letter-spacing: 0.02em;
 
-    /* Core Palette — Warm neutrals with copper accent */
-    --bg-base: #0a0a0b;
-    --bg-raised: #111113;
-    --bg-surface: #18181b;
-    --bg-elevated: #1f1f23;
+    /* Core Palette — Dreamy pastel lavender (lightened) */
+    --bg-base: #262040;
+    --bg-raised: #312a4a;
+    --bg-surface: #3c3558;
+    --bg-elevated: #484066;
 
-    --fg: #e8e4df;
-    --fg-muted: #8a8680;
-    --fg-subtle: #5c5955;
+    --fg: #ebe5f5;
+    --fg-muted: #b5adc8;
+    --fg-subtle: #847b99;
 
-    /* Accent — Oxidized copper */
-    --accent: #c8956c;
-    --accent-muted: rgba(200, 149, 108, 0.15);
-    --accent-strong: #daa06d;
+    /* Accent — Bright pastel lavender */
+    --accent: #d4c4ff;
+    --accent-muted: rgba(212, 196, 255, 0.2);
+    --accent-strong: #e8e0ff;
 
-    /* Semantic Colors */
-    --cat-productive: #7eb88c;
-    --cat-neutral: #9b9da3;
-    --cat-frivolity: #d4a574;
-    --cat-idle: #4a4a50;
+    /* Secondary accents — Vibrant complementary pastels */
+    --accent-rose: #ffb8e0;
+    --accent-mint: #b8ffe0;
+    --accent-peach: #ffd8b8;
+    --accent-sky: #b8e0ff;
 
-    --success: #7eb88c;
-    --warning: #d4a574;
-    --danger: #c77171;
+    /* Lock-in gold (preserved radiant gold) */
+    --lockin-gold: #f6c452;
+    --lockin-gold-light: #ffd970;
+    --lockin-gold-dark: #c99a2e;
 
-    /* Borders & Shadows */
-    --border: rgba(255, 255, 255, 0.06);
-    --border-strong: rgba(255, 255, 255, 0.12);
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
-    --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.6);
+    /* Semantic Colors — Vibrant pastels */
+    --cat-productive: #a8f0c0;
+    --cat-neutral: #a8d0f0;
+    --cat-frivolity: #f0d0a8;
+    --cat-draining: #e9b07a;
+    --cat-idle: #4a4560;
+
+    --success: #a8f0c0;
+    --warning: #f0d0a8;
+    --danger: #f0a8a8;
+
+    /* Borders & Shadows — Lavender glow */
+    --border: rgba(212, 196, 255, 0.15);
+    --border-strong: rgba(212, 196, 255, 0.3);
+    --shadow-sm: 0 1px 2px rgba(30, 26, 46, 0.4);
+    --shadow-md: 0 4px 12px rgba(30, 26, 46, 0.5);
+    --shadow-lg: 0 12px 40px rgba(30, 26, 46, 0.6);
+    --shadow: var(--shadow-lg);
+
+    /* Surfaces */
+    --panel: var(--bg-raised);
+    --panel-border: var(--border);
+    --border-color: var(--border);
 
     /* Transitions */
     --ease-out: cubic-bezier(0.16, 1, 0.3, 1);

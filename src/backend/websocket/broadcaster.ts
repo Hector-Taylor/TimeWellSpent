@@ -4,6 +4,7 @@ import type { EconomyEngine } from '../economy';
 import type { PaywallManager } from '../paywall';
 import type { WalletManager } from '../wallet';
 import type { FocusService } from '../focus';
+import type { PomodoroService } from '../pomodoro';
 import type { LibraryService } from '../library';
 import type { EmergencyService } from '../emergency';
 import { logger } from '@shared/logger';
@@ -15,6 +16,7 @@ export type WebSocketBroadcasterContext = {
     paywall: PaywallManager;
     wallet: WalletManager;
     focus: FocusService;
+    pomodoro: PomodoroService;
     library: LibraryService;
     emergency: EmergencyService;
     handleActivity: (event: ActivityEvent & { idleSeconds?: number }, origin?: ActivityOrigin) => void;
@@ -28,6 +30,7 @@ export class WebSocketBroadcaster extends EventEmitter {
         super();
         this.setupEconomyListeners();
         this.setupFocusListeners();
+        this.setupPomodoroListeners();
         this.setupLibraryListeners();
     }
 
@@ -48,6 +51,15 @@ export class WebSocketBroadcaster extends EventEmitter {
         focus.on('tick', (payload) => this.broadcast({ type: 'focus-tick', payload }));
         focus.on('start', (payload) => this.broadcast({ type: 'focus-start', payload }));
         focus.on('stop', (payload) => this.broadcast({ type: 'focus-stop', payload }));
+    }
+
+    private setupPomodoroListeners() {
+        const { pomodoro } = this.ctx;
+        pomodoro.on('tick', (payload) => this.broadcast({ type: 'pomodoro-tick', payload }));
+        pomodoro.on('start', (payload) => this.broadcast({ type: 'pomodoro-start', payload }));
+        pomodoro.on('stop', (payload) => this.broadcast({ type: 'pomodoro-stop', payload }));
+        pomodoro.on('override', (payload) => this.broadcast({ type: 'pomodoro-override', payload }));
+        pomodoro.on('block', (payload) => this.broadcast({ type: 'pomodoro-block', payload }));
     }
 
     private setupLibraryListeners() {
@@ -89,7 +101,7 @@ export class WebSocketBroadcaster extends EventEmitter {
     }
 
     private handleMessage(data: any, socket: WebSocket) {
-        const { economy, paywall, handleActivity, emergency } = this.ctx;
+        const { economy, paywall, handleActivity, emergency, pomodoro } = this.ctx;
 
         if (data.type === 'activity' && data.payload) {
             logger.info('Received activity from extension:', data.payload.domain);
@@ -159,6 +171,31 @@ export class WebSocketBroadcaster extends EventEmitter {
                 this.broadcast({ type: 'paywall-session-started', payload: session });
             } catch (error) {
                 logger.error('Failed to start store session from extension', error);
+                socket.send(JSON.stringify({ type: 'error', payload: { message: (error as Error).message } }));
+            }
+        } else if (data.type === 'pomodoro:block' && data.payload?.target && data.payload?.kind) {
+            try {
+                pomodoro.recordBlock({
+                    target: String(data.payload.target),
+                    kind: data.payload.kind === 'app' ? 'app' : 'site',
+                    reason: data.payload.reason === 'override-expired' || data.payload.reason === 'verification-failed' ? data.payload.reason : 'not-allowlisted',
+                    remainingMs: typeof data.payload.remainingMs === 'number' ? data.payload.remainingMs : undefined,
+                    mode: pomodoro.status()?.mode ?? 'strict'
+                });
+            } catch (error) {
+                logger.error('Failed to record pomodoro block', error);
+            }
+        } else if (data.type === 'pomodoro:grant-override' && data.payload?.target && data.payload?.kind) {
+            try {
+                const session = pomodoro.grantOverride({
+                    target: String(data.payload.target),
+                    kind: data.payload.kind === 'app' ? 'app' : 'site',
+                    durationSec: typeof data.payload.durationSec === 'number' ? data.payload.durationSec : undefined
+                });
+                if (session) {
+                    this.broadcast({ type: 'pomodoro-override', payload: { sessionId: session.id, overrides: session.overrides } });
+                }
+            } catch (error) {
                 socket.send(JSON.stringify({ type: 'error', payload: { message: (error as Error).message } }));
             }
         }

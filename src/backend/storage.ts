@@ -57,6 +57,33 @@ export class Database {
         multiplier REAL DEFAULT 1.0
       );
 
+      CREATE TABLE IF NOT EXISTS pomodoro_sessions (
+        id TEXT PRIMARY KEY,
+        mode TEXT CHECK(mode IN ('strict','soft')) NOT NULL,
+        state TEXT CHECK(state IN ('active','paused','break','ended')) NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        planned_duration_sec INTEGER NOT NULL,
+        break_duration_sec INTEGER NOT NULL DEFAULT 0,
+        temporary_unlock_sec INTEGER NOT NULL DEFAULT 300,
+        allowlist_json TEXT NOT NULL,
+        overrides_json TEXT NOT NULL DEFAULT '[]',
+        preset_id TEXT,
+        completed_reason TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS pomodoro_block_events (
+        id INTEGER PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        target TEXT NOT NULL,
+        target_type TEXT CHECK(target_type IN ('app','site')) NOT NULL,
+        reason TEXT NOT NULL,
+        remaining_ms INTEGER,
+        mode TEXT CHECK(mode IN ('strict','soft')) NOT NULL,
+        meta TEXT
+      );
+
       CREATE TABLE IF NOT EXISTS intentions (
         id INTEGER PRIMARY KEY,
         date TEXT NOT NULL,
@@ -134,6 +161,7 @@ export class Database {
         productive INTEGER NOT NULL,
         neutral INTEGER NOT NULL,
         frivolity INTEGER NOT NULL,
+        draining INTEGER NOT NULL DEFAULT 0,
         idle INTEGER NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(device_id, hour_start)
@@ -154,6 +182,8 @@ export class Database {
       CREATE INDEX IF NOT EXISTS idx_activity_rollups_device ON activity_rollups(device_id);
       CREATE INDEX IF NOT EXISTS idx_activity_rollups_hour ON activity_rollups(hour_start);
       CREATE INDEX IF NOT EXISTS idx_trophies_earned_at ON trophies(earned_at);
+      CREATE INDEX IF NOT EXISTS idx_pomodoro_block_session ON pomodoro_block_events(session_id);
+      CREATE INDEX IF NOT EXISTS idx_pomodoro_sessions_state ON pomodoro_sessions(state);
 
       -- Granular behavioral events captured by extension
       CREATE TABLE IF NOT EXISTS behavior_events (
@@ -313,6 +343,14 @@ export class Database {
       } catch (error) {
         logger.warn('Failed to migrate store_items into library_items', error);
       }
+    }
+
+    // Migration: add draining column to activity_rollups
+    const rollupInfo = this.driver.prepare("PRAGMA table_info(activity_rollups)").all() as Array<{ name: string }>;
+    const hasDraining = rollupInfo.some(c => c.name === 'draining');
+    if (!hasDraining) {
+      logger.info('Migrating database: Adding draining to activity_rollups');
+      this.driver.exec("ALTER TABLE activity_rollups ADD COLUMN draining INTEGER NOT NULL DEFAULT 0");
     }
 
     // Migration: Add analytics tables for existing databases

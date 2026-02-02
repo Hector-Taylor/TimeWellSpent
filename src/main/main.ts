@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import path from 'node:path';
 import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, Notification, nativeTheme, dialog } from 'electron';
 import { createBackend } from '@backend/server';
@@ -16,6 +17,7 @@ let stopWatcher: (() => void) | null = null;
 let lastTrayLabel = 'TimeWellSpent';
 let syncService: SyncService | null = null;
 let pendingAuthUrl: string | null = null;
+let pomodoroSessionState: { sessionId: string; startBalance: number; plannedMinutes: number } | null = null;
 
 async function createWindow() {
   mainWindow = new BrowserWindow({
@@ -151,10 +153,12 @@ async function bootstrap() {
           updatedAt: new Date().toISOString(),
           periodHours: summary.windowHours,
           totalActiveSeconds: summary.totalSeconds,
+          deepWorkSeconds: summary.deepWorkSeconds,
           categoryBreakdown: {
             productive: summary.totalsByCategory.productive ?? 0,
             neutral: summary.totalsByCategory.neutral ?? 0,
             frivolity: summary.totalsByCategory.frivolity ?? 0,
+            draining: (summary.totalsByCategory as any).draining ?? 0,
             idle: summary.totalsByCategory.idle ?? 0
           },
           productivityScore: summary.totalSeconds > 0
@@ -358,6 +362,63 @@ async function bootstrap() {
     updateTray(`💰 ${balance}`);
     buildTrayMenu();
   });
+
+  backend.pomodoro.on('start', (payload) => {
+    emitToRenderers('pomodoro:start', payload);
+    pomodoroSessionState = {
+      sessionId: payload.id,
+      startBalance: backend.wallet.getSnapshot().balance,
+      plannedMinutes: Math.max(1, Math.round(payload.plannedDurationSec / 60))
+    };
+    const minutes = Math.max(1, Math.ceil(payload.remainingMs / 1000 / 60));
+    updateTray(`🎯 ${minutes}m`);
+    buildTrayMenu();
+  });
+  backend.pomodoro.on('tick', (payload) => {
+    emitToRenderers('pomodoro:tick', payload);
+    const minutes = Math.max(0, Math.ceil(payload.remainingMs / 1000 / 60));
+    updateTray(`🎯 ${minutes}m`);
+    buildTrayMenu();
+  });
+  backend.pomodoro.on('stop', (payload) => {
+    emitToRenderers('pomodoro:stop', payload);
+    const balance = backend.wallet.getSnapshot().balance;
+    const durationMin = Math.max(1, Math.round((payload.plannedDurationSec ?? 0) / 60));
+    const baseline = pomodoroSessionState;
+    pomodoroSessionState = null;
+
+    if (payload.completedReason === 'completed') {
+      const bonus = Math.max(1, Math.round(durationMin * 5));
+      const snapshot = backend.wallet.earn(bonus, { type: 'pomodoro-bonus', sessionId: payload.id, plannedMinutes: durationMin });
+      new Notification({
+        title: 'Nice work!',
+        body: `You earned ${bonus} coins for your focused session. Balance: ${snapshot.balance}`
+      }).show();
+    } else if (baseline) {
+      const delta = balance - baseline.startBalance;
+      if (delta > 0) {
+        const snapshot = backend.wallet.adjust(-delta, { type: 'pomodoro-forfeit', sessionId: payload.id, plannedMinutes: baseline.plannedMinutes });
+        new Notification({
+          title: 'Focus broken',
+          body: `Coins earned during this session were forfeited. Balance: ${snapshot.balance}`
+        }).show();
+      }
+    }
+
+    updateTray(`💰 ${backend.wallet.getSnapshot().balance}`);
+    buildTrayMenu();
+  });
+  backend.pomodoro.on('override', (payload) => emitToRenderers('pomodoro:override', payload));
+  backend.pomodoro.on('block', (payload) => {
+    emitToRenderers('pomodoro:block', payload);
+    new Notification({
+      title: 'Stay focused',
+      body: `${payload.target} is blocked during deep work.`
+    }).show();
+  });
+  backend.pomodoro.on('pause', (payload) => emitToRenderers('pomodoro:pause', payload));
+  backend.pomodoro.on('resume', (payload) => emitToRenderers('pomodoro:resume', payload));
+  backend.pomodoro.on('break', (payload) => emitToRenderers('pomodoro:break', payload));
 
   backend.economy.on('wallet-updated', (payload) => {
     emitToRenderers('wallet:update', payload);

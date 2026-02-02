@@ -41,11 +41,12 @@ export function createSettingsRoutes(ctx: SettingsRoutesContext): Router {
 
     router.post('/categorisation', (req, res) => {
         try {
-            const payload = req.body as { productive?: string[]; neutral?: string[]; frivolity?: string[] };
+            const payload = req.body as { productive?: string[]; neutral?: string[]; frivolity?: string[]; draining?: string[] };
             const next = {
                 productive: Array.isArray(payload.productive) ? payload.productive : [],
                 neutral: Array.isArray(payload.neutral) ? payload.neutral : [],
-                frivolity: Array.isArray(payload.frivolity) ? payload.frivolity : []
+                frivolity: Array.isArray(payload.frivolity) ? payload.frivolity : [],
+                draining: Array.isArray(payload.draining) ? payload.draining : []
             };
             settings.setCategorisation(next);
             res.json({ ok: true });
@@ -69,16 +70,22 @@ export function createSettingsRoutes(ctx: SettingsRoutesContext): Router {
         res.json({
             productiveRatePerMin: settings.getProductiveRatePerMin(),
             neutralRatePerMin: settings.getNeutralRatePerMin(),
-            spendIntervalSeconds: settings.getSpendIntervalSeconds()
+            drainingRatePerMin: settings.getDrainingRatePerMin(),
+            spendIntervalSeconds: settings.getSpendIntervalSeconds(),
+            sessionFadeSeconds: settings.getSessionFadeSeconds(),
+            dailyWalletResetEnabled: settings.getDailyWalletResetEnabled()
         });
     });
 
     router.post('/economy-rates', (req, res) => {
         try {
-            const { productiveRatePerMin, neutralRatePerMin, spendIntervalSeconds } = req.body as {
+            const { productiveRatePerMin, neutralRatePerMin, drainingRatePerMin, spendIntervalSeconds, sessionFadeSeconds, dailyWalletResetEnabled } = req.body as {
                 productiveRatePerMin?: number;
                 neutralRatePerMin?: number;
+                drainingRatePerMin?: number;
                 spendIntervalSeconds?: number;
+                sessionFadeSeconds?: number;
+                dailyWalletResetEnabled?: boolean;
             };
             if (productiveRatePerMin !== undefined) {
                 settings.setProductiveRatePerMin(productiveRatePerMin);
@@ -86,8 +93,17 @@ export function createSettingsRoutes(ctx: SettingsRoutesContext): Router {
             if (neutralRatePerMin !== undefined) {
                 settings.setNeutralRatePerMin(neutralRatePerMin);
             }
+            if (drainingRatePerMin !== undefined) {
+                settings.setDrainingRatePerMin(drainingRatePerMin);
+            }
             if (spendIntervalSeconds !== undefined) {
                 settings.setSpendIntervalSeconds(spendIntervalSeconds);
+            }
+            if (sessionFadeSeconds !== undefined) {
+                settings.setSessionFadeSeconds(sessionFadeSeconds);
+            }
+            if (dailyWalletResetEnabled !== undefined) {
+                settings.setDailyWalletResetEnabled(Boolean(dailyWalletResetEnabled));
             }
             res.json({ ok: true });
         } catch (error) {
@@ -105,11 +121,12 @@ export type ExtensionSyncContext = {
     paywall: PaywallManager;
     library: LibraryService;
     consumption: ConsumptionLogService;
+    pomodoro?: import('../pomodoro').PomodoroService;
 };
 
 export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
     const router = Router();
-    const { settings, market, wallet, paywall, library, consumption } = ctx;
+    const { settings, market, wallet, paywall, library, consumption, pomodoro } = ctx;
 
     router.get('/state', (_req, res) => {
         try {
@@ -161,16 +178,21 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
                     const ts = Date.parse(latest.occurredAt);
                     return Number.isFinite(ts) ? ts : null;
                 })(),
+                pomodoro: pomodoro ? pomodoro.status() : null,
                 settings: {
                     frivolityDomains: categorisation.frivolity,
                     productiveDomains: categorisation.productive,
                     neutralDomains: categorisation.neutral,
+                    drainingDomains: categorisation.draining,
                     idleThreshold: settings.getIdleThreshold(),
                     emergencyPolicy: settings.getEmergencyPolicy(),
                     economyExchangeRate: settings.getEconomyExchangeRate(),
                     journal: settings.getJournalConfig(),
                     peekEnabled: peekConfig.enabled,
                     peekAllowNewPages: peekConfig.allowOnNewPages
+                    ,
+                    sessionFadeSeconds: settings.getSessionFadeSeconds(),
+                    dailyWalletResetEnabled: settings.getDailyWalletResetEnabled()
                 },
                 sessions: sessionsRecord
             });

@@ -6,7 +6,7 @@ type Props = {
   variant?: 'page' | 'settings';
 };
 
-type DomainCategory = 'productive' | 'neutral' | 'frivolous';
+type DomainCategory = 'productive' | 'neutral' | 'frivolous' | 'draining';
 
 function normaliseDomain(raw: string) {
   const trimmed = raw.trim().toLowerCase();
@@ -60,11 +60,12 @@ export default function Domains({ api, variant = 'page' }: Props) {
   }, [load]);
 
   const totals = useMemo(() => {
-    if (!config) return { productive: 0, neutral: 0, frivolity: 0 };
+    if (!config) return { productive: 0, neutral: 0, frivolity: 0, draining: 0 };
     return {
       productive: config.productive.length,
       neutral: config.neutral.length,
-      frivolity: config.frivolity.length
+      frivolity: config.frivolity.length,
+      draining: (config as any).draining?.length ?? 0
     };
   }, [config]);
 
@@ -95,12 +96,14 @@ export default function Domains({ api, variant = 'page' }: Props) {
     const productive = uniq(config.productive.filter((x) => normaliseDomain(x) !== d));
     const neutral = uniq(config.neutral.filter((x) => normaliseDomain(x) !== d));
     const frivolity = uniq(config.frivolity.filter((x) => normaliseDomain(x) !== d));
+    const draining = uniq(((config as any).draining ?? []).filter((x: string) => normaliseDomain(x) !== d));
 
     if (category === 'productive') productive.unshift(d);
     if (category === 'neutral') neutral.unshift(d);
     if (category === 'frivolous') frivolity.unshift(d);
+    if (category === 'draining') draining.unshift(d);
 
-    await saveConfig({ productive, neutral, frivolity });
+    await saveConfig({ productive, neutral, frivolity, draining });
   };
 
   const removeDomain = async (domain: string) => {
@@ -110,7 +113,8 @@ export default function Domains({ api, variant = 'page' }: Props) {
     await saveConfig({
       productive: config.productive.filter((x) => normaliseDomain(x) !== d),
       neutral: config.neutral.filter((x) => normaliseDomain(x) !== d),
-      frivolity: config.frivolity.filter((x) => normaliseDomain(x) !== d)
+      frivolity: config.frivolity.filter((x) => normaliseDomain(x) !== d),
+      draining: (config as any).draining?.filter((x: string) => normaliseDomain(x) !== d) ?? []
     });
   };
 
@@ -137,7 +141,7 @@ export default function Domains({ api, variant = 'page' }: Props) {
           <div>
             <h1>Domains</h1>
             <p className="subtle">
-              Keep this simple: <strong>productive</strong>, <strong>neutral</strong>, or <strong>frivolous</strong>.
+              Keep this simple: <strong>productive</strong>, <strong>neutral</strong>, <strong>draining</strong>, or <strong>frivolous</strong>.
               Idle is inferred automatically.
             </p>
           </div>
@@ -145,6 +149,7 @@ export default function Domains({ api, variant = 'page' }: Props) {
             <span className="pill ghost">{totals.productive} productive</span>
             <span className="pill ghost">{totals.neutral} neutral</span>
             <span className="pill ghost">{totals.frivolity} frivolous</span>
+            <span className="pill ghost">{totals.draining} draining</span>
           </div>
         </header>
       ) : (
@@ -152,7 +157,7 @@ export default function Domains({ api, variant = 'page' }: Props) {
           <div>
             <h2>Domains</h2>
             <p className="subtle">
-              Keep this simple: <strong>productive</strong>, <strong>neutral</strong>, or <strong>frivolous</strong>.
+              Keep this simple: <strong>productive</strong>, <strong>neutral</strong>, <strong>draining</strong>, or <strong>frivolous</strong>.
               Idle is inferred automatically.
             </p>
           </div>
@@ -160,6 +165,7 @@ export default function Domains({ api, variant = 'page' }: Props) {
             <span className="pill ghost">{totals.productive} productive</span>
             <span className="pill ghost">{totals.neutral} neutral</span>
             <span className="pill ghost">{totals.frivolity} frivolous</span>
+            <span className="pill ghost">{totals.draining} draining</span>
           </div>
         </div>
       )}
@@ -189,6 +195,7 @@ export default function Domains({ api, variant = 'page' }: Props) {
               <option value="productive">productive</option>
               <option value="neutral">neutral</option>
               <option value="frivolous">frivolous</option>
+              <option value="draining">draining</option>
             </select>
           </label>
           <button className="primary" type="button" disabled={saving} onClick={handleQuickAdd}>
@@ -223,6 +230,14 @@ export default function Domains({ api, variant = 'page' }: Props) {
           items={config.frivolity}
           onRemove={removeDomain}
           onMove={(domain) => setDomainCategory(domain, 'frivolous')}
+          disabled={saving}
+        />
+        <DomainList
+          title="Draining"
+          subtitle="Passively costs coins (no paywall)."
+          items={(config as any).draining ?? []}
+          onRemove={removeDomain}
+          onMove={(domain) => setDomainCategory(domain, 'draining')}
           disabled={saving}
         />
       </div>

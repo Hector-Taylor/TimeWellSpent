@@ -67,6 +67,7 @@ export default function FriendDetailModal({ open, friend, summary, timeline, tro
               <span className="cat-productive" style={{ width: `${percentOfTotal(totals, 'productive')}%` }} />
               <span className="cat-neutral" style={{ width: `${percentOfTotal(totals, 'neutral')}%` }} />
               <span className="cat-frivolity" style={{ width: `${percentOfTotal(totals, 'frivolity')}%` }} />
+              <span className="cat-draining" style={{ width: `${percentOfTotal(totals, 'draining')}%` }} />
               <span className="cat-idle" style={{ width: `${percentOfTotal(totals, 'idle')}%` }} />
             </div>
             <div className="friend-modal-break-row">
@@ -76,6 +77,10 @@ export default function FriendDetailModal({ open, friend, summary, timeline, tro
             <div className="friend-modal-break-row">
               <span>Frivolity</span>
               <span>{formatHoursFromSeconds(totals.frivolity)}</span>
+            </div>
+            <div className="friend-modal-break-row">
+              <span>Draining</span>
+              <span>{formatHoursFromSeconds(totals.draining ?? 0)}</span>
             </div>
             <div className="friend-modal-break-row">
               <span>Idle</span>
@@ -91,11 +96,12 @@ export default function FriendDetailModal({ open, friend, summary, timeline, tro
           </div>
           <div className="friend-modal-timeline-bars">
             {(timeline?.timeline ?? []).map((slot, idx) => {
-              const total = slot.productive + slot.neutral + slot.frivolity + slot.idle;
+              const total = slot.productive + slot.neutral + slot.frivolity + slot.draining + slot.idle;
               const height = total === 0 ? 8 : Math.max(12, Math.min(52, Math.round((total / maxTimeline(timeline)) * 52)));
+              const dominant = slot.dominant;
               return (
                 <div key={`${slot.start}-${idx}`} className="friend-modal-bar-col" title={`${slot.hour}`}>
-                  <span className={`friend-modal-bar-fill cat-${slot.dominant}`} style={{ height: `${height}px` }} />
+                  <span className={`friend-modal-bar-fill cat-${dominant}`} style={{ height: `${height}px` }} />
                 </div>
               );
             })}
@@ -108,10 +114,11 @@ export default function FriendDetailModal({ open, friend, summary, timeline, tro
 
 function percentOfTotal(
   totals: NonNullable<FriendTimeline['totalsByCategory']>,
-  key: 'productive' | 'neutral' | 'frivolity' | 'idle'
+  key: 'productive' | 'neutral' | 'frivolity' | 'draining' | 'idle'
 ) {
-  const total = totals.productive + totals.neutral + totals.frivolity + totals.idle;
-  return total > 0 ? Math.round((totals[key] / total) * 100) : 0;
+  const total = totals.productive + totals.neutral + totals.frivolity + (totals.draining ?? 0) + totals.idle;
+  const value = totals[key] ?? 0;
+  return total > 0 ? Math.round((value / total) * 100) : 0;
 }
 
 function formatHoursFromSeconds(seconds: number) {
@@ -121,5 +128,5 @@ function formatHoursFromSeconds(seconds: number) {
 
 function maxTimeline(timeline: FriendTimeline | null) {
   if (!timeline || timeline.timeline.length === 0) return 1;
-  return Math.max(...timeline.timeline.map((slot) => slot.productive + slot.neutral + slot.frivolity + slot.idle), 1);
+  return Math.max(...timeline.timeline.map((slot) => slot.productive + slot.neutral + slot.frivolity + slot.draining + slot.idle), 1);
 }

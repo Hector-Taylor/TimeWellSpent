@@ -2,7 +2,14 @@ import { BrowserWindow, ipcMain } from 'electron';
 import type { BackendServices } from '@backend/server';
 import type { Database } from '@backend/storage';
 import type { SyncService } from './sync';
-import type { EmergencyPolicyId, JournalConfig, LibraryPurpose, PeekConfig, ZoteroIntegrationConfig } from '@shared/types';
+import type {
+  EmergencyPolicyId,
+  JournalConfig,
+  LibraryPurpose,
+  PeekConfig,
+  PomodoroSessionConfig,
+  ZoteroIntegrationConfig
+} from '@shared/types';
 
 export type IpcContext = {
   backend: BackendServices;
@@ -58,6 +65,27 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('focus:stop', async (_event, payload: { completed: boolean }) => {
     return backend.focus.stopSession(payload.completed);
   });
+
+  ipcMain.handle('pomodoro:start', async (_event, payload: { config: PomodoroSessionConfig }) => {
+    return backend.pomodoro.start(payload.config);
+  });
+
+  ipcMain.handle('pomodoro:stop', async (_event, payload: { reason?: 'completed' | 'canceled' | 'expired' }) => {
+    return backend.pomodoro.stop(payload.reason ?? 'canceled');
+  });
+
+  ipcMain.handle('pomodoro:status', async () => {
+    return backend.pomodoro.status();
+  });
+
+  ipcMain.handle('pomodoro:grant-override', async (_event, payload: { kind: 'app' | 'site'; target: string; durationSec?: number }) => {
+    return backend.pomodoro.grantOverride(payload);
+  });
+
+  ipcMain.handle('pomodoro:pause', async () => backend.pomodoro.pause());
+  ipcMain.handle('pomodoro:resume', async () => backend.pomodoro.resume());
+  ipcMain.handle('pomodoro:break', async (_event, payload: { durationSec?: number } = {}) => backend.pomodoro.startBreak(payload.durationSec));
+  ipcMain.handle('pomodoro:summaries', async (_event, payload: { limit?: number } = {}) => backend.pomodoro.getSummaries(payload.limit ?? 20));
 
   ipcMain.handle('market:list', async () => backend.market.listRates());
   ipcMain.handle('market:update', async (_event, payload) => {
@@ -141,6 +169,8 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('settings:update-emergency-reminder-interval', (_event, value: number) => backend.settings.setEmergencyReminderInterval(value));
   ipcMain.handle('settings:economy-exchange-rate', () => backend.settings.getEconomyExchangeRate());
   ipcMain.handle('settings:update-economy-exchange-rate', (_event, value: number) => backend.settings.setEconomyExchangeRate(value));
+  ipcMain.handle('settings:daily-wallet-reset-enabled', () => backend.settings.getDailyWalletResetEnabled());
+  ipcMain.handle('settings:update-daily-wallet-reset-enabled', (_event, value: boolean) => backend.settings.setDailyWalletResetEnabled(Boolean(value)));
   ipcMain.handle('settings:journal-config', () => backend.settings.getJournalConfig());
   ipcMain.handle('settings:update-journal-config', (_event, value: JournalConfig) => backend.settings.setJournalConfig(value));
   ipcMain.handle('settings:peek-config', () => backend.settings.getPeekConfig());
@@ -180,8 +210,8 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('history:list', (_event, payload: { day: string }) => backend.consumption.listByDay(payload.day));
   ipcMain.handle('history:days', (_event, payload: { rangeDays?: number }) => backend.consumption.listDays(payload.rangeDays ?? 30));
 
-  ipcMain.handle('system:reset', async (_event, payload: { scope?: 'trophies' | 'all' }) => {
-    const scope = payload?.scope === 'all' ? 'all' : 'trophies';
+  ipcMain.handle('system:reset', async (_event, payload: { scope?: 'trophies' | 'wallet' | 'all' }) => {
+    const scope = payload?.scope === 'all' || payload?.scope === 'wallet' ? payload.scope : 'trophies';
     if (scope === 'trophies') {
       backend.trophies.resetLocal();
       backend.trophies.scheduleEvaluation('reset');
@@ -191,12 +221,49 @@ export function createIpc(context: IpcContext) {
       return { cleared: 'trophies' as const };
     }
 
+    if (scope === 'wallet') {
+      const conn = db.connection;
+      conn.transaction(() => {
+        conn.prepare('DELETE FROM transactions').run();
+        conn.prepare('INSERT INTO wallet(id, balance) VALUES (1, 0) ON CONFLICT(id) DO UPDATE SET balance = excluded.balance').run();
+      })();
+
+      const stats = backend.settings.getJson<{
+        bestProductiveRunSec: number;
+        bestIdleRatio: number;
+        bestBalance: number;
+        bestFrivolityStreakHours: number;
+      }>('trophyStats') ?? {
+        bestProductiveRunSec: 0,
+        bestIdleRatio: 1,
+        bestBalance: 0,
+        bestFrivolityStreakHours: 0
+      };
+      backend.settings.setJson('trophyStats', { ...stats, bestBalance: 0 });
+
+      const syncState = backend.settings.getJson<Record<string, unknown>>('syncState') ?? {};
+      if (syncState && typeof syncState === 'object') {
+        delete (syncState as any).lastWalletSyncAt;
+        backend.settings.setJson('syncState', syncState);
+      }
+
+      backend.trophies.scheduleEvaluation('reset');
+
+      if (sync) {
+        await sync.resetWalletRemote();
+      }
+
+      return { cleared: 'wallet' as const };
+    }
+
     const conn = db.connection;
     conn.transaction(() => {
       conn.prepare('DELETE FROM activities').run();
       conn.prepare('DELETE FROM activity_rollups').run();
       conn.prepare('DELETE FROM consumption_log').run();
       conn.prepare('DELETE FROM focus_sessions').run();
+      conn.prepare('DELETE FROM pomodoro_sessions').run();
+      conn.prepare('DELETE FROM pomodoro_block_events').run();
       conn.prepare('DELETE FROM intentions').run();
       conn.prepare('DELETE FROM budgets').run();
       conn.prepare('DELETE FROM transactions').run();

@@ -10,7 +10,9 @@ export default function ActivityChart({ activities, summary }: ActivityChartProp
   const colors: Record<string, string> = {
     productive: 'var(--cat-productive)',
     neutral: 'var(--cat-neutral)',
-    frivolity: 'var(--cat-frivolity)'
+    frivolity: 'var(--cat-frivolity)',
+    draining: 'var(--cat-draining)',
+    idle: 'var(--cat-idle)'
   };
   type CategoryKey = keyof typeof colors;
   const [hovered, setHovered] = useState<CategoryKey | null>(null);
@@ -18,31 +20,35 @@ export default function ActivityChart({ activities, summary }: ActivityChartProp
 
   const stats = useMemo(() => {
     if (summary) {
-      const filteredTimeline = summary.timeline.filter((slot) => new Date(slot.start).getTime() >= cutoff);
-      const totalsByCategory = filteredTimeline.reduce((acc, slot) => {
-        acc.productive += slot.productive;
-        acc.neutral += slot.neutral;
-        acc.frivolity += slot.frivolity;
-        return acc;
-      }, { productive: 0, neutral: 0, frivolity: 0 });
-      const totalSeconds = filteredTimeline.reduce((acc, slot) => acc + slot.productive + slot.neutral + slot.frivolity, 0);
+      const totals = summary.totalsByCategory;
+      const productive = totals.productive ?? 0;
+      const neutral = (totals.neutral ?? 0) + (totals.uncategorised ?? 0);
+      const frivolity = totals.frivolity ?? 0;
+      const draining = (totals as any).draining ?? 0;
+      const idle = totals.idle ?? 0;
+      const totalSeconds = productive + neutral + frivolity + draining + idle;
       return {
         total: totalSeconds,
         byCategory: {
-          productive: totalsByCategory.productive ?? 0,
-          neutral: totalsByCategory.neutral ?? 0,
-          frivolity: totalsByCategory.frivolity ?? 0
+          productive,
+          neutral,
+          frivolity,
+          draining,
+          idle
         }
       };
     }
 
     const recentActivities = activities.filter((activity) => new Date(activity.startedAt).getTime() >= cutoff);
-    const total = recentActivities.reduce((acc, curr) => acc + curr.secondsActive, 0);
-    const byCategory = recentActivities.reduce((acc, curr) => {
-      const cat = curr.category || 'neutral';
-      acc[cat] = (acc[cat] || 0) + curr.secondsActive;
-      return acc;
-    }, {} as Record<string, number>);
+    const totalActive = recentActivities.reduce((acc, curr) => acc + curr.secondsActive, 0);
+    const totalIdle = recentActivities.reduce((acc, curr) => acc + curr.idleSeconds, 0);
+    const total = totalActive + totalIdle;
+    const byCategory: Record<string, number> = { productive: 0, neutral: 0, frivolity: 0, draining: 0, idle: 0 };
+    recentActivities.forEach((curr) => {
+      const raw = curr.category || 'neutral';
+      byCategory[raw] = (byCategory[raw] || 0) + curr.secondsActive;
+    });
+    byCategory.idle = totalIdle;
 
     return { total, byCategory };
   }, [activities, summary, cutoff]);
@@ -51,7 +57,9 @@ export default function ActivityChart({ activities, summary }: ActivityChartProp
     const base: Record<CategoryKey, Array<{ label: string; seconds: number }>> = {
       productive: [],
       neutral: [],
-      frivolity: []
+      frivolity: [],
+      draining: [],
+      idle: []
     };
 
     if (summary?.topContexts) {
@@ -64,7 +72,8 @@ export default function ActivityChart({ activities, summary }: ActivityChartProp
       const recentActivities = activities.filter((activity) => new Date(activity.startedAt).getTime() >= cutoff);
       const buckets = new Map<string, { label: string; cat: CategoryKey; seconds: number }>();
       recentActivities.forEach((activity) => {
-        const cat = (activity.category || 'neutral') as CategoryKey;
+        const raw = activity.category || 'neutral';
+        const cat = raw as CategoryKey;
         const label = activity.domain ?? activity.appName ?? 'Unknown';
         const key = `${cat}:${label}`;
         if (!buckets.has(key)) {
@@ -143,67 +152,68 @@ export default function ActivityChart({ activities, summary }: ActivityChartProp
           </div>
         )}
       </div>
-      <div className="activity-chart">
-        <div className="donut-shell" style={{ position: 'relative' }}>
-          {tooltipCategory && (
-            <div
-              className="pill soft activity-tooltip"
-              style={{
-                position: 'absolute',
-                top: -16,
-                right: -16,
-                background: 'var(--bg-soft)',
-                border: `1px solid ${colors[tooltipCategory]}`,
-                boxShadow: '0 10px 30px rgba(0,0,0,0.15)',
-                zIndex: 2,
-                padding: '12px 14px',
-                borderRadius: '12px',
-                minWidth: '240px',
-                maxWidth: '340px',
-                width: '320px',
-                lineHeight: 1.4
+      <div className="activity-chart" style={{ position: 'relative', overflow: 'visible' }}>
+        {tooltipCategory && (
+          <div
+            className="activity-tooltip"
+            style={{
+              position: 'absolute',
+              top: '50%',
+              left: '260px',
+              transform: 'translateY(-50%)',
+              background: 'var(--bg-raised, #12141a)',
+              border: `1px solid ${colors[tooltipCategory]}`,
+              boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+              zIndex: 100,
+              padding: '14px 16px',
+              borderRadius: '10px',
+              minWidth: '200px',
+              maxWidth: '260px',
+              lineHeight: 1.45,
+              fontSize: '13px',
+              color: 'var(--fg, #f0f0f0)'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', paddingBottom: '10px', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+              <span style={{
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
+                background: colors[tooltipCategory],
+                flexShrink: 0
               }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                <span style={{
-                  width: '12px',
-                  height: '12px',
-                  borderRadius: '50%',
-                  background: colors[tooltipCategory]
-                }}
-                />
-                <strong style={{ textTransform: 'capitalize' }}>{tooltipCategory}</strong>
-                <span className="subtle">{tooltipPercent}% • {formatHoursMinutes(tooltipSeconds)}</span>
-              </div>
-              <ul style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: '220px', overflowY: 'auto', gap: '6px', display: 'flex', flexDirection: 'column' }}>
-                {breakdownByCategory[tooltipCategory]?.length === 0 && (
-                  <li className="subtle">No entries yet</li>
-                )}
-                {breakdownByCategory[tooltipCategory]?.map((ctx) => {
-                  const percentOfDay = stats.total > 0 ? Math.round((ctx.seconds / stats.total) * 100) : 0;
-                  return (
-                    <li
-                      key={`${tooltipCategory}-${ctx.label}`}
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        padding: '6px 8px',
-                        borderRadius: '8px',
-                        background: 'rgba(255,255,255,0.03)'
-                      }}
-                    >
-                      <span style={{ maxWidth: '65%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ctx.label}</span>
-                      <span className="subtle" style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                        <span>{percentOfDay}%</span>
-                        <span>{Math.round(ctx.seconds / 60)}m</span>
-                      </span>
-                    </li>
-                  );
-                })}
-              </ul>
+              />
+              <strong style={{ textTransform: 'capitalize', fontSize: '14px' }}>{tooltipCategory}</strong>
+              <span style={{ marginLeft: 'auto', opacity: 0.6, fontSize: '12px' }}>{tooltipPercent}%</span>
             </div>
-          )}
+            <div style={{ marginBottom: '10px', fontSize: '11px', opacity: 0.7 }}>
+              {formatHoursMinutes(tooltipSeconds)} total
+            </div>
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: '160px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+              {breakdownByCategory[tooltipCategory]?.length === 0 && (
+                <li style={{ opacity: 0.5, fontSize: '12px' }}>No entries</li>
+              )}
+              {breakdownByCategory[tooltipCategory]?.slice(0, 6).map((ctx) => (
+                <li
+                  key={`${tooltipCategory}-${ctx.label}`}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '5px 6px',
+                    borderRadius: '4px',
+                    background: 'rgba(255,255,255,0.04)',
+                    fontSize: '12px'
+                  }}
+                >
+                  <span style={{ maxWidth: '60%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ctx.label}</span>
+                  <span style={{ opacity: 0.6, fontSize: '11px' }}>{Math.round(ctx.seconds / 60)}m</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <div className="donut-shell" style={{ position: 'relative' }}>
           <div className="donut-glow" />
           <svg width="240" height="240" viewBox="0 0 220 220">
             {slices.map((slice) => (

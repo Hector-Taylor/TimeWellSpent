@@ -46,6 +46,17 @@ export class SettingsService {
     return [...unique].slice(0, 50);
   }
 
+  private normaliseCategorisation(value: CategorisationConfig): CategorisationConfig {
+    const safe = (arr: unknown): string[] => (Array.isArray(arr) ? arr.filter((v): v is string => typeof v === 'string') : []);
+    const draining = safe((value as any).draining);
+    return {
+      productive: safe(value?.productive),
+      neutral: safe(value?.neutral),
+      frivolity: safe(value?.frivolity),
+      draining: draining.length ? draining : safe(DEFAULT_CATEGORISATION.draining)
+    };
+  }
+
   getJson<T>(key: string): T | null {
     const row = this.getStmt.get(key) as { value: string } | undefined;
     if (!row) return null;
@@ -67,11 +78,12 @@ export class SettingsService {
   }
 
   getCategorisation(): CategorisationConfig {
-    return this.getJson<CategorisationConfig>('categorisation') ?? DEFAULT_CATEGORISATION;
+    const raw = this.getJson<CategorisationConfig>('categorisation') ?? DEFAULT_CATEGORISATION;
+    return this.normaliseCategorisation(raw);
   }
 
   setCategorisation(value: CategorisationConfig) {
-    this.setJson('categorisation', value);
+    this.setJson('categorisation', this.normaliseCategorisation(value));
   }
 
   getExcludedKeywords(): string[] {
@@ -161,6 +173,19 @@ export class SettingsService {
     this.setJson('neutralRatePerMin', n);
   }
 
+  getDrainingRatePerMin(): number {
+    const val = this.getJson<number>('drainingRatePerMin');
+    return typeof val === 'number' && Number.isFinite(val) && val >= 0 && val <= 20 ? val : 1;
+  }
+
+  setDrainingRatePerMin(value: number) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0 || n > 20) {
+      throw new Error('Invalid rate (must be 0-20)');
+    }
+    this.setJson('drainingRatePerMin', n);
+  }
+
   getSpendIntervalSeconds(): number {
     const val = this.getJson<number>('spendIntervalSeconds');
     return typeof val === 'number' && Number.isFinite(val) && val >= 5 && val <= 60 ? val : 15;
@@ -172,6 +197,40 @@ export class SettingsService {
       throw new Error('Invalid interval (must be 5-60)');
     }
     this.setJson('spendIntervalSeconds', n);
+  }
+
+  getSessionFadeSeconds(): number {
+    const val = this.getJson<number>('sessionFadeSeconds');
+    return typeof val === 'number' && Number.isFinite(val) && val >= 0 && val <= 300 ? val : 30;
+  }
+
+  setSessionFadeSeconds(value: number) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0 || n > 300) {
+      throw new Error('Invalid fade duration (must be 0-300s)');
+    }
+    this.setJson('sessionFadeSeconds', Math.round(n));
+  }
+
+  getDailyWalletResetEnabled(): boolean {
+    const val = this.getJson<boolean>('dailyWalletResetEnabled');
+    return typeof val === 'boolean' ? val : true;
+  }
+
+  setDailyWalletResetEnabled(enabled: boolean) {
+    this.setJson('dailyWalletResetEnabled', Boolean(enabled));
+  }
+
+  getLastDailyWalletResetDay(): string | null {
+    const val = this.getJson<string>('lastDailyWalletResetDay');
+    return typeof val === 'string' ? val : null;
+  }
+
+  setLastDailyWalletResetDay(day: string) {
+    if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+      throw new Error('Invalid day format for daily reset');
+    }
+    this.setJson('lastDailyWalletResetDay', day);
   }
 
   getJournalConfig(): JournalConfig {

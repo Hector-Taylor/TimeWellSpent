@@ -30,7 +30,7 @@ describe('PaywallManager emergency policy primitives', () => {
     expect(paywall.getSession('example.com')?.remainingSeconds).toBe(15);
     paywall.tick(15, 'example.com', 'https://example.com/a');
     expect(paywall.getSession('example.com')).toBeNull();
-    expect(ended).toHaveBeenCalledWith({ domain: 'example.com', reason: 'emergency-expired' });
+    expect(ended).toHaveBeenCalledWith(expect.objectContaining({ domain: 'example.com', reason: 'emergency-expired' }));
   });
 
   it('enforces URL-locked emergency sessions', () => {
@@ -47,4 +47,3 @@ describe('PaywallManager emergency policy primitives', () => {
     expect(paywall.getSession('example.com')?.remainingSeconds).toBe(15);
   });
 });
-

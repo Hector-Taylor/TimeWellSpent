@@ -85,6 +85,54 @@ export interface PaywallSession {
     allowedUrl?: string;
 }
 
+export type PomodoroMode = 'strict' | 'soft';
+export type PomodoroSessionState = 'active' | 'paused' | 'break' | 'ended';
+
+export type PomodoroAllowlistEntry = {
+    id: string;
+    kind: 'app' | 'site';
+    value: string;
+    pathPattern?: string | null;
+    label?: string | null;
+};
+
+export type PomodoroOverride = {
+    id: string;
+    kind: 'app' | 'site';
+    target: string;
+    grantedAt: string;
+    expiresAt: string;
+    durationSec: number;
+};
+
+export type PomodoroSession = {
+    id: string;
+    state: PomodoroSessionState;
+    startedAt: string;
+    endedAt: string | null;
+    plannedDurationSec: number;
+    breakDurationSec: number;
+    mode: PomodoroMode;
+    allowlist: PomodoroAllowlistEntry[];
+    temporaryUnlockSec: number;
+    overrides: PomodoroOverride[];
+    remainingMs: number;
+    presetId?: string | null;
+    completedReason?: 'completed' | 'canceled' | 'expired';
+    breakRemainingMs?: number | null;
+    lastUpdated?: number;
+};
+
+export type PomodoroBlockEvent = {
+    sessionId?: string;
+    target: string;
+    kind: 'app' | 'site';
+    reason: 'not-allowlisted' | 'override-expired' | 'unknown-session' | 'verification-failed';
+    remainingMs?: number;
+    mode: PomodoroMode;
+    occurredAt?: string;
+};
+
 export interface ExtensionState {
     wallet: {
         balance: number;
@@ -95,17 +143,22 @@ export interface ExtensionState {
         frivolityDomains: string[];
         productiveDomains: string[];
         neutralDomains: string[];
+        drainingDomains?: string[];
         idleThreshold: number;
         emergencyPolicy?: 'off' | 'gentle' | 'balanced' | 'strict';
         economyExchangeRate?: number;
         journal?: { url: string | null; minutes: number };
         peekEnabled?: boolean;
         peekAllowNewPages?: boolean;
+        sessionFadeSeconds?: number;
+        dailyWalletResetEnabled?: boolean;
+        discouragementEnabled?: boolean;
     };
     pendingCategorisation?: {
         productiveDomains: string[];
         neutralDomains: string[];
         frivolityDomains: string[];
+        drainingDomains?: string[];
         updatedAt: number;
     } | null;
     sessions: Record<string, PaywallSession>;
@@ -138,6 +191,11 @@ export interface ExtensionState {
             kept: number;
             notKept: number;
         };
+    };
+    pomodoro?: {
+        session: PomodoroSession | null;
+        lastUpdated: number | null;
+        pendingBlocks: PomodoroBlockEvent[];
     };
 }
 
@@ -185,15 +243,25 @@ const DEFAULT_STATE: ExtensionState = {
         }
     },
     settings: {
-        frivolityDomains: ['twitter.com', 'x.com', 'reddit.com', 'youtube.com', 'facebook.com', 'instagram.com', 'tiktok.com'],
+        frivolityDomains: [
+            'twitter.com', 'x.com', 'reddit.com', 'youtube.com',
+            'facebook.com', 'instagram.com', 'tiktok.com',
+            'snapchat.com',
+            // Entertainment
+            'netflix.com', 'twitch.tv'
+        ],
         productiveDomains: ['github.com', 'stackoverflow.com'],
         neutralDomains: ['gmail.com', 'calendar.google.com'],
+        drainingDomains: ['whatsapp.com', 'web.whatsapp.com', 'wa.me', 'messenger.com', 'discord.com', 'telegram.org', 'web.telegram.org'],
         idleThreshold: 15,
         emergencyPolicy: 'balanced',
         economyExchangeRate: 5 / 3,
         journal: { url: null, minutes: 10 },
         peekEnabled: true,
-        peekAllowNewPages: false
+        peekAllowNewPages: false,
+        sessionFadeSeconds: 30,
+        dailyWalletResetEnabled: true,
+        discouragementEnabled: true
     },
     pendingCategorisation: null,
     sessions: {},
@@ -222,6 +290,11 @@ const DEFAULT_STATE: ExtensionState = {
             kept: 0,
             notKept: 0
         }
+    },
+    pomodoro: {
+        session: null,
+        lastUpdated: null,
+        pendingBlocks: []
     }
 };
 
@@ -246,6 +319,12 @@ class ExtensionStorage {
         if (!this.state.settings) {
             this.state.settings = DEFAULT_STATE.settings;
         }
+        if (!Array.isArray(this.state.settings.drainingDomains)) {
+            this.state.settings.drainingDomains = DEFAULT_STATE.settings.drainingDomains ?? [];
+        }
+        if (typeof this.state.settings.sessionFadeSeconds !== 'number') {
+            this.state.settings.sessionFadeSeconds = DEFAULT_STATE.settings.sessionFadeSeconds ?? 30;
+        }
         if (!this.state.settings.emergencyPolicy) {
             this.state.settings.emergencyPolicy = 'balanced';
         }
@@ -257,6 +336,9 @@ class ExtensionStorage {
         }
         if (typeof this.state.settings.peekAllowNewPages !== 'boolean') {
             this.state.settings.peekAllowNewPages = false;
+        }
+        if (typeof this.state.settings.discouragementEnabled !== 'boolean') {
+            this.state.settings.discouragementEnabled = true;
         }
         if (!this.state.settings.journal || typeof this.state.settings.journal !== 'object') {
             this.state.settings.journal = { url: null, minutes: 10 };
@@ -277,6 +359,14 @@ class ExtensionStorage {
         }
         if (this.state.pendingCategorisation === undefined) {
             this.state.pendingCategorisation = null;
+        }
+        if (this.state.pendingCategorisation) {
+            if (!Array.isArray(this.state.pendingCategorisation.drainingDomains)) {
+                this.state.pendingCategorisation.drainingDomains = this.state.settings.drainingDomains ?? [];
+            }
+        }
+        if (typeof this.state.settings.dailyWalletResetEnabled !== 'boolean') {
+            this.state.settings.dailyWalletResetEnabled = DEFAULT_STATE.settings.dailyWalletResetEnabled ?? true;
         }
         if (!this.state.rotMode || typeof this.state.rotMode !== 'object') {
             this.state.rotMode = { enabled: false, startedAt: null };
@@ -397,6 +487,18 @@ class ExtensionStorage {
         if (!Array.isArray(this.state.pendingActivityEvents)) {
             this.state.pendingActivityEvents = [];
         }
+        if (!this.state.pomodoro) {
+            this.state.pomodoro = { session: null, lastUpdated: null, pendingBlocks: [] };
+        } else {
+            const pendingBlocks = Array.isArray((this.state.pomodoro as any).pendingBlocks)
+                ? (this.state.pomodoro as any).pendingBlocks
+                : [];
+            this.state.pomodoro = {
+                session: (this.state.pomodoro as any).session ?? null,
+                lastUpdated: typeof (this.state.pomodoro as any).lastUpdated === 'number' ? (this.state.pomodoro as any).lastUpdated : null,
+                pendingBlocks
+            };
+        }
     }
 
     async init(): Promise<void> {
@@ -464,16 +566,39 @@ class ExtensionStorage {
 
     async isFrivolous(domain: string): Promise<boolean> {
         if (!this.state) await this.init();
-        const aliases = [domain];
-        if (domain === 'x.com') aliases.push('twitter.com');
-        return this.state!.settings.frivolityDomains.some(d =>
-            aliases.some(alias => alias.includes(d) || d.includes(alias))
-        );
+        // Map domain variants to their canonical form for consistent matching
+        const aliasMap: Record<string, string> = {
+            'x.com': 'twitter.com',
+            'mobile.twitter.com': 'twitter.com',
+            'web.whatsapp.com': 'whatsapp.com',
+            'wa.me': 'whatsapp.com',
+            'web.telegram.org': 'telegram.org',
+            'm.facebook.com': 'facebook.com',
+            'm.youtube.com': 'youtube.com'
+        };
+        const canonical = aliasMap[domain] ?? domain;
+        const aliases = Array.from(new Set([domain, canonical]));
+
+        return this.state!.settings.frivolityDomains.some(d => {
+            const dCanonical = aliasMap[d] ?? d;
+            // Check for exact match or subdomain match (e.g. "web.whatsapp.com" ends with ".whatsapp.com")
+            return aliases.some(alias =>
+                alias === d ||
+                alias === dCanonical ||
+                alias.endsWith('.' + d) ||
+                alias.endsWith('.' + dCanonical)
+            );
+        });
     }
 
     async getIdleThreshold(): Promise<number> {
         if (!this.state) await this.init();
         return this.state!.settings.idleThreshold ?? 15;
+    }
+
+    async getSessionFadeSeconds(): Promise<number> {
+        if (!this.state) await this.init();
+        return this.state!.settings.sessionFadeSeconds ?? 30;
     }
 
     async getRotMode() {
@@ -490,6 +615,13 @@ class ExtensionStorage {
         };
         await this.save();
         return this.state!.rotMode;
+    }
+
+    async setDiscouragementEnabled(enabled: boolean) {
+        if (!this.state) await this.init();
+        this.state!.settings.discouragementEnabled = Boolean(enabled);
+        await this.save();
+        return this.state!.settings.discouragementEnabled;
     }
 
     async getSession(domain: string): Promise<PaywallSession | null> {
@@ -576,10 +708,20 @@ class ExtensionStorage {
             this.state!.marketRates = desktopState.marketRates;
         }
         if (desktopState.settings) {
-            this.state!.settings = desktopState.settings;
+            this.state!.settings = {
+                ...this.state!.settings,
+                ...desktopState.settings
+            };
         }
         if (desktopState.sessions) {
             this.state!.sessions = desktopState.sessions as Record<string, PaywallSession>;
+        }
+        if (desktopState.pomodoro) {
+            this.state!.pomodoro = {
+                session: desktopState.pomodoro.session ?? null,
+                lastUpdated: Date.now(),
+                pendingBlocks: this.state!.pomodoro?.pendingBlocks ?? []
+            };
         }
         if (desktopState.libraryItems) {
             const items = desktopState.libraryItems ?? [];
@@ -595,20 +737,22 @@ class ExtensionStorage {
                 ...this.state!.settings,
                 productiveDomains: this.state!.pendingCategorisation.productiveDomains,
                 neutralDomains: this.state!.pendingCategorisation.neutralDomains,
-                frivolityDomains: this.state!.pendingCategorisation.frivolityDomains
+                frivolityDomains: this.state!.pendingCategorisation.frivolityDomains,
+                drainingDomains: this.state!.pendingCategorisation.drainingDomains ?? this.state!.settings.drainingDomains
             };
         }
         this.state!.lastDesktopSync = Date.now();
         await this.save();
     }
 
-    async queueCategorisationUpdate(payload: { productiveDomains: string[]; neutralDomains: string[]; frivolityDomains: string[] }) {
+    async queueCategorisationUpdate(payload: { productiveDomains: string[]; neutralDomains: string[]; frivolityDomains: string[]; drainingDomains?: string[] }) {
         if (!this.state) await this.init();
         this.state!.settings = {
             ...this.state!.settings,
             productiveDomains: payload.productiveDomains,
             neutralDomains: payload.neutralDomains,
-            frivolityDomains: payload.frivolityDomains
+            frivolityDomains: payload.frivolityDomains,
+            drainingDomains: payload.drainingDomains ?? this.state!.settings.drainingDomains
         };
         this.state!.pendingCategorisation = { ...payload, updatedAt: Date.now() };
         await this.save();
@@ -791,6 +935,57 @@ class ExtensionStorage {
         if (!this.state) await this.init();
         if (!this.state) throw new Error('Storage state not initialized');
         delete this.state.pendingLibrarySync[url];
+        await this.save();
+    }
+
+    async setPomodoroSession(session: PomodoroSession | null): Promise<void> {
+        if (!this.state) await this.init();
+        if (!this.state) throw new Error('Storage state not initialized');
+        if (!this.state.pomodoro) {
+            this.state.pomodoro = { session: null, lastUpdated: null, pendingBlocks: [] };
+        }
+        this.state.pomodoro.session = session;
+        this.state.pomodoro.lastUpdated = session ? Date.now() : null;
+        await this.save();
+    }
+
+    async getPomodoroSession(): Promise<PomodoroSession | null> {
+        if (!this.state) await this.init();
+        if (!this.state) throw new Error('Storage state not initialized');
+        return this.state.pomodoro?.session ?? null;
+    }
+
+    async updatePomodoroSession(patch: Partial<PomodoroSession>): Promise<PomodoroSession | null> {
+        if (!this.state) await this.init();
+        if (!this.state) throw new Error('Storage state not initialized');
+        if (!this.state.pomodoro?.session) return null;
+        this.state.pomodoro.session = { ...this.state.pomodoro.session, ...patch };
+        this.state.pomodoro.lastUpdated = Date.now();
+        await this.save();
+        return this.state.pomodoro.session;
+    }
+
+    async queuePomodoroBlock(event: PomodoroBlockEvent): Promise<void> {
+        if (!this.state) await this.init();
+        if (!this.state) throw new Error('Storage state not initialized');
+        if (!this.state.pomodoro) {
+            this.state.pomodoro = { session: null, lastUpdated: null, pendingBlocks: [] };
+        }
+        const withTs: PomodoroBlockEvent = { ...event, occurredAt: event.occurredAt ?? new Date().toISOString() };
+        this.state.pomodoro.pendingBlocks.push(withTs);
+        await this.save();
+    }
+
+    async getPendingPomodoroBlocks(limit = 50): Promise<PomodoroBlockEvent[]> {
+        if (!this.state) await this.init();
+        if (!this.state || !this.state.pomodoro) return [];
+        return this.state.pomodoro.pendingBlocks.slice(0, limit);
+    }
+
+    async clearPendingPomodoroBlocks(count: number): Promise<void> {
+        if (!this.state) await this.init();
+        if (!this.state || !this.state.pomodoro) return;
+        this.state.pomodoro.pendingBlocks.splice(0, count);
         await this.save();
     }
 }

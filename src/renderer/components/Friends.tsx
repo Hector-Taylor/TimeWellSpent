@@ -99,10 +99,12 @@ export default function Friends({ api }: Props) {
       const summary = summaries[friend.userId];
       const totals = summary?.categoryBreakdown ?? null;
       const active = summary?.totalActiveSeconds ?? 0;
+      const draining = totals?.draining ?? 0;
       const productivePct = active > 0 ? (totals!.productive / active) * 100 : 0;
+      const neutralPct = active > 0 ? (totals!.neutral / active) * 100 : 0;
       const frivolityPct = active > 0 ? (totals!.frivolity / active) * 100 : 0;
-      const neutralPct = Math.max(0, 100 - productivePct - frivolityPct);
-      return { friend, summary, totals, productivePct, neutralPct, frivolityPct };
+      const drainingPct = active > 0 ? (draining / active) * 100 : 0;
+      return { friend, summary, totals, productivePct, neutralPct, frivolityPct, drainingPct };
     });
   }, [friends, summaries]);
 
@@ -396,6 +398,11 @@ export default function Friends({ api }: Props) {
                   <strong>{summary ? formatHoursFromSeconds(summary.totalActiveSeconds) : '—'}</strong>
                   <span>active</span>
                 </div>
+                {summary && (
+                  <div className="pill deepwork" style={{ marginLeft: 'auto' }}>
+                    {formatMinutes(summary.deepWorkSeconds)} deep work
+                  </div>
+                )}
               </div>
 
               {competitiveOptIn ? (
@@ -422,13 +429,13 @@ export default function Friends({ api }: Props) {
                         <span>{formatMinutes(summary?.categoryBreakdown.productive ?? 0)} productive</span>
                       </div>
                       <div className="head-to-head-row subtle">
-                        <span>{formatCount(mySummary?.emergencySessions)} I need it</span>
-                        <span>{formatCount(summary?.emergencySessions)} I need it</span>
+                        <span>{formatCount(mySummary?.emergencySessions)} emergency</span>
+                        <span>{formatCount(summary?.emergencySessions)} emergency</span>
                       </div>
                     </>
                   ) : (
                     <p className="subtle" style={{ marginTop: 6 }}>
-                      Head-to-head unlocks after both log {competitiveMinHours}h active today.
+                      Both need {competitiveMinHours}h active to unlock.
                     </p>
                   )}
                 </div>
@@ -468,6 +475,13 @@ export default function Friends({ api }: Props) {
                   </div>
                   <div className="impact-meter" style={{ marginTop: 6 }}>
                     <span style={{ width: `${frivolityPct}%`, background: 'var(--cat-frivolity)' }} />
+                  </div>
+
+                  <div className="subtle" style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10 }}>
+                    <span>Draining</span><span>{formatHoursFromSeconds(totals.draining ?? 0)} ({formatPct(drainingPct)})</span>
+                  </div>
+                  <div className="impact-meter" style={{ marginTop: 6 }}>
+                    <span style={{ width: `${drainingPct}%`, background: 'var(--cat-draining)' }} />
                   </div>
                 </div>
               )}
