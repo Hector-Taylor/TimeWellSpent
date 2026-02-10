@@ -26,6 +26,7 @@ import { ConsumptionLogService } from './consumption';
 import { FriendsService } from './friends';
 import { ReadingService } from './reading';
 import { TrophyService } from './trophies';
+import { CameraService } from './camera';
 
 // Route modules
 import {
@@ -66,6 +67,7 @@ export type BackendServices = {
   trophies: TrophyService;
   reading: ReadingService;
   friends: FriendsService;
+  camera: CameraService;
   ui: {
     onNavigate: (cb: (payload: { view: string }) => void) => void;
   };
@@ -89,6 +91,7 @@ type BackendOptions = {
     list: () => Promise<FriendConnection[]>;
     summaries: (windowHours?: number) => Promise<Record<string, FriendSummary>>;
     timeline: (userId: string, windowHours?: number) => Promise<FriendTimeline | null>;
+    publicLibrary?: (windowHours?: number) => Promise<import('@shared/types').FriendLibraryItem[]>;
   };
 };
 
@@ -118,6 +121,7 @@ export async function createBackend(
   const activityRollups = new ActivityRollupService(database);
   const library = new LibraryService(database);
   const consumption = new ConsumptionLogService(database);
+  const camera = new CameraService(database);
   const emergency = new EmergencyService(settings, wallet, paywall, consumption);
   const productiveOverrides = { urls: new Set<string>(), apps: new Set<string>() };
 
@@ -246,6 +250,7 @@ export async function createBackend(
       return keywords.some((keyword) => keyword && haystack.includes(keyword));
     }
   );
+  let broadcaster: WebSocketBroadcaster | undefined;
   const activityPipeline = new ActivityPipeline(
     activityTracker,
     economy,
@@ -267,6 +272,13 @@ export async function createBackend(
         return true;
       }
       return false;
+    },
+    () => {
+      if (!broadcaster) return false;
+      const status = broadcaster.getStatus();
+      if (!status.connected || !status.lastSeen) return false;
+      // Extension sends heartbeat every 20s; this keeps a safe buffer.
+      return Date.now() - status.lastSeen <= 45_000;
     }
   );
   const focus = new FocusService(database, wallet);
@@ -343,7 +355,7 @@ export async function createBackend(
       acc[rate.domain] = rate;
       return acc;
     }, {});
-    broadcaster.broadcast({ type: 'market-update', payload: record });
+    broadcaster?.broadcast({ type: 'market-update', payload: record });
   };
 
   market.on('update', () => {
@@ -356,7 +368,7 @@ export async function createBackend(
   };
 
   // WebSocket broadcaster
-  const broadcaster = new WebSocketBroadcaster({
+  broadcaster = new WebSocketBroadcaster({
     economy,
     paywall,
     wallet,
@@ -447,6 +459,7 @@ export async function createBackend(
     analytics,
     reading,
     friends,
+    camera,
     ui: {
       onNavigate: (cb) => {
         uiEvents.on('navigate', cb);
@@ -454,9 +467,9 @@ export async function createBackend(
     },
     handleActivity,
     extension: {
-      status: () => broadcaster.getStatus(),
+      status: () => broadcaster?.getStatus() ?? { connected: false, lastSeen: null },
       onStatus: (cb) => {
-        broadcaster.on('status', cb);
+        broadcaster?.on('status', cb);
       }
     },
     declineDomain,

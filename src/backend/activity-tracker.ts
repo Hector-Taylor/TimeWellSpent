@@ -34,6 +34,23 @@ function canonicalDomain(domain: string) {
   return aliasMap[cleaned] ?? cleaned;
 }
 
+function canonicalAppName(appName: string | null | undefined) {
+  const normalized = (appName ?? '').trim().toLowerCase();
+  if (!normalized) return '';
+  const aliasMap: Record<string, string> = {
+    'google chrome': 'chrome',
+    chrome: 'chrome',
+    'microsoft edge': 'edge',
+    edge: 'edge',
+    'brave browser': 'brave',
+    brave: 'brave',
+    safari: 'safari',
+    arc: 'arc',
+    firefox: 'firefox'
+  };
+  return aliasMap[normalized] ?? normalized;
+}
+
 export class ActivityTracker {
   private db: BetterSqlite3Database;
   private insertStmt: Statement;
@@ -85,6 +102,10 @@ export class ActivityTracker {
 
   recordActivity(event: ActivityEvent) {
     const ts = event.timestamp.getTime();
+    if (this.current && ts <= this.current.lastTimestamp) {
+      // Drop stale/out-of-order events so replayed packets can't rewind tracker time.
+      return;
+    }
     if (!this.current) {
       this.rotateCurrent(event, ts);
       return;
@@ -125,7 +146,7 @@ export class ActivityTracker {
 
     this.current = {
       id: Number(result.lastInsertRowid),
-      appName: event.appName,
+      appName: canonicalAppName(event.appName),
       bundleId: event.bundleId ?? null,
       domain: event.domain ?? null,
       category: event.category ?? null,
@@ -148,17 +169,33 @@ export class ActivityTracker {
     const idleThreshold = Math.max(0, Math.round(event.idleThresholdSeconds ?? 0));
     const idle = Math.min(deltaSeconds, Math.max(0, idleSeconds - idleThreshold));
 
-    // Large gaps are usually sleep/lock transitions; treat them as idle and
-    // start a fresh record so we don't backfill huge "active" chunks.
+    // Large gaps usually mean sleep/lock or probe stalls. Be conservative:
+    // never backfill large active chunks from a single delayed sample.
     const MAX_GAP_SECONDS = 120;
+    const GAP_ACTIVE_GRACE_SECONDS = 15;
     let active = Math.max(0, deltaSeconds - idle);
     let idleApplied = idle;
 
     if (deltaSeconds > MAX_GAP_SECONDS) {
-      idleApplied = Math.min(idle, MAX_GAP_SECONDS);
-      active = 0;
+      const cappedDelta = MAX_GAP_SECONDS;
+      const apparentIdle = Math.max(0, idleSeconds - idleThreshold);
+      if (apparentIdle <= 0) {
+        // No reliable idle signal: grant a tiny active grace, not minutes.
+        active = GAP_ACTIVE_GRACE_SECONDS;
+        idleApplied = 0;
+      } else if (apparentIdle >= deltaSeconds) {
+        // User appears idle across the whole gap.
+        active = 0;
+        idleApplied = cappedDelta;
+      } else {
+        // Mixed case: split by observed idle proportion.
+        const idleRatio = Math.max(0, Math.min(1, apparentIdle / deltaSeconds));
+        idleApplied = Math.round(cappedDelta * idleRatio);
+        active = Math.max(0, Math.min(GAP_ACTIVE_GRACE_SECONDS, cappedDelta - idleApplied));
+      }
       this.updateStmt.run(new Date(ts).toISOString(), active, idleApplied, this.current.id);
       this.current.lastTimestamp = ts;
+      // Reset context so we don't bridge stale app/window state across gaps.
       this.current = null;
       return false;
     }
@@ -171,7 +208,7 @@ export class ActivityTracker {
   private hasContextChanged(event: ActivityEvent) {
     if (!this.current) return true;
     return (
-      this.current.appName !== event.appName ||
+      this.current.appName !== canonicalAppName(event.appName) ||
       this.current.domain !== (event.domain ?? null) ||
       this.current.category !== (event.category ?? null)
     );

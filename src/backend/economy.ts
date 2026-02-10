@@ -20,6 +20,14 @@ const DEFAULT_RATES: EconomyRateGetters = {
   getDrainingRatePerMin: () => 1,
   getSpendIntervalSeconds: () => 15
 };
+const METERED_PREMIUM_MULTIPLIER = 3.5;
+
+function packChainMultiplier(chainCount: number) {
+  if (chainCount <= 0) return 1;
+  if (chainCount === 1) return 1.35;
+  if (chainCount === 2) return 1.75;
+  return 2.35;
+}
 
 export type EconomyState = {
   activeCategory: ActivityCategory | 'idle' | null;
@@ -218,8 +226,9 @@ export class EconomyEngine extends EventEmitter {
   }
 
   startPayAsYouGo(domain: string) {
-    this.ensureRate(domain);
-    const session = this.paywall.startMetered(domain);
+    const rate = this.ensureRate(domain);
+    const effectiveRate = rate.ratePerMin * METERED_PREMIUM_MULTIPLIER;
+    const session = this.paywall.startMetered(domain, effectiveRate, METERED_PREMIUM_MULTIPLIER);
     return session;
   }
 
@@ -230,13 +239,18 @@ export class EconomyEngine extends EventEmitter {
   }
 
   buyPack(domain: string, minutes: number) {
+    const safeMinutes = Math.max(1, Math.round(minutes));
     const rate = this.ensureRate(domain);
-    const pack = rate.packs.find((p) => p.minutes === minutes);
-    const price = pack ? pack.price : Math.max(1, Math.round(minutes * rate.ratePerMin));
+    const pack = rate.packs.find((p) => p.minutes === safeMinutes);
+    const basePrice = pack ? pack.price : Math.max(1, Math.round(safeMinutes * rate.ratePerMin));
+    const current = this.paywall.getSession(domain);
+    const chainCount = current?.mode === 'pack' ? (current.packChainCount ?? 1) : 0;
+    const multiplier = packChainMultiplier(chainCount);
+    const price = Math.max(1, Math.round(basePrice * multiplier));
     if (!pack) {
-      logger.info(`Creating ad-hoc pack for ${domain} (${minutes} minutes @ ${price} coins)`);
+      logger.info(`Creating ad-hoc pack for ${domain} (${safeMinutes} minutes @ ${price} coins, chain x${multiplier})`);
     }
-    return this.paywall.buyPack(domain, minutes, price);
+    return this.paywall.buyPack(domain, safeMinutes, price);
   }
 
   startStore(domain: string, price: number, url?: string) {

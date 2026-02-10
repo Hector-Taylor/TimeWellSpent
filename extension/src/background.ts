@@ -1,13 +1,13 @@
-import { storage, type LibraryItem, type LibraryPurpose, type PendingActivityEvent, type PomodoroSession, type PomodoroAllowlistEntry } from './storage';
+import { storage, type DailyOnboardingState, type LibraryItem, type LibraryPurpose, type PendingActivityEvent, type PomodoroSession, type PomodoroAllowlistEntry, type PaywallSession } from './storage';
+import { DESKTOP_API_URL, DESKTOP_WS_URL } from './constants';
 
 type IdleState = 'active' | 'idle' | 'locked';
 type EmergencyPolicyId = 'off' | 'gentle' | 'balanced' | 'strict';
 
-const DESKTOP_API_URL = 'http://127.0.0.1:17600';
-const DESKTOP_WS_URL = 'ws://127.0.0.1:17600/events';
 const DEFAULT_UNLOCK_PRICE = 12;
 const NOTIFICATION_ICON = chrome.runtime.getURL('assets/notification.png');
 const POMODORO_STALE_MS = 15000;
+const DAILY_START_HOUR = 4;
 const CONTEXT_MENU_IDS = {
     rootSave: 'tws-save',
     rootDomain: 'tws-domain',
@@ -23,14 +23,33 @@ const CONTEXT_MENU_IDS = {
 
 let ws: WebSocket | null = null;
 let reconnectTimer: number | null = null;
+let heartbeatTimer: number | null = null;
 let sessionTicker: number | null = null;
+let devSimulateDesktopDisconnect = false;
+let devLogSessionDrift = false;
 let idleState: IdleState = 'active';
 let lastIdleChange = Date.now();
+const TAB_IDLE_GRACE_MS = 60_000;
+const tabActivityById = new Map<number, { lastInteractionAt: number | null; lastSeenAt: number }>();
 const ROULETTE_PROMPT_MIN_MS = 20_000;
 const PENDING_ACTIVITY_FLUSH_LIMIT = 400;
 const PENDING_USAGE_FLUSH_LIMIT = 200;
 const rotModeStartInFlight = new Set<string>();
 let pendingUsageFlushTimer: number | null = null;
+const lastEncouragement = new Map<string, number>();
+const ENCOURAGEMENT_MESSAGES = [
+    'You can stop anytime.',
+    'You can leave anytime you want!',
+    'Get out of here!',
+    'I trust you, fam. Do something else.',
+    'This tab owes you nothing.',
+    'That scroll can wait.',
+    'Future you will be proud if you bounce.',
+    'Close it now, win the day.',
+    'Trade this for something that matters.',
+    'Take a lap, not a scroll.',
+    'Your attention is expensive—save it.'
+];
 
 type RouletteOpen = {
     openedAt: number;
@@ -51,6 +70,22 @@ type TabPeekState = {
 
 const tabPeekState = new Map<number, TabPeekState>();
 const PEEK_NEW_PAGE_WINDOW_MS = 5000;
+const METERED_PREMIUM_MULTIPLIER = 3.5;
+const EXTENSION_HEARTBEAT_INTERVAL_MS = 20_000;
+
+function packChainMultiplier(chainCount: number) {
+    if (chainCount <= 0) return 1;
+    if (chainCount === 1) return 1.35;
+    if (chainCount === 2) return 1.75;
+    return 2.35;
+}
+const IS_DEV_BUILD = (() => {
+    try {
+        return !chrome.runtime.getManifest().update_url;
+    } catch {
+        return false;
+    }
+})();
 
 type EmergencyPolicyConfig = {
     id: EmergencyPolicyId;
@@ -74,6 +109,41 @@ function getEmergencyPolicyConfig(id: EmergencyPolicyId): EmergencyPolicyConfig 
     }
 }
 
+function normalizeSessionFromDesktop(
+    session: Partial<PaywallSession>,
+    domainFallback?: string,
+    existing?: PaywallSession
+): PaywallSession {
+    const now = Date.now();
+    const mode = session.mode ?? existing?.mode ?? 'metered';
+    const domain = session.domain ?? domainFallback ?? existing?.domain ?? '';
+    const startedAt = Number.isFinite(session.startedAt) ? Number(session.startedAt) : (existing?.startedAt ?? now);
+    const lastTick = Number.isFinite(session.lastTick) ? Number(session.lastTick) : (existing?.lastTick ?? startedAt ?? now);
+    const spendRemainder = Number.isFinite(session.spendRemainder as number)
+        ? Number(session.spendRemainder)
+        : (existing?.spendRemainder ?? 0);
+    const ratePerMinRaw = Number(session.ratePerMin);
+    const ratePerMin = Number.isFinite(ratePerMinRaw)
+        ? ratePerMinRaw
+        : (existing?.ratePerMin ?? 0);
+    const remainingRaw = Number(session.remainingSeconds);
+    const remainingSeconds = Number.isFinite(remainingRaw)
+        ? remainingRaw
+        : (existing?.remainingSeconds ?? (mode === 'metered' || mode === 'store' ? Infinity : 0));
+
+    return {
+        ...existing,
+        ...session,
+        domain,
+        mode,
+        ratePerMin,
+        remainingSeconds,
+        startedAt,
+        lastTick,
+        spendRemainder
+    };
+}
+
 function ensureTabPeekState(tabId: number) {
     let entry = tabPeekState.get(tabId);
     if (!entry) {
@@ -87,6 +157,36 @@ function recordTabNavigation(tabId: number, url?: string) {
     const entry = ensureTabPeekState(tabId);
     entry.lastNavigationAt = Date.now();
     entry.lastUrl = url ?? null;
+}
+
+function ensureTabActivity(tabId: number, now = Date.now()) {
+    let entry = tabActivityById.get(tabId);
+    if (!entry) {
+        entry = { lastInteractionAt: null, lastSeenAt: now };
+        tabActivityById.set(tabId, entry);
+    }
+    return entry;
+}
+
+function markTabSeen(tabId: number, now = Date.now()) {
+    const entry = ensureTabActivity(tabId, now);
+    entry.lastSeenAt = now;
+    if (entry.lastInteractionAt === null) {
+        entry.lastInteractionAt = now;
+    }
+}
+
+function recordTabInteraction(tabId: number, ts = Date.now()) {
+    const entry = ensureTabActivity(tabId, ts);
+    entry.lastInteractionAt = ts;
+}
+
+function getTabIdleSeconds(tabId: number | null | undefined, now = Date.now()) {
+    if (!tabId) return 0;
+    const entry = tabActivityById.get(tabId);
+    if (!entry || entry.lastInteractionAt === null) return 0;
+    const idleMs = now - entry.lastInteractionAt - TAB_IDLE_GRACE_MS;
+    return idleMs > 0 ? Math.floor(idleMs / 1000) : 0;
 }
 
 function isNewPeekContext(tabId: number, source?: string) {
@@ -111,6 +211,17 @@ function baseUrl(urlString: string): string | null {
     } catch {
         return null;
     }
+}
+
+function dayKeyFor(date: Date) {
+    const local = new Date(date);
+    if (local.getHours() < DAILY_START_HOUR) {
+        local.setDate(local.getDate() - 1);
+    }
+    const year = local.getFullYear();
+    const month = String(local.getMonth() + 1).padStart(2, '0');
+    const day = String(local.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
 }
 
 function normalizeDomain(domain: string) {
@@ -225,6 +336,7 @@ storage.init().then(() => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
     tabPeekState.delete(tabId);
+    tabActivityById.delete(tabId);
     const session = rouletteByTabId.get(tabId);
     if (!session) return;
     rouletteByTabId.delete(tabId);
@@ -267,6 +379,10 @@ chrome.notifications?.onClosed?.addListener((notificationId) => {
 
 function tryConnectToDesktop() {
     if (ws) return;
+    if (devSimulateDesktopDisconnect) {
+        console.log('Dev mode: desktop WS simulation enabled, skipping connect');
+        return;
+    }
 
     console.log('Attempting to connect to desktop app...');
     ws = new WebSocket(DESKTOP_WS_URL);
@@ -277,10 +393,13 @@ function tryConnectToDesktop() {
             clearTimeout(reconnectTimer);
             reconnectTimer = null;
         }
+        sendDesktopHeartbeat();
+        startHeartbeatTimer();
         // Sync data from desktop
         await syncFromDesktop();
         await syncPendingLibraryItems();
         await syncPendingCategorisation();
+        await syncPendingDailyOnboarding();
         await flushPendingUsage();
         await flushPendingActivity();
         await flushPendingPomodoroBlocks();
@@ -288,12 +407,14 @@ function tryConnectToDesktop() {
 
     ws.onclose = () => {
         console.log('❌ Disconnected from desktop app (extension will work offline)');
+        stopHeartbeatTimer();
         ws = null;
         scheduleReconnect();
     };
 
     ws.onerror = (err) => {
         console.error('Desktop connection error:', err);
+        stopHeartbeatTimer();
         ws = null;
     };
 
@@ -307,20 +428,73 @@ function tryConnectToDesktop() {
     };
 }
 
+function sendDesktopHeartbeat() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({
+        type: 'extension:heartbeat',
+        payload: {
+            timestamp: Date.now()
+        }
+    }));
+}
+
+function startHeartbeatTimer() {
+    if (heartbeatTimer) return;
+    heartbeatTimer = setInterval(() => {
+        sendDesktopHeartbeat();
+    }, EXTENSION_HEARTBEAT_INTERVAL_MS);
+}
+
+function stopHeartbeatTimer() {
+    if (!heartbeatTimer) return;
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+}
+
 function scheduleReconnect() {
     if (reconnectTimer) return;
+    if (devSimulateDesktopDisconnect) return;
     reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
         tryConnectToDesktop();
     }, 30000); // Try every 30 seconds
 }
 
+function logSessionDrift(
+    before: Record<string, PaywallSession>,
+    after: Record<string, PaywallSession>,
+    context: string
+) {
+    const domains = new Set([...Object.keys(before), ...Object.keys(after)]);
+    for (const domain of domains) {
+        const prev = before[domain];
+        const next = after[domain];
+        if (!prev || !next) continue;
+        const prevRemaining = prev.remainingSeconds;
+        const nextRemaining = next.remainingSeconds;
+        if (!Number.isFinite(prevRemaining) || !Number.isFinite(nextRemaining)) continue;
+        const driftSeconds = Math.round(nextRemaining - prevRemaining);
+        if (Math.abs(driftSeconds) >= 5) {
+            console.info(
+                `[dev] session drift (${context})`,
+                domain,
+                { localRemaining: prevRemaining, desktopRemaining: nextRemaining, driftSeconds }
+            );
+        }
+    }
+}
+
 async function syncFromDesktop() {
     try {
+        const before = devLogSessionDrift ? await storage.getAllSessions() : null;
         const response = await fetch(`${DESKTOP_API_URL}/extension/state`);
         if (response.ok) {
             const desktopState = await response.json();
             await storage.updateFromDesktop(desktopState);
+            if (before && devLogSessionDrift) {
+                const after = await storage.getAllSessions();
+                logSessionDrift(before, after, 'sync');
+            }
             console.log('✅ Synced state from desktop app');
         }
     } catch (e) {
@@ -343,23 +517,16 @@ function handleDesktopMessage(data: any) {
     } else if (data.type === 'paywall-session-started') {
         const session = data.payload;
         if (session?.domain) {
-            storage.setSession(session.domain, {
-                domain: session.domain,
-                mode: session.mode,
-                ratePerMin: session.ratePerMin,
-                remainingSeconds: session.remainingSeconds ?? Infinity,
-                startedAt: Date.now(),
-                paused: session.paused ?? false,
-                spendRemainder: session.spendRemainder ?? 0,
-                purchasePrice: session.purchasePrice,
-                purchasedSeconds: session.purchasedSeconds,
-                justification: session.justification,
-                lastReminder: session.lastReminder,
-                allowedUrl: session.allowedUrl
+            storage.getSession(session.domain).then((existing) => {
+                const normalized = normalizeSessionFromDesktop(session, session.domain, existing ?? undefined);
+                storage.setSession(session.domain, normalized);
+                if (normalized.mode !== 'emergency') {
+                    storage.setLastFrivolityAt(normalized.startedAt ?? Date.now());
+                }
+                if (devLogSessionDrift && existing) {
+                    logSessionDrift({ [session.domain]: existing }, { [session.domain]: normalized }, 'ws');
+                }
             });
-            if (session.mode !== 'emergency') {
-                storage.setLastFrivolityAt(Date.now());
-            }
         }
     } else if (data.type === 'paywall-session-ended') {
         if (data.payload?.domain) {
@@ -513,6 +680,26 @@ async function ensureRotModeSession(tabId: number, domain: string, source: strin
     }
 }
 
+async function maybeShowDailyOnboarding(tabId: number, urlString: string, domain: string, _source: string) {
+    if (!tabId || !urlString) return false;
+
+    const dayKey = dayKeyFor(new Date());
+    const state = await storage.getDailyOnboardingState();
+    if (state.completedDay === dayKey) return false;
+
+    const isFrivolous = await storage.isFrivolous(domain);
+    if (!isFrivolous) return false;
+    const shouldPrompt = state.lastPromptedDay !== dayKey;
+    if (!shouldPrompt) return false;
+
+    await storage.updateDailyOnboardingState({
+        lastPromptedDay: dayKey
+    });
+
+    await showDailyOnboardingScreen(tabId, domain, false);
+    return true;
+}
+
 async function checkAndBlockUrl(tabId: number, urlString: string, source: string) {
     if (!urlString || !urlString.startsWith('http')) return;
 
@@ -549,24 +736,35 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
             }
         }
 
+        const didOnboard = await maybeShowDailyOnboarding(tabId, urlString, domain, source);
+        if (didOnboard) return;
+
         const isFrivolous = await storage.isFrivolous(domain);
 
         if (isFrivolous) {
             const session = await storage.getSession(domain);
 
-            if (session && !session.paused) {
+            if (session) {
+                let sessionApplies = false;
                 if (session.allowedUrl) {
                     const current = baseUrl(urlString);
-                    if (!current || current !== session.allowedUrl) {
-                        // URL-locked session doesn't apply to this page.
-                    } else if (session.mode === 'metered') {
-                        return;
-                    } else if (session.remainingSeconds > 0) {
-                        return;
-                    }
+                    sessionApplies = Boolean(current && current === session.allowedUrl);
                 } else if (session.mode === 'metered') {
-                    return;
-                } else if (session.remainingSeconds > 0) {
+                    sessionApplies = true;
+                } else {
+                    sessionApplies = session.remainingSeconds > 0;
+                }
+
+                if (sessionApplies) {
+                    // Avoid stale paused flags forcing a block while user is back on
+                    // the paid domain.
+                    if (session.paused) {
+                        await storage.setSession(domain, {
+                            ...session,
+                            paused: false,
+                            lastTick: Date.now()
+                        });
+                    }
                     return;
                 }
             }
@@ -599,6 +797,16 @@ function startSessionTicker() {
     sessionTicker = setInterval(async () => {
         await tickSessions();
     }, 15000);
+}
+
+function getSafeElapsedSeconds(session: PaywallSession, now: number) {
+    const startedAt = Number.isFinite(session.startedAt) ? session.startedAt : now;
+    const lastTick = Number.isFinite(session.lastTick) ? Number(session.lastTick) : startedAt;
+    if (!Number.isFinite(session.startedAt)) session.startedAt = startedAt;
+    if (!Number.isFinite(session.lastTick)) session.lastTick = lastTick;
+    const deltaSeconds = Math.round((now - lastTick) / 1000);
+    if (!Number.isFinite(deltaSeconds) || deltaSeconds <= 0) return 0;
+    return deltaSeconds;
 }
 
 async function tickSessions() {
@@ -669,6 +877,12 @@ async function tickSessions() {
             }
         }
 
+        if (!Number.isFinite(session.remainingSeconds)) {
+            const policyId = await storage.getEmergencyPolicy();
+            const policy = getEmergencyPolicyConfig(policyId);
+            session.remainingSeconds = policy.durationSeconds;
+        }
+
         const reminderIntervalMs = 300 * 1000; // default 5m for offline mode
         const lastReminder = session.lastReminder ?? session.startedAt;
         if (Date.now() - lastReminder > reminderIntervalMs) {
@@ -682,8 +896,7 @@ async function tickSessions() {
             });
         }
 
-        const lastTick = session.lastTick ?? session.startedAt;
-        const elapsedSeconds = Math.max(0, Math.round((now - lastTick) / 1000));
+        const elapsedSeconds = getSafeElapsedSeconds(session, now);
         session.remainingSeconds -= elapsedSeconds;
         session.lastTick = now;
         if (session.remainingSeconds <= 0) {
@@ -705,10 +918,12 @@ async function tickSessions() {
         return;
     } else if (session.mode === 'metered') {
         // Pay-as-you-go: deduct coins using the latest rate
-        const currentRate = (await storage.getMarketRate(activeDomain))?.ratePerMin ?? session.ratePerMin;
+        const meteredMultiplier = session.meteredMultiplier ?? METERED_PREMIUM_MULTIPLIER;
+        const marketBaseRate = (await storage.getMarketRate(activeDomain))?.ratePerMin;
+        const fallbackBaseRate = session.ratePerMin / Math.max(1, meteredMultiplier);
+        const currentRate = (marketBaseRate ?? fallbackBaseRate) * meteredMultiplier;
         // Calculate actual elapsed seconds since last tick
-        const lastTick = session.lastTick ?? session.startedAt;
-        const elapsedSeconds = Math.max(0, Math.round((now - lastTick) / 1000));
+        const elapsedSeconds = getSafeElapsedSeconds(session, now);
         // Carry forward fractional coins so we don't over-charge
         const accrued = (currentRate / 60) * elapsedSeconds + (session.spendRemainder ?? 0);
         const cost = Math.floor(accrued); // whole coins to spend this tick
@@ -743,11 +958,14 @@ async function tickSessions() {
         }
         if (activeTab.id) {
             await maybeSendSessionFade(activeTab.id, session);
+            await maybeSendEncouragement(activeTab.id, activeDomain, session);
         }
     } else {
         // Pack mode: countdown time using actual elapsed time
-        const lastTick = session.lastTick ?? session.startedAt;
-        const elapsedSeconds = Math.max(0, Math.round((now - lastTick) / 1000));
+        const elapsedSeconds = getSafeElapsedSeconds(session, now);
+        if (!Number.isFinite(session.remainingSeconds)) {
+            session.remainingSeconds = typeof session.purchasedSeconds === 'number' ? session.purchasedSeconds : 0;
+        }
         session.remainingSeconds -= elapsedSeconds;
         session.lastTick = now;
         if (session.remainingSeconds <= 0) {
@@ -761,6 +979,7 @@ async function tickSessions() {
         }
         if (activeTab.id) {
             await maybeSendSessionFade(activeTab.id, session);
+            await maybeSendEncouragement(activeTab.id, activeDomain, session);
         }
     }
 }
@@ -805,13 +1024,16 @@ async function pushActivitySample(reason: string) {
     if (!tab || !tab.url) return;
 
     const domain = new URL(tab.url).hostname.replace(/^www\./, '');
-    const idleSeconds = idleState === 'active' ? 0 : Math.floor((Date.now() - lastIdleChange) / 1000);
+    const now = Date.now();
+    const chromeIdleSeconds = idleState === 'active' ? 0 : Math.floor((now - lastIdleChange) / 1000);
+    const tabIdleSeconds = getTabIdleSeconds(tab.id, now);
+    const idleSeconds = Math.max(chromeIdleSeconds, tabIdleSeconds);
 
     const activityEvent: PendingActivityEvent = {
         type: 'activity',
         reason,
         payload: {
-            timestamp: Date.now(),
+            timestamp: now,
             source: 'url',
             appName: getBrowserLabel(),
             windowTitle: tab.title ?? domain,
@@ -1011,6 +1233,21 @@ async function showBlockScreen(tabId: number, domain: string, reason?: string, s
     }
 }
 
+async function showDailyOnboardingScreen(tabId: number, domain: string, forced = false) {
+    await preHidePage(tabId);
+    await ensureContentScript(tabId);
+    try {
+        await chrome.tabs.sendMessage(tabId, {
+            type: 'DAILY_ONBOARDING',
+            payload: { domain, forced }
+        });
+        console.log(`🌅 Daily onboarding shown for ${domain}`);
+    } catch (error) {
+        console.warn('Failed to send daily onboarding message', error);
+        await clearPreHidePage(tabId);
+    }
+}
+
 async function showPomodoroBlockScreen(
     tabId: number,
     payload: { domain: string; remainingMs?: number; mode: 'strict' | 'soft'; softUnlockMs?: number; reason?: string }
@@ -1055,6 +1292,38 @@ async function maybeSendSessionFade(tabId: number, session: PaywallSession) {
     }
 }
 
+async function maybeSendEncouragement(tabId: number, domain: string, session: PaywallSession) {
+    if (session.paused) return;
+    const discouragementEnabled = await storage.getDiscouragementEnabled();
+    if (!discouragementEnabled) return;
+    const isFriv = await storage.isFrivolous(domain);
+    if (!isFriv) return;
+    const now = Date.now();
+    const last = lastEncouragement.get(domain) ?? 0;
+    const intervalMinutes = await storage.getDiscouragementIntervalMinutes();
+    const intervalMs = Math.max(1, intervalMinutes) * 60 * 1000;
+    if (now - last < intervalMs) return;
+    lastEncouragement.set(domain, now);
+
+    const message = ENCOURAGEMENT_MESSAGES[Math.floor(Math.random() * ENCOURAGEMENT_MESSAGES.length)];
+    try {
+        await ensureContentScript(tabId);
+        await chrome.tabs.sendMessage(tabId, { type: 'ENCOURAGEMENT_OVERLAY', payload: { message } });
+    } catch {
+        // ignore overlay errors
+    }
+    try {
+        await chrome.notifications?.create(`tws-encourage-${domain}-${now}`, {
+            type: 'basic',
+            iconUrl: 'icons/icon128.png',
+            title: 'Keep your edge',
+            message
+        });
+    } catch {
+        // ignore notification errors
+    }
+}
+
 async function notifyPomodoroBlock(domain: string, mode: PomodoroSession['mode'], reason?: string) {
     try {
         const message = `Deep work (${mode}) is active. ${domain} is blocked${reason ? ` (${reason})` : ''}.`;
@@ -1086,12 +1355,7 @@ async function preferDesktopPurchase(path: '/paywall/packs' | '/paywall/metered'
         const session = await response.json();
         await storage.updateFromDesktop({
             sessions: {
-                [session.domain]: {
-                    ...session,
-                    startedAt: Date.now(),
-                    paused: false,
-                    spendRemainder: session.spendRemainder ?? 0
-                }
+                [session.domain]: session
             } as any
         });
         await storage.setLastFrivolityAt(Date.now());
@@ -1119,12 +1383,7 @@ async function preferDesktopEmergency(payload: { domain: string; justification: 
         const session = await response.json();
         await storage.updateFromDesktop({
             sessions: {
-                [session.domain]: {
-                    ...session,
-                    startedAt: Date.now(),
-                    paused: false,
-                    spendRemainder: session.spendRemainder ?? 0
-                }
+                [session.domain]: session
             } as any
         });
         await syncFromDesktop(); // refresh wallet + rates
@@ -1160,6 +1419,54 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'GET_STATUS') {
         handleGetStatus(message.payload).then(sendResponse);
         return true; // Async response
+    } else if (message.type === 'GET_DEV_FLAGS') {
+        sendResponse?.({
+            success: true,
+            flags: {
+                isDev: IS_DEV_BUILD,
+                simulateDisconnect: devSimulateDesktopDisconnect,
+                logSessionDrift: devLogSessionDrift
+            }
+        });
+        return true;
+    } else if (message.type === 'SET_DEV_FLAGS') {
+        if (!IS_DEV_BUILD) {
+            sendResponse?.({ success: false, error: 'Dev tools unavailable in this build.' });
+            return true;
+        }
+        const simulateDisconnect = message.payload?.simulateDisconnect;
+        const logSessionDrift = message.payload?.logSessionDrift;
+        if (typeof simulateDisconnect === 'boolean') {
+            devSimulateDesktopDisconnect = simulateDisconnect;
+            if (devSimulateDesktopDisconnect) {
+                if (reconnectTimer) {
+                    clearTimeout(reconnectTimer);
+                    reconnectTimer = null;
+                }
+                if (ws) {
+                    try {
+                        ws.close();
+                    } catch {
+                        // ignore
+                    }
+                    ws = null;
+                }
+            } else {
+                tryConnectToDesktop();
+            }
+        }
+        if (typeof logSessionDrift === 'boolean') {
+            devLogSessionDrift = logSessionDrift;
+        }
+        sendResponse?.({
+            success: true,
+            flags: {
+                isDev: IS_DEV_BUILD,
+                simulateDisconnect: devSimulateDesktopDisconnect,
+                logSessionDrift: devLogSessionDrift
+            }
+        });
+        return true;
     } else if (message.type === 'GET_CONNECTION') {
         handleGetConnection().then(sendResponse);
         return true;
@@ -1174,6 +1481,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return true;
     } else if (message.type === 'PAGE_HEARTBEAT') {
         handlePageHeartbeat(message.payload, _sender).then(sendResponse);
+        return true;
+    } else if (message.type === 'USER_ACTIVITY') {
+        const tabId = _sender.tab?.id;
+        if (tabId != null && _sender.tab?.active !== false) {
+            const ts = typeof message.payload?.ts === 'number' ? message.payload.ts : Date.now();
+            recordTabInteraction(tabId, ts);
+        }
+        sendResponse?.({ ok: true });
         return true;
     } else if (message.type === 'GET_LINK_PREVIEWS') {
         handleGetLinkPreviews(message.payload).then(sendResponse);
@@ -1232,13 +1547,35 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message.type === 'SET_DISCOURAGEMENT_MODE') {
         handleSetDiscouragementMode(message.payload).then(sendResponse);
         return true;
+    } else if (message.type === 'SET_DISCOURAGEMENT_INTERVAL') {
+        handleSetDiscouragementInterval(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'SET_SPEND_GUARD') {
+        handleSetSpendGuard(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'SET_CAMERA_MODE') {
+        handleSetCameraMode(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'DAILY_ONBOARDING_SAVE') {
+        handleDailyOnboardingSave(message.payload, _sender).then(sendResponse);
+        return true;
+    } else if (message.type === 'DAILY_ONBOARDING_SKIP') {
+        handleDailyOnboardingSkip(message.payload, _sender).then(sendResponse);
+        return true;
     } else if (message.type === 'REQUEST_POMODORO_OVERRIDE') {
         handlePomodoroOverrideRequest(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'OPEN_SHORTCUTS') {
+        chrome.tabs.create({ url: 'chrome://extensions/shortcuts' }).then(() => {
+            sendResponse({ success: true });
+        }).catch(() => {
+            sendResponse({ success: false, error: 'Unable to open shortcuts page' });
+        });
         return true;
     }
 });
 
-function emitUrlActivitySample(payload: { url: string; title?: string | null; mediaPlaying?: boolean }, reason: string) {
+function emitUrlActivitySample(payload: { url: string; title?: string | null; mediaPlaying?: boolean }, reason: string, tabId?: number) {
     const url = String(payload.url ?? '');
     if (!url || !/^https?:/i.test(url)) return;
 
@@ -1249,13 +1586,16 @@ function emitUrlActivitySample(payload: { url: string; title?: string | null; me
         return;
     }
 
-    const idleSeconds = idleState === 'active' ? 0 : Math.floor((Date.now() - lastIdleChange) / 1000);
+    const now = Date.now();
+    const chromeIdleSeconds = idleState === 'active' ? 0 : Math.floor((now - lastIdleChange) / 1000);
+    const tabIdleSeconds = getTabIdleSeconds(tabId, now);
+    const idleSeconds = Math.max(chromeIdleSeconds, tabIdleSeconds);
 
     emitActivity({
         type: 'activity',
         reason,
         payload: {
-            timestamp: Date.now(),
+            timestamp: now,
             source: 'url' as const,
             appName: getBrowserLabel(),
             windowTitle: payload.title ?? domain,
@@ -1271,6 +1611,10 @@ async function handlePageHeartbeat(payload: { url?: string; title?: string; medi
         if (sender.tab && sender.tab.active === false) {
             return { ok: true };
         }
+        const tabId = sender.tab?.id;
+        if (tabId != null) {
+            markTabSeen(tabId);
+        }
         const url = typeof payload?.url === 'string' ? payload.url : sender.tab?.url;
         if (!url) return { ok: true };
 
@@ -1278,10 +1622,18 @@ async function handlePageHeartbeat(payload: { url?: string; title?: string; medi
             url,
             title: typeof payload?.title === 'string' ? payload.title : sender.tab?.title ?? undefined,
             mediaPlaying: Boolean(payload?.mediaPlaying)
-        }, 'content-heartbeat');
+        }, 'content-heartbeat', tabId);
 
-        // Keep offline session enforcement responsive even if the service worker is being suspended.
-        await tickSessions();
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            const domain = new URL(url).hostname.replace(/^www\./, '');
+            const session = await storage.getSession(domain);
+            if (tabId != null && session) {
+                await maybeSendEncouragement(tabId, domain, session);
+            }
+        } else {
+            // Keep offline session enforcement responsive even if the service worker is being suspended.
+            await tickSessions();
+        }
 
         return { ok: true };
     } catch {
@@ -1778,7 +2130,7 @@ async function findLibraryItemOnDesktop(url: string) {
     }
 }
 
-async function addLibraryItemToDesktop(payload: { url: string; purpose: LibraryPurpose; price?: number | null; title?: string | null; note?: string | null; consumedAt?: string | null }) {
+async function addLibraryItemToDesktop(payload: { url: string; purpose: LibraryPurpose; price?: number | null; title?: string | null; note?: string | null; consumedAt?: string | null; isPublic?: boolean | null }) {
     const response = await fetch(`${DESKTOP_API_URL}/library`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1789,7 +2141,8 @@ async function addLibraryItemToDesktop(payload: { url: string; purpose: LibraryP
             price: payload.price === undefined ? undefined : payload.price,
             title: payload.title ?? undefined,
             note: payload.note ?? undefined,
-            consumedAt: payload.consumedAt
+            consumedAt: payload.consumedAt,
+            isPublic: payload.isPublic === undefined ? undefined : Boolean(payload.isPublic)
         }),
         cache: 'no-store'
     });
@@ -1806,7 +2159,7 @@ async function addLibraryItemToDesktop(payload: { url: string; purpose: LibraryP
     }
 }
 
-async function updateLibraryItemOnDesktop(id: number, payload: { purpose?: LibraryPurpose; price?: number | null; title?: string | null; note?: string | null; consumedAt?: string | null }) {
+async function updateLibraryItemOnDesktop(id: number, payload: { purpose?: LibraryPurpose; price?: number | null; title?: string | null; note?: string | null; consumedAt?: string | null; isPublic?: boolean | null }) {
     const response = await fetch(`${DESKTOP_API_URL}/library/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -1815,7 +2168,8 @@ async function updateLibraryItemOnDesktop(id: number, payload: { purpose?: Libra
             price: payload.price === undefined ? undefined : payload.price,
             title: payload.title ?? undefined,
             note: payload.note ?? undefined,
-            consumedAt: payload.consumedAt
+            consumedAt: payload.consumedAt,
+            isPublic: payload.isPublic === undefined ? undefined : Boolean(payload.isPublic)
         }),
         cache: 'no-store'
     });
@@ -1831,7 +2185,7 @@ async function updateLibraryItemOnDesktop(id: number, payload: { purpose?: Libra
     }
 }
 
-async function upsertLibraryItemOnDesktop(payload: { url: string; purpose: LibraryPurpose; price?: number | null; title?: string | null; note?: string | null; consumedAt?: string | null }) {
+async function upsertLibraryItemOnDesktop(payload: { url: string; purpose: LibraryPurpose; price?: number | null; title?: string | null; note?: string | null; consumedAt?: string | null; isPublic?: boolean | null }) {
     const existing = await findLibraryItemOnDesktop(payload.url);
     if (existing) {
         await updateLibraryItemOnDesktop(existing.id, payload);
@@ -1943,6 +2297,20 @@ async function syncPendingCategorisation() {
     }
 }
 
+async function syncPendingDailyOnboarding() {
+    const pending = await storage.getPendingDailyOnboardingUpdate();
+    if (!pending?.patch) return { attempted: 0, succeeded: 0 };
+    try {
+        await updateDailyOnboardingOnDesktop(pending.patch);
+        await storage.clearPendingDailyOnboardingUpdate();
+        await syncFromDesktop();
+        return { attempted: 1, succeeded: 1 };
+    } catch (error) {
+        console.warn('Failed to sync daily onboarding update to desktop', error);
+        return { attempted: 1, succeeded: 0 };
+    }
+}
+
 async function handleUpsertLibraryItem(payload: { url?: string; purpose?: LibraryPurpose; price?: number | null; title?: string | null; note?: string | null }) {
     const url = typeof payload?.url === 'string' ? payload.url.trim() : '';
     const purpose = payload?.purpose;
@@ -2000,6 +2368,160 @@ async function handleSetDomainCategory(payload: { domain?: string; category?: 'p
     return { success: true, synced: syncResult.succeeded > 0 };
 }
 
+async function updateIdleThresholdOnDesktop(threshold: number) {
+    await fetch(`${DESKTOP_API_URL}/settings/idle-threshold`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threshold }),
+        cache: 'no-store'
+    });
+}
+
+async function updateContinuityWindowOnDesktop(seconds: number) {
+    await fetch(`${DESKTOP_API_URL}/settings/continuity-window`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seconds }),
+        cache: 'no-store'
+    });
+}
+
+async function updateProductivityGoalOnDesktop(hours: number) {
+    await fetch(`${DESKTOP_API_URL}/settings/productivity-goal-hours`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hours }),
+        cache: 'no-store'
+    });
+}
+
+async function updateCameraModeOnDesktop(enabled: boolean) {
+    await fetch(`${DESKTOP_API_URL}/settings/camera-mode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: Boolean(enabled) }),
+        cache: 'no-store'
+    });
+}
+
+async function updateEmergencyPolicyOnDesktop(policy: EmergencyPolicyId) {
+    await fetch(`${DESKTOP_API_URL}/settings/emergency-policy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ policy }),
+        cache: 'no-store'
+    });
+}
+
+async function updateDailyOnboardingOnDesktop(patch: any) {
+    const response = await fetch(`${DESKTOP_API_URL}/settings/daily-onboarding`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+        cache: 'no-store'
+    });
+    if (!response.ok) {
+        let message = 'Failed to update daily onboarding on desktop app.';
+        try {
+            const data = await response.json();
+            if (data?.error) message = data.error;
+        } catch {
+            // ignore parse errors
+        }
+        throw new Error(message);
+    }
+}
+
+async function persistDailyOnboardingPatch(patch: Partial<DailyOnboardingState>) {
+    try {
+        await updateDailyOnboardingOnDesktop(patch);
+        await storage.clearPendingDailyOnboardingUpdate();
+        await syncFromDesktop();
+    } catch {
+        await storage.queueDailyOnboardingUpdate(patch);
+    }
+}
+
+async function handleDailyOnboardingSave(
+    payload: { dayKey?: string; goalHours?: number; idleThreshold?: number; continuityWindowSeconds?: number; emergencyPolicy?: EmergencyPolicyId; note?: string; url?: string },
+    sender: chrome.runtime.MessageSender
+) {
+    const dayKey = typeof payload?.dayKey === 'string' ? payload.dayKey : dayKeyFor(new Date());
+    const note = typeof payload?.note === 'string' ? payload.note.trim() : '';
+    const patch: any = {
+        completedDay: dayKey,
+        lastPromptedDay: dayKey,
+        lastSkippedDay: null,
+        lastForcedDay: null
+    };
+    if (note) {
+        patch.note = { day: dayKey, message: note, deliveredAt: null, acknowledged: false };
+    }
+    try {
+        await storage.updateDailyOnboardingState(patch);
+        if (typeof payload.goalHours === 'number') {
+            await storage.setProductivityGoalHours(payload.goalHours);
+        }
+        if (typeof payload.idleThreshold === 'number') {
+            await storage.setIdleThreshold(payload.idleThreshold);
+        }
+        if (typeof payload.continuityWindowSeconds === 'number') {
+            await storage.setContinuityWindowSeconds(payload.continuityWindowSeconds);
+        }
+        if (payload.emergencyPolicy) {
+            await storage.setEmergencyPolicy(payload.emergencyPolicy);
+        }
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+
+    void (async () => {
+        try {
+            if (typeof payload.goalHours === 'number') await updateProductivityGoalOnDesktop(payload.goalHours);
+            if (typeof payload.idleThreshold === 'number') await updateIdleThresholdOnDesktop(payload.idleThreshold);
+            if (typeof payload.continuityWindowSeconds === 'number') await updateContinuityWindowOnDesktop(payload.continuityWindowSeconds);
+            if (payload.emergencyPolicy) await updateEmergencyPolicyOnDesktop(payload.emergencyPolicy);
+        } catch {
+            // ignore desktop setting sync errors
+        }
+        await persistDailyOnboardingPatch(patch);
+    })();
+
+    if (sender?.tab?.id && payload?.url) {
+        await checkAndBlockUrl(sender.tab.id, payload.url, 'daily-onboarding:complete');
+    }
+    return { success: true };
+}
+
+async function handleDailyOnboardingSkip(
+    payload: { dayKey?: string; note?: string; url?: string },
+    sender: chrome.runtime.MessageSender
+) {
+    const dayKey = typeof payload?.dayKey === 'string' ? payload.dayKey : dayKeyFor(new Date());
+    const note = typeof payload?.note === 'string' ? payload.note.trim() : '';
+    const patch: any = {
+        completedDay: dayKey,
+        lastPromptedDay: dayKey,
+        lastSkippedDay: dayKey,
+        lastForcedDay: null
+    };
+    if (note) {
+        patch.note = { day: dayKey, message: note, deliveredAt: null, acknowledged: false };
+    }
+    try {
+        await storage.updateDailyOnboardingState(patch);
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+
+    void persistDailyOnboardingPatch(patch);
+
+    if (sender?.tab?.id && payload?.url) {
+        await checkAndBlockUrl(sender.tab.id, payload.url, 'daily-onboarding:skip');
+    }
+    return { success: true };
+}
+
 async function promptForUnlockDetails(tabId: number, defaults: { url: string; price: number; title?: string }) {
     const results = await chrome.scripting.executeScript({
         target: { tabId },
@@ -2033,6 +2555,16 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
     const session = await storage.getSession(payload.domain);
     const lastSync = await storage.getLastSyncTime();
     const state = await storage.getState();
+    const normalizedDomain = normalizeDomainInput(payload.domain ?? '');
+    const domainCategory = (() => {
+        if (!normalizedDomain) return null;
+        const isIn = (items?: string[]) => (items ?? []).some((item) => normalizeDomainInput(item) === normalizedDomain);
+        if (isIn(state.settings?.productiveDomains)) return 'productive';
+        if (isIn(state.settings?.neutralDomains)) return 'neutral';
+        if (isIn(state.settings?.frivolityDomains)) return 'frivolous';
+        if (isIn(state.settings?.drainingDomains)) return 'draining';
+        return null;
+    })();
 
     const libraryItems = state.libraryItems ?? [];
     const matchedPricedItem = payload.url ? matchPricedLibraryItem(libraryItems, payload.url) : null;
@@ -2051,19 +2583,30 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
     const consumedReading = state.consumedReading ?? {};
     readingItems = readingItems.filter((item: any) => item?.id && !consumedReading[String(item.id)]);
 
-        return {
-            balance,
-            rate,
-            session,
-            matchedPricedItem,
-            lastSync,
-            desktopConnected: ws?.readyState === WebSocket.OPEN,
-            rotMode: state.rotMode,
+    return {
+        balance,
+        rate,
+        session,
+        matchedPricedItem,
+        lastSync,
+        desktopConnected: ws?.readyState === WebSocket.OPEN,
+        rotMode: state.rotMode,
+        emergencyPolicy: state.settings.emergencyPolicy ?? 'balanced',
+        discouragementEnabled: state.settings.discouragementEnabled ?? true,
+        spendGuardEnabled: state.settings.spendGuardEnabled ?? true,
+        domainCategory,
+        emergency: state.emergency,
+        dailyOnboarding: state.dailyOnboarding ?? null,
+        settings: {
+            idleThreshold: state.settings.idleThreshold ?? 15,
+            continuityWindowSeconds: state.settings.continuityWindowSeconds ?? 120,
+            productivityGoalHours: state.settings.productivityGoalHours ?? 2,
             emergencyPolicy: state.settings.emergencyPolicy ?? 'balanced',
-            discouragementEnabled: state.settings.discouragementEnabled ?? true,
-            emergency: state.emergency,
-            journal: state.settings.journal ?? { url: null, minutes: 10 },
-            library: {
+            discouragementIntervalMinutes: state.settings.discouragementIntervalMinutes ?? 1,
+            cameraModeEnabled: state.settings.cameraModeEnabled ?? false
+        },
+        journal: state.settings.journal ?? { url: null, minutes: 10 },
+        library: {
             items: libraryItems,
             replaceItems: libraryItems.filter((item) => item.purpose === 'replace' && !item.consumedAt),
             productiveItems: libraryItems.filter((item) => item.purpose === 'productive' && !item.consumedAt),
@@ -2084,10 +2627,11 @@ async function handleGetFriends() {
             summaries: data.summaries ?? {},
             profile: data.profile ?? null,
             meSummary: data.meSummary ?? null,
-            competitive: data.competitive ?? null
+            competitive: data.competitive ?? null,
+            publicLibrary: data.publicLibrary ?? []
         };
     } catch (error) {
-        return { success: false, error: (error as Error).message, friends: [], summaries: {}, profile: null, meSummary: null, competitive: null };
+        return { success: false, error: (error as Error).message, friends: [], summaries: {}, profile: null, meSummary: null, competitive: null, publicLibrary: [] };
     }
 }
 
@@ -2128,6 +2672,30 @@ async function handleSetDiscouragementMode(payload: { enabled?: boolean }) {
     const enabled = Boolean(payload?.enabled);
     const discouragementEnabled = await storage.setDiscouragementEnabled(enabled);
     return { success: true, discouragementEnabled };
+}
+
+async function handleSetDiscouragementInterval(payload: { minutes?: number }) {
+    const minutes = Number(payload?.minutes);
+    const discouragementIntervalMinutes = await storage.setDiscouragementIntervalMinutes(minutes);
+    return { success: true, discouragementIntervalMinutes };
+}
+
+async function handleSetSpendGuard(payload: { enabled?: boolean }) {
+    const enabled = Boolean(payload?.enabled);
+    const spendGuardEnabled = await storage.setSpendGuardEnabled(enabled);
+    return { success: true, spendGuardEnabled };
+}
+
+async function handleSetCameraMode(payload: { enabled?: boolean }) {
+    const enabled = Boolean(payload?.enabled);
+    try {
+        await updateCameraModeOnDesktop(enabled);
+    } catch (error) {
+        console.warn('Failed to sync camera mode to desktop', error);
+        return { success: false, error: 'Desktop unavailable for camera mode' };
+    }
+    const cameraModeEnabled = await storage.setCameraModeEnabled(enabled);
+    return { success: true, cameraModeEnabled };
 }
 
 async function handleStartStoreSession(payload: { domain: string; price: number; url?: string }) {
@@ -2302,37 +2870,63 @@ async function handleMarkReadingConsumed(payload: { id?: string; consumed?: bool
 }
 
 async function handleBuyPack(payload: { domain: string; minutes: number }) {
-    const result = await preferDesktopPurchase('/paywall/packs', { domain: payload.domain, minutes: payload.minutes });
+    const safeMinutes = Math.max(1, Math.round(Number(payload.minutes)));
+    const result = await preferDesktopPurchase('/paywall/packs', { domain: payload.domain, minutes: safeMinutes });
     if (result.ok) return { success: true, session: result.session };
 
     // Fallback to local
     const rate = await storage.getMarketRate(payload.domain);
     if (!rate) return { success: false, error: 'No rate configured for this domain' };
-    const pack = rate.packs.find(p => p.minutes === payload.minutes);
-    if (!pack) return { success: false, error: 'Pack not found' };
+    const pack = rate.packs.find(p => p.minutes === safeMinutes);
+    const basePrice = pack ? pack.price : Math.max(1, Math.round(safeMinutes * rate.ratePerMin));
+    const existing = await storage.getSession(payload.domain);
+    const chainCount = existing?.mode === 'pack' ? (existing.packChainCount ?? 1) : 0;
+    const multiplier = packChainMultiplier(chainCount);
+    const chargedPrice = Math.max(1, Math.round(basePrice * multiplier));
 
     try {
-        await storage.spendCoins(pack.price);
+        await storage.spendCoins(chargedPrice);
         await queueWalletTransaction({
             type: 'spend',
-            amount: pack.price,
+            amount: chargedPrice,
             meta: {
                 source: 'extension',
                 reason: 'pack-purchase',
                 domain: payload.domain,
-                minutes: pack.minutes
+                minutes: safeMinutes,
+                basePrice,
+                chainCount,
+                chainMultiplier: multiplier
             }
         });
-        const session = {
-            domain: payload.domain,
-            mode: 'pack' as const,
-            ratePerMin: rate.ratePerMin,
-            remainingSeconds: pack.minutes * 60,
-            startedAt: Date.now(),
-            spendRemainder: 0,
-            purchasePrice: pack.price,
-            purchasedSeconds: pack.minutes * 60
-        };
+        const now = Date.now();
+        const purchasedSeconds = safeMinutes * 60;
+        const existingPack = existing?.mode === 'pack' ? existing : null;
+        const session = existingPack
+            ? {
+                ...existingPack,
+                mode: 'pack' as const,
+                ratePerMin: rate.ratePerMin,
+                remainingSeconds: Math.max(0, existingPack.remainingSeconds) + purchasedSeconds,
+                lastTick: now,
+                paused: false,
+                spendRemainder: 0,
+                purchasePrice: (existingPack.purchasePrice ?? 0) + chargedPrice,
+                purchasedSeconds: (existingPack.purchasedSeconds ?? 0) + purchasedSeconds,
+                packChainCount: (existingPack.packChainCount ?? 1) + 1
+            }
+            : {
+                domain: payload.domain,
+                mode: 'pack' as const,
+                ratePerMin: rate.ratePerMin,
+                remainingSeconds: purchasedSeconds,
+                startedAt: now,
+                lastTick: now,
+                spendRemainder: 0,
+                purchasePrice: chargedPrice,
+                purchasedSeconds,
+                packChainCount: 1
+            };
         await storage.setSession(payload.domain, session);
         await storage.setLastFrivolityAt(Date.now());
         await queueConsumptionEvent({
@@ -2341,11 +2935,14 @@ async function handleBuyPack(payload: { domain: string; minutes: number }) {
             domain: payload.domain,
             meta: {
                 mode: 'pack',
-                purchasePrice: pack.price,
-                purchasedSeconds: pack.minutes * 60
+                purchasePrice: chargedPrice,
+                basePrice,
+                purchasedSeconds,
+                chainCount,
+                chainMultiplier: multiplier
             }
         });
-        console.log(`✅ Purchased ${pack.minutes} minutes for ${payload.domain} (offline mode)`);
+        console.log(`✅ Purchased ${safeMinutes} minutes for ${payload.domain} (offline mode, ${chargedPrice} coins)`);
         return { success: true, session };
     } catch (error) {
         return { success: false, error: (error as Error).message };
@@ -2363,10 +2960,11 @@ async function handleStartMetered(payload: { domain: string }) {
     const session = {
         domain: payload.domain,
         mode: 'metered' as const,
-        ratePerMin: rate.ratePerMin,
+        ratePerMin: rate.ratePerMin * METERED_PREMIUM_MULTIPLIER,
         remainingSeconds: Infinity,
         startedAt: Date.now(),
-        spendRemainder: 0
+        spendRemainder: 0,
+        meteredMultiplier: METERED_PREMIUM_MULTIPLIER
     };
 
     await storage.setSession(payload.domain, session);
@@ -2553,6 +3151,34 @@ chrome.runtime.onInstalled.addListener(() => {
 
 // Service worker may start without onStartup (e.g. first manual reload); ensure menus exist.
 setupContextMenus();
+
+chrome.commands.onCommand.addListener(async (command) => {
+    if (command !== 'quick-add-library') return;
+    const tab = await getActiveHttpTab();
+    if (!tab || !tab.url) {
+        await showNotification('Open an http(s) page to quick add.');
+        return;
+    }
+    const url = normaliseUrl(tab.url);
+    if (!url) {
+        await showNotification('Unable to capture that page.', tab.id);
+        return;
+    }
+    const title = deriveTitle(url, null, null, tab.title ?? null);
+    try {
+        const result = await upsertLibraryItem({
+            url,
+            purpose: 'replace',
+            title,
+            note: null
+        });
+        const verb = result.action === 'updated' ? 'Updated' : 'Saved';
+        const suffix = result.synced ? 'Synced to desktop.' : 'Saved locally. Will sync when desktop is available.';
+        await showNotification(`${verb} to Replace library. ${suffix}`, tab.id);
+    } catch (err) {
+        await showNotification((err as Error).message || 'Failed to save to library', tab.id);
+    }
+});
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     const tabId = (info as any).tabId ?? tab?.id;

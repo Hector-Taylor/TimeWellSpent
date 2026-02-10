@@ -6,10 +6,19 @@ import { VitePlugin } from '@electron-forge/plugin-vite';
 
 const config: ForgeConfig = {
   packagerConfig: {
+    // Keep Vite output + runtime dependencies (native modules like better-sqlite3)
+    // in the packaged app. The Vite plugin otherwise ignores everything except ".vite".
+    ignore: (file: string) => {
+      if (!file) return false;
+      return !(file.startsWith('/.vite') || file.startsWith('/node_modules'));
+    },
     executableName: 'TimeWellSpent',
     appBundleId: 'com.timewellspent.desktop',
     appCategoryType: 'public.app-category.productivity',
-    icon: './src/assets/icon' // Will use .icns on macOS, .ico on Windows
+    icon: './src/assets/icon', // Will use .icns on macOS, .ico on Windows
+    extendInfo: {
+      NSCameraUsageDescription: 'TimeWellSpent captures accountability photos during frivolity sessions when Camera Mode is enabled.'
+    }
   },
   rebuildConfig: {},
   makers: [

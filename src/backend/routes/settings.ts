@@ -55,6 +55,23 @@ export function createSettingsRoutes(ctx: SettingsRoutesContext): Router {
         }
     });
 
+    router.get('/emergency-policy', (_req, res) => {
+        res.json({ policy: settings.getEmergencyPolicy() });
+    });
+
+    router.post('/emergency-policy', (req, res) => {
+        try {
+            const { policy } = req.body as { policy: string };
+            if (policy !== 'off' && policy !== 'gentle' && policy !== 'balanced' && policy !== 'strict') {
+                throw new Error('Invalid emergency policy');
+            }
+            settings.setEmergencyPolicy(policy);
+            res.json({ ok: true });
+        } catch (error) {
+            res.status(400).json({ error: (error as Error).message });
+        }
+    });
+
     router.get('/emergency-reminder-interval', (_req, res) => {
         res.json({ interval: settings.getEmergencyReminderInterval() });
     });
@@ -63,6 +80,61 @@ export function createSettingsRoutes(ctx: SettingsRoutesContext): Router {
         const { interval } = req.body as { interval: number };
         settings.setEmergencyReminderInterval(Number(interval));
         res.json({ ok: true });
+    });
+
+    router.get('/continuity-window', (_req, res) => {
+        res.json({ seconds: settings.getContinuityWindowSeconds() });
+    });
+
+    router.post('/continuity-window', (req, res) => {
+        try {
+            const { seconds } = req.body as { seconds: number };
+            settings.setContinuityWindowSeconds(Number(seconds));
+            res.json({ ok: true });
+        } catch (error) {
+            res.status(400).json({ error: (error as Error).message });
+        }
+    });
+
+    router.get('/productivity-goal-hours', (_req, res) => {
+        res.json({ hours: settings.getProductivityGoalHours() });
+    });
+
+    router.post('/productivity-goal-hours', (req, res) => {
+        try {
+            const { hours } = req.body as { hours: number };
+            settings.setProductivityGoalHours(Number(hours));
+            res.json({ ok: true });
+        } catch (error) {
+            res.status(400).json({ error: (error as Error).message });
+        }
+    });
+
+    router.get('/camera-mode', (_req, res) => {
+        res.json({ enabled: settings.getCameraModeEnabled() });
+    });
+
+    router.post('/camera-mode', (req, res) => {
+        try {
+            const { enabled } = req.body as { enabled?: boolean };
+            settings.setCameraModeEnabled(Boolean(enabled));
+            res.json({ ok: true });
+        } catch (error) {
+            res.status(400).json({ error: (error as Error).message });
+        }
+    });
+
+    router.get('/daily-onboarding', (_req, res) => {
+        res.json(settings.getDailyOnboardingState());
+    });
+
+    router.post('/daily-onboarding', (req, res) => {
+        try {
+            const next = settings.updateDailyOnboardingState(req.body ?? {});
+            res.json(next);
+        } catch (error) {
+            res.status(400).json({ error: (error as Error).message });
+        }
     });
 
     // Economy earning rates
@@ -143,9 +215,14 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
                 mode: 'metered' | 'pack' | 'emergency' | 'store';
                 ratePerMin: number;
                 remainingSeconds: number;
+                startedAt?: number;
+                lastTick?: number;
+                spendRemainder?: number;
                 paused?: boolean;
                 purchasePrice?: number;
                 purchasedSeconds?: number;
+                packChainCount?: number;
+                meteredMultiplier?: number;
                 justification?: string;
                 lastReminder?: number;
                 allowedUrl?: string;
@@ -155,9 +232,14 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
                     mode: session.mode,
                     ratePerMin: session.ratePerMin,
                     remainingSeconds: session.remainingSeconds,
+                    startedAt: session.startedAt,
+                    lastTick: session.lastTick,
+                    spendRemainder: session.spendRemainder,
                     paused: session.paused,
                     purchasePrice: session.purchasePrice,
                     purchasedSeconds: session.purchasedSeconds,
+                    packChainCount: session.packChainCount,
+                    meteredMultiplier: session.meteredMultiplier,
                     justification: session.justification,
                     lastReminder: session.lastReminder,
                     allowedUrl: session.allowedUrl
@@ -172,6 +254,7 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
                 },
                 marketRates,
                 libraryItems: library.list(),
+                dailyOnboarding: settings.getDailyOnboardingState(),
                 lastFrivolityAt: (() => {
                     const latest = consumption.latestByKind('frivolous-session');
                     if (!latest) return null;
@@ -192,7 +275,10 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
                     peekAllowNewPages: peekConfig.allowOnNewPages
                     ,
                     sessionFadeSeconds: settings.getSessionFadeSeconds(),
-                    dailyWalletResetEnabled: settings.getDailyWalletResetEnabled()
+                    dailyWalletResetEnabled: settings.getDailyWalletResetEnabled(),
+                    continuityWindowSeconds: settings.getContinuityWindowSeconds(),
+                    productivityGoalHours: settings.getProductivityGoalHours(),
+                    cameraModeEnabled: settings.getCameraModeEnabled()
                 },
                 sessions: sessionsRecord
             });

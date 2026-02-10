@@ -49,6 +49,7 @@ To read active windows and close tabs, enable:
 
 1. System Settings → Privacy & Security → Accessibility
 2. System Settings → Privacy & Security → Automation
+3. System Settings → Privacy & Security → Camera (if Camera Mode is enabled)
 
 ## Windows (optional better URL tracking)
 

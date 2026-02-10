@@ -59,6 +59,7 @@ create table if not exists library_items (
   note text,
   purpose text not null,
   price integer,
+  is_public boolean default false,
   created_at timestamptz not null,
   updated_at timestamptz not null,
   last_used_at timestamptz,
@@ -137,6 +138,18 @@ create policy "wallet own rows" on wallet_transactions
   for all using (user_id = auth.uid()) with check (user_id = auth.uid());
 create policy "library own rows" on library_items
   for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy "library public friends read" on library_items
+  for select using (
+    is_public = true
+    and user_id in (
+      select case
+        when user_id = auth.uid() then friend_id
+        else user_id
+      end
+      from friends
+      where user_id = auth.uid() or friend_id = auth.uid()
+    )
+  );
 create policy "consumption own rows" on consumption_log
   for all using (user_id = auth.uid()) with check (user_id = auth.uid());
 create policy "rollups own rows" on activity_rollups

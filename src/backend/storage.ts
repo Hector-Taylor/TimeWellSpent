@@ -134,12 +134,23 @@ export class Database {
         bucket TEXT CHECK(bucket IN ('attractor','productive','frivolous')) NOT NULL,
         purpose TEXT NOT NULL DEFAULT 'allow',
         price INTEGER,
+        is_public INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT,
         last_used_at TEXT,
         consumed_at TEXT,
         deleted_at TEXT,
         sync_id TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS camera_photos (
+        id TEXT PRIMARY KEY,
+        captured_at TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        file_url TEXT NOT NULL,
+        subject TEXT,
+        session_id INTEGER,
+        domain TEXT
       );
 
       CREATE TABLE IF NOT EXISTS consumption_log (
@@ -178,6 +189,9 @@ export class Database {
       CREATE INDEX IF NOT EXISTS idx_transactions_ts ON transactions(ts);
       CREATE INDEX IF NOT EXISTS idx_library_items_bucket ON library_items(bucket);
       CREATE INDEX IF NOT EXISTS idx_library_items_domain ON library_items(domain);
+      CREATE INDEX IF NOT EXISTS idx_camera_photos_captured_at ON camera_photos(captured_at);
+      CREATE INDEX IF NOT EXISTS idx_camera_photos_session ON camera_photos(session_id);
+      CREATE INDEX IF NOT EXISTS idx_camera_photos_domain ON camera_photos(domain);
       CREATE INDEX IF NOT EXISTS idx_consumption_log_day ON consumption_log(day);
       CREATE INDEX IF NOT EXISTS idx_activity_rollups_device ON activity_rollups(device_id);
       CREATE INDEX IF NOT EXISTS idx_activity_rollups_hour ON activity_rollups(hour_start);
@@ -257,6 +271,7 @@ export class Database {
     const hasPurpose = libraryInfo.some(c => c.name === 'purpose');
     const hasPrice = libraryInfo.some(c => c.name === 'price');
     const hasConsumedAt = libraryInfo.some(c => c.name === 'consumed_at');
+    const hasIsPublic = libraryInfo.some(c => c.name === 'is_public');
     if (!hasPurpose) {
       logger.info('Migrating database: Adding purpose to library_items');
       this.driver.exec("ALTER TABLE library_items ADD COLUMN purpose TEXT DEFAULT 'allow'");
@@ -274,6 +289,10 @@ export class Database {
     if (!hasPrice) {
       logger.info('Migrating database: Adding price to library_items');
       this.driver.exec("ALTER TABLE library_items ADD COLUMN price INTEGER");
+    }
+    if (!hasIsPublic) {
+      logger.info('Migrating database: Adding is_public to library_items');
+      this.driver.exec("ALTER TABLE library_items ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0");
     }
     if (!hasConsumedAt) {
       logger.info('Migrating database: Adding consumed_at to library_items');

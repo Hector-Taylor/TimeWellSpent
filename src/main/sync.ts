@@ -8,6 +8,7 @@ import type {
   FriendProfile,
   FriendRequest,
   FriendSummary,
+  FriendLibraryItem,
   FriendTimeline,
   FriendTimelinePoint,
   LibraryPurpose,
@@ -594,6 +595,62 @@ export class SyncService {
     };
   }
 
+  async getFriendPublicLibraryItems(windowHours = 168, userId?: string): Promise<FriendLibraryItem[]> {
+    if (!this.supabase || !this.configured) return [];
+    const session = await this.supabase.auth.getSession();
+    const user = session.data.session?.user;
+    if (!user) return [];
+
+    const friends = await this.listFriends();
+    let friendIds = friends.map((friend) => friend.userId);
+    if (userId) {
+      friendIds = friendIds.filter((id) => id === userId);
+    }
+    if (friendIds.length === 0) return [];
+
+    const rangeHours = Math.min(Math.max(windowHours, 1), 720);
+    const sinceIso = new Date(Date.now() - rangeHours * 60 * 60 * 1000).toISOString();
+    const { data, error } = await this.supabase
+      .from('library_items')
+      .select('id, user_id, url, domain, title, note, price, created_at')
+      .in('user_id', friendIds)
+      .eq('kind', 'url')
+      .eq('is_public', true)
+      .gte('created_at', sinceIso)
+      .order('created_at', { ascending: false })
+      .limit(200);
+    if (error || !data) return [];
+
+    const friendById = new Map(friends.map((friend) => [friend.userId, friend]));
+    return (data as Array<{
+      id: string;
+      user_id: string;
+      url: string | null;
+      domain: string | null;
+      title: string | null;
+      note: string | null;
+      price: number | null;
+      created_at: string;
+    }>)
+      .filter((row) => Boolean(row.url))
+      .map((row) => {
+        const friend = friendById.get(row.user_id);
+        return {
+          id: row.id,
+          userId: row.user_id,
+          handle: friend?.handle ?? null,
+          displayName: friend?.displayName ?? null,
+          color: friend?.color ?? null,
+          url: row.url as string,
+          domain: row.domain ?? undefined,
+          title: row.title ?? null,
+          note: row.note ?? null,
+          price: row.price ?? null,
+          createdAt: row.created_at
+        };
+      });
+  }
+
   async signIn(provider: 'google' | 'github') {
     if (!this.supabase || !this.configured) return { ok: false as const, error: 'Supabase not configured' };
     try {
@@ -893,6 +950,7 @@ export class SyncService {
         note: item.note ?? null,
         purpose: item.purpose,
         price: typeof item.price === 'number' ? item.price : null,
+        is_public: item.isPublic ? true : false,
         created_at: item.createdAt,
         updated_at: item.updatedAt ?? item.createdAt,
         last_used_at: item.lastUsedAt ?? null,
@@ -909,7 +967,7 @@ export class SyncService {
 
     const { data, error } = await this.supabase
       .from('library_items')
-      .select('id, kind, url, app, domain, title, note, purpose, price, created_at, updated_at, last_used_at, consumed_at, deleted_at')
+      .select('id, kind, url, app, domain, title, note, purpose, price, is_public, created_at, updated_at, last_used_at, consumed_at, deleted_at')
       .gt('updated_at', since)
       .order('updated_at', { ascending: true });
     if (error) throw error;
@@ -924,6 +982,7 @@ export class SyncService {
         note: row.note ?? null,
         purpose: row.purpose as LibraryPurpose,
         price: row.price ?? null,
+        isPublic: row.is_public ?? false,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         lastUsedAt: row.last_used_at ?? null,

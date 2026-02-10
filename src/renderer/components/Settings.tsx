@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import type {
+  CameraPhoto,
   EmergencyPolicyId,
   JournalConfig,
   PeekConfig,
@@ -75,6 +76,7 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
   const [peekAllowNewPages, setPeekAllowNewPages] = useState(false);
   const [continuityWindowSeconds, setContinuityWindowSeconds] = useState(120);
   const [excludedKeywordsText, setExcludedKeywordsText] = useState('');
+  const [productivityGoalHours, setProductivityGoalHours] = useState(2);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [syncDevices, setSyncDevices] = useState<SyncDevice[]>([]);
   const [deviceName, setDeviceName] = useState('');
@@ -92,6 +94,10 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
   const [resetScope, setResetScope] = useState<'trophies' | 'wallet' | 'all'>('trophies');
   const [resetBusy, setResetBusy] = useState(false);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
+  const [cameraModeEnabled, setCameraModeEnabled] = useState(false);
+  const [cameraPhotos, setCameraPhotos] = useState<CameraPhoto[]>([]);
+  const [cameraLoading, setCameraLoading] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!resetMessage) return;
@@ -113,11 +119,58 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
       setPeekAllowNewPages(cfg.allowOnNewPages);
     }).catch(() => { });
     api.settings.continuityWindowSeconds().then(setContinuityWindowSeconds).catch(() => { });
+    api.settings.productivityGoalHours().then(setProductivityGoalHours).catch(() => { });
     api.settings.excludedKeywords().then((keywords) => {
       setExcludedKeywordsText((keywords ?? []).join('\n'));
     }).catch(() => { });
+    api.settings.cameraModeEnabled().then(setCameraModeEnabled).catch(() => { });
     api.integrations.zotero.config().then(setZoteroConfig).catch(() => { });
   }, [api.settings, api.integrations.zotero]);
+
+  const refreshCameraPhotos = async () => {
+    setCameraLoading(true);
+    setCameraError(null);
+    try {
+      const photos = await api.camera.listPhotos(120);
+      setCameraPhotos(photos);
+    } catch (err) {
+      console.error('Failed to load camera photos', err);
+      setCameraError('Failed to load camera photos.');
+    } finally {
+      setCameraLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshCameraPhotos();
+  }, []);
+
+  const requestCameraPermission = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Camera capture is not supported in this environment.');
+    }
+    let stream: MediaStream | null = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    } finally {
+      stream?.getTracks().forEach((track) => track.stop());
+    }
+  };
+
+  const handleCameraModeToggle = async (enabled: boolean) => {
+    setCameraError(null);
+    if (enabled) {
+      try {
+        await requestCameraPermission();
+      } catch (err) {
+        console.error('Camera permission request failed', err);
+        setCameraError('Camera access is blocked. Enable TimeWellSpent in macOS System Settings → Privacy & Security → Camera, then try again.');
+        setCameraModeEnabled(false);
+        return;
+      }
+    }
+    setCameraModeEnabled(enabled);
+  };
 
   const refreshSync = async () => {
     try {
@@ -179,6 +232,8 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
       await api.settings.updateJournalConfig({ url: journalUrl.trim() ? journalUrl.trim() : null, minutes: journalMinutes });
       await api.settings.updatePeekConfig({ enabled: peekEnabled, allowOnNewPages: peekAllowNewPages });
       await api.settings.updateContinuityWindowSeconds(continuityWindowSeconds);
+      await api.settings.updateProductivityGoalHours(productivityGoalHours);
+      await api.settings.updateCameraModeEnabled(cameraModeEnabled);
       await api.integrations.zotero.updateConfig(zoteroConfig);
       setSaved(true);
       window.setTimeout(() => setSaved(false), 2000);
@@ -218,7 +273,28 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
     }
   }
 
+  const handleCameraReveal = async (id: string) => {
+    try {
+      await api.camera.revealPhoto(id);
+    } catch (err) {
+      console.error('Failed to reveal camera photo', err);
+      setCameraError('Failed to reveal camera photo.');
+    }
+  };
+
+  const handleCameraDelete = async (id: string) => {
+    if (!window.confirm('Delete this photo?')) return;
+    try {
+      await api.camera.deletePhoto(id);
+      setCameraPhotos((prev) => prev.filter((photo) => photo.id !== id));
+    } catch (err) {
+      console.error('Failed to delete camera photo', err);
+      setCameraError('Failed to delete camera photo.');
+    }
+  };
+
   const activePaneConfig = SETTINGS_PANES.find((pane) => pane.id === activePane) ?? SETTINGS_PANES[0];
+  const activePaneIndex = Math.max(0, SETTINGS_PANES.findIndex((pane) => pane.id === activePane)) + 1;
   const showPaneHeader = activePane !== 'domains' && activePane !== 'economy';
 
   return (
@@ -240,6 +316,7 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
               type="button"
               className={activePane === pane.id ? 'active' : ''}
               onClick={() => setActivePane(pane.id)}
+              aria-current={activePane === pane.id ? 'page' : undefined}
             >
               <span className="settings-nav-label">{pane.label}</span>
               <span className="settings-nav-desc">{pane.description}</span>
@@ -250,8 +327,11 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
         <div className="settings-pane">
           {showPaneHeader && (
             <div className="settings-pane-header">
-              <h2>{activePaneConfig.label}</h2>
-              <p className="subtle">{activePaneConfig.description}</p>
+              <div>
+                <h2>{activePaneConfig.label}</h2>
+                <p className="subtle">{activePaneConfig.description}</p>
+              </div>
+              <span className="pill ghost">Section {activePaneIndex} of {SETTINGS_PANES.length}</span>
             </div>
           )}
 
@@ -435,6 +515,19 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
                     />
                   </label>
                 </div>
+                <div className="settings-row">
+                  <label>
+                    Daily productivity goal (hours)
+                    <input
+                      type="number"
+                      min="0.5"
+                      max="12"
+                      step="0.1"
+                      value={productivityGoalHours}
+                      onChange={(e) => setProductivityGoalHours(Number(e.target.value))}
+                    />
+                  </label>
+                </div>
                 <label>
                   Keywords to exclude
                   <textarea
@@ -447,6 +540,7 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
                 <p className="subtle" style={{ margin: 0 }}>Lower values mark passive browsing as idle sooner.</p>
                 <p className="subtle" style={{ margin: 0 }}>Excluded keywords stay neutral and are hidden from stream trackers.</p>
                 <p className="subtle" style={{ margin: 0 }}>Continuity keeps short research hops in the same productive run.</p>
+                <p className="subtle" style={{ margin: 0 }}>Daily productivity goal powers the dashboard ring.</p>
               </div>
               <div className="settings-actions">
                 <button className="primary" type="submit" disabled={saving}>
@@ -512,6 +606,58 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
                     <span className="subtle">Allow peek on new pages</span>
                   </label>
                 </div>
+              </div>
+
+              <div className="card settings-section">
+                <div className="settings-section-header">
+                  <h3>Camera mode</h3>
+                  <p className="subtle">Captures a still every minute during frivolity. Stored locally on this Mac. macOS will prompt for camera access when enabling.</p>
+                </div>
+                <div className="settings-inline">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={cameraModeEnabled}
+                      onChange={(e) => {
+                        void handleCameraModeToggle(e.target.checked);
+                      }}
+                    />
+                    <span className="subtle">Enable camera mode</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={refreshCameraPhotos}
+                    disabled={cameraLoading}
+                  >
+                    {cameraLoading ? 'Refreshing…' : 'Refresh gallery'}
+                  </button>
+                  <span className="subtle">{cameraPhotos.length} photos</span>
+                </div>
+                {cameraError && <p className="error-text">{cameraError}</p>}
+                {cameraPhotos.length === 0 ? (
+                  <p className="subtle" style={{ marginTop: 12 }}>No photos yet.</p>
+                ) : (
+                  <div className="camera-gallery-grid">
+                    {cameraPhotos.map((photo) => (
+                      <div key={photo.id} className="camera-card">
+                        <img className="camera-photo" src={photo.fileUrl} alt="Camera capture" loading="lazy" />
+                        <div className="camera-meta">
+                          <strong>{photo.subject ?? 'Frivolity'}</strong>
+                          <span className="subtle">{new Date(photo.capturedAt).toLocaleString()}</span>
+                        </div>
+                        <div className="camera-actions">
+                          <button type="button" className="ghost" onClick={() => handleCameraReveal(photo.id)}>
+                            Reveal
+                          </button>
+                          <button type="button" className="danger" onClick={() => handleCameraDelete(photo.id)}>
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="card settings-section">

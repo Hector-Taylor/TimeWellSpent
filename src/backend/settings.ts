@@ -1,7 +1,7 @@
 import type { Statement } from 'better-sqlite3';
 import type { Database } from './storage';
 import type { CategorisationConfig } from '@shared/types';
-import type { EmergencyPolicyId, PeekConfig } from '@shared/types';
+import type { DailyOnboardingState, DailyOnboardingNote, EmergencyPolicyId, PeekConfig } from '@shared/types';
 import { DEFAULT_CATEGORISATION, DEFAULT_IDLE_THRESHOLD_SECONDS } from './defaults';
 import type { FriendEntry, FriendIdentity, FriendFeedSummary } from '@shared/types';
 import type { ZoteroIntegrationConfig } from '@shared/types';
@@ -44,6 +44,48 @@ export class SettingsService {
       unique.add(cleaned);
     }
     return [...unique].slice(0, 50);
+  }
+
+  private normalizeDayString(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    return value;
+  }
+
+  private normalizeDailyNote(value: unknown): DailyOnboardingNote | null {
+    if (!value || typeof value !== 'object') return null;
+    const raw = value as Partial<DailyOnboardingNote>;
+    const day = this.normalizeDayString(raw.day);
+    const message = typeof raw.message === 'string' ? raw.message.trim() : '';
+    if (!day || !message) return null;
+    const deliveredAt = typeof raw.deliveredAt === 'string' ? raw.deliveredAt : null;
+    const acknowledged = typeof raw.acknowledged === 'boolean' ? raw.acknowledged : false;
+    return {
+      day,
+      message,
+      deliveredAt,
+      acknowledged
+    };
+  }
+
+  private normalizeDailyOnboardingState(value: unknown): DailyOnboardingState {
+    if (!value || typeof value !== 'object') {
+      return {
+        completedDay: null,
+        lastPromptedDay: null,
+        lastSkippedDay: null,
+        lastForcedDay: null,
+        note: null
+      };
+    }
+    const raw = value as Partial<DailyOnboardingState>;
+    return {
+      completedDay: this.normalizeDayString(raw.completedDay),
+      lastPromptedDay: this.normalizeDayString(raw.lastPromptedDay),
+      lastSkippedDay: this.normalizeDayString(raw.lastSkippedDay),
+      lastForcedDay: this.normalizeDayString(raw.lastForcedDay),
+      note: this.normalizeDailyNote(raw.note)
+    };
   }
 
   private normaliseCategorisation(value: CategorisationConfig): CategorisationConfig {
@@ -308,6 +350,48 @@ export class SettingsService {
       throw new Error('Invalid minimum active hours');
     }
     this.setJson('competitiveMinActiveHours', Math.round(n * 10) / 10);
+  }
+
+  getProductivityGoalHours(): number {
+    const raw = this.getJson<number>('productivityGoalHours');
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return Math.max(0.5, Math.min(12, Math.round(raw * 10) / 10));
+    }
+    return 2;
+  }
+
+  setProductivityGoalHours(value: number) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0.5 || n > 12) {
+      throw new Error('Invalid productivity goal hours');
+    }
+    this.setJson('productivityGoalHours', Math.round(n * 10) / 10);
+  }
+
+  getCameraModeEnabled(): boolean {
+    return this.getBoolean('cameraModeEnabled', false);
+  }
+
+  setCameraModeEnabled(value: boolean) {
+    this.setJson('cameraModeEnabled', Boolean(value));
+  }
+
+  getDailyOnboardingState(): DailyOnboardingState {
+    const raw = this.getJson<DailyOnboardingState>('dailyOnboardingState');
+    return this.normalizeDailyOnboardingState(raw);
+  }
+
+  updateDailyOnboardingState(patch: Partial<DailyOnboardingState>): DailyOnboardingState {
+    const current = this.getDailyOnboardingState();
+    const next: DailyOnboardingState = {
+      completedDay: patch.completedDay !== undefined ? this.normalizeDayString(patch.completedDay) : current.completedDay,
+      lastPromptedDay: patch.lastPromptedDay !== undefined ? this.normalizeDayString(patch.lastPromptedDay) : current.lastPromptedDay,
+      lastSkippedDay: patch.lastSkippedDay !== undefined ? this.normalizeDayString(patch.lastSkippedDay) : current.lastSkippedDay,
+      lastForcedDay: patch.lastForcedDay !== undefined ? this.normalizeDayString(patch.lastForcedDay) : current.lastForcedDay,
+      note: patch.note !== undefined ? this.normalizeDailyNote(patch.note) : current.note
+    };
+    this.setJson('dailyOnboardingState', next);
+    return next;
   }
 
   getZoteroIntegrationConfig(): ZoteroIntegrationConfig {

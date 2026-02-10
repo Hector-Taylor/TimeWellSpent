@@ -1,6 +1,7 @@
 import { createRoot } from 'react-dom/client';
 import PaywallOverlay from './paywall/PaywallOverlay';
 import PomodoroOverlay from './pomodoro/PomodoroOverlay';
+import DailyOnboardingOverlay from './onboarding/DailyOnboardingOverlay';
 import styles from './paywall/paywall.css?inline';
 
 type BlockMessage = {
@@ -23,9 +24,50 @@ type PomodoroBlockMessage = {
   };
 };
 
+type DailyOnboardingMessage = {
+  type: 'DAILY_ONBOARDING';
+  payload: {
+    domain: string;
+    forced?: boolean;
+  };
+};
+
 type SessionFadeMessage = {
   type: 'SESSION_FADE';
   payload: { active: boolean; remainingSeconds?: number; fadeSeconds?: number };
+};
+
+type EncouragementMessage = {
+  type: 'ENCOURAGEMENT_OVERLAY';
+  payload: { message: string };
+};
+
+type ReadingItem = {
+  id: string;
+  source: 'zotero' | 'books';
+  title: string;
+  subtitle?: string;
+  updatedAt: number;
+  progress?: number;
+  action: { kind: 'deeplink' | 'file'; url?: string; path?: string; app?: string };
+  thumbDataUrl?: string;
+  iconDataUrl?: string;
+};
+
+type LibraryItem = {
+  id: number;
+  kind: 'url' | 'app';
+  url?: string;
+  app?: string;
+  domain: string;
+  title?: string;
+  note?: string;
+  purpose: 'replace' | 'allow' | 'temptation' | 'productive';
+  price?: number;
+  isPublic?: boolean;
+  createdAt?: string;
+  lastUsedAt?: string;
+  consumedAt?: string;
 };
 
 // StatusResponse type - matches PaywallOverlay expectations
@@ -42,22 +84,40 @@ type StatusResponse = {
     ratePerMin: number;
     remainingSeconds: number;
     paused?: boolean;
+    packChainCount?: number;
+    meteredMultiplier?: number;
     allowedUrl?: string;
   } | null;
-  matchedPricedItem?: unknown;
+  matchedPricedItem?: LibraryItem | null;
   journal?: { url: string | null; minutes: number };
   library?: {
-    items: unknown[];
-    replaceItems: unknown[];
-    productiveItems: unknown[];
+    items: LibraryItem[];
+    replaceItems: LibraryItem[];
+    productiveItems: LibraryItem[];
     productiveDomains: string[];
-    readingItems?: unknown[];
+    readingItems?: ReadingItem[];
   };
   lastSync: number | null;
   desktopConnected: boolean;
+  domainCategory?: 'productive' | 'neutral' | 'frivolous' | 'draining' | null;
   emergencyPolicy?: 'off' | 'gentle' | 'balanced' | 'strict';
   discouragementEnabled?: boolean;
+  spendGuardEnabled?: boolean;
   rotMode?: { enabled: boolean; startedAt: number | null };
+  dailyOnboarding?: {
+    completedDay: string | null;
+    lastPromptedDay: string | null;
+    lastSkippedDay: string | null;
+    lastForcedDay?: string | null;
+    note: { day: string; message: string; deliveredAt?: string | null; acknowledged?: boolean } | null;
+  };
+  settings?: {
+    idleThreshold?: number;
+    continuityWindowSeconds?: number;
+    productivityGoalHours?: number;
+    emergencyPolicy?: 'off' | 'gentle' | 'balanced' | 'strict';
+    discouragementIntervalMinutes?: number;
+  };
   emergency?: {
     lastEnded: { domain: string; justification?: string; endedAt: number } | null;
     reviewStats: { total: number; kept: number; notKept: number };
@@ -69,6 +129,9 @@ type StatusResponse = {
 const HEARTBEAT_MS = 10_000;
 let heartbeatTimer: number | null = null;
 let contextInvalidated = false;
+const ACTIVITY_PULSE_MIN_MS = 3000;
+let lastActivityPulse = 0;
+let pageHideRefCount = 0;
 
 function isContextValid() {
   try {
@@ -106,8 +169,42 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') sendHeartbeat();
 });
 
+function sendUserActivity(kind: string) {
+  if (contextInvalidated || !isContextValid()) return;
+  if (document.visibilityState !== 'visible') return;
+  if (!document.hasFocus()) return;
+  const now = Date.now();
+  if (now - lastActivityPulse < ACTIVITY_PULSE_MIN_MS) return;
+  lastActivityPulse = now;
+  chrome.runtime
+    .sendMessage({
+      type: 'USER_ACTIVITY',
+      payload: {
+        kind,
+        ts: now,
+        url: window.location.href,
+        title: document.title
+      }
+    })
+    .catch(() => {
+      contextInvalidated = true;
+    });
+}
+
+document.addEventListener('mousemove', () => sendUserActivity('mouse-move'), { passive: true });
+document.addEventListener('mousedown', () => sendUserActivity('mouse-down'), { passive: true });
+document.addEventListener('keydown', () => sendUserActivity('key-down'));
+document.addEventListener('scroll', () => sendUserActivity('scroll'), { passive: true });
+document.addEventListener('wheel', () => sendUserActivity('wheel'), { passive: true });
+document.addEventListener('touchstart', () => sendUserActivity('touch-start'), { passive: true });
+window.addEventListener('focus', () => sendUserActivity('focus'));
+
 try {
-  chrome.runtime.onMessage.addListener((message: BlockMessage | PomodoroBlockMessage | SessionFadeMessage | { type: 'TWS_PING' }, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((
+    message: BlockMessage | PomodoroBlockMessage | DailyOnboardingMessage | SessionFadeMessage | EncouragementMessage | { type: 'TWS_PING' },
+    _sender,
+    sendResponse
+  ) => {
     if (contextInvalidated) return;
     if (message.type === 'TWS_PING') {
       sendResponse?.({ ok: true });
@@ -119,8 +216,14 @@ try {
     if (message.type === 'POMODORO_BLOCK') {
       mountPomodoroOverlay(message.payload);
     }
+    if (message.type === 'DAILY_ONBOARDING') {
+      mountDailyOnboarding(message.payload.domain, message.payload.forced);
+    }
     if (message.type === 'SESSION_FADE') {
       handleSessionFade(message.payload);
+    }
+    if (message.type === 'ENCOURAGEMENT_OVERLAY') {
+      showEncouragementOverlay(message.payload.message);
     }
     return true;
   });
@@ -182,6 +285,7 @@ async function mountOverlay(domain: string, reason?: string, peek?: { allowed: b
     lastSync: null,
     desktopConnected: false,
     discouragementEnabled: false,
+    spendGuardEnabled: true,
     rotMode: { enabled: false, startedAt: null },
     emergencyPolicy: 'balanced',
     emergency: {
@@ -224,6 +328,115 @@ async function mountOverlay(domain: string, reason?: string, peek?: { allowed: b
       />
     );
   };
+  renderOverlay(placeholderStatus as any);
+
+  try {
+    if (contextInvalidated || !isContextValid()) return;
+    const status = await chrome.runtime.sendMessage({
+      type: 'GET_STATUS',
+      payload: { domain, url: window.location.href }
+    });
+
+    if (!status || closed) return;
+    renderOverlay(status);
+  } catch {
+    contextInvalidated = true;
+  }
+}
+
+async function mountDailyOnboarding(domain: string, forced?: boolean) {
+  const removePageHide = hidePage();
+  const existingHost = document.getElementById('tws-shadow-host');
+  if (existingHost) existingHost.remove();
+
+  const host = document.createElement('div');
+  host.id = 'tws-shadow-host';
+  host.style.position = 'fixed';
+  host.style.zIndex = '2147483647';
+  host.style.inset = '0';
+  host.style.width = '100%';
+  host.style.height = '100%';
+  host.style.background = 'transparent';
+
+  document.body.appendChild(host);
+
+  const shadow = host.attachShadow({ mode: 'open' });
+  const styleSheet = document.createElement('style');
+  styleSheet.textContent = styles;
+  shadow.appendChild(styleSheet);
+
+  const mountPoint = document.createElement('div');
+  mountPoint.id = 'tws-mount-point';
+  shadow.appendChild(mountPoint);
+
+  document.body.style.overflow = 'hidden';
+
+  const placeholderStatus: StatusResponse = {
+    balance: 0,
+    rate: null,
+    session: null,
+    matchedPricedItem: null,
+    lastSync: null,
+    desktopConnected: false,
+    discouragementEnabled: false,
+    spendGuardEnabled: true,
+    rotMode: { enabled: false, startedAt: null },
+    emergencyPolicy: 'balanced',
+    emergency: {
+      lastEnded: null,
+      reviewStats: { total: 0, kept: 0, notKept: 0 }
+    },
+    journal: { url: null, minutes: 10 },
+    library: {
+      items: [],
+      replaceItems: [],
+      productiveItems: [],
+      productiveDomains: [],
+      readingItems: []
+    },
+    dailyOnboarding: {
+      completedDay: null,
+      lastPromptedDay: null,
+      lastSkippedDay: null,
+      lastForcedDay: null,
+      note: null
+    },
+    settings: {
+      idleThreshold: 15,
+      continuityWindowSeconds: 120,
+      productivityGoalHours: 2,
+      emergencyPolicy: 'balanced',
+      discouragementIntervalMinutes: 1
+    }
+  };
+
+  const root = createRoot(mountPoint);
+  let closed = false;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    try {
+      root.unmount();
+    } catch {
+      // ignore
+    }
+    host.remove();
+    document.body.style.overflow = '';
+    removePageHide();
+  };
+
+  const renderOverlay = (status: StatusResponse) => {
+    if (closed) return;
+    root.render(
+      <DailyOnboardingOverlay
+        domain={domain}
+        status={status}
+        forced={forced}
+        onClose={cleanup}
+      />
+    );
+  };
+
   renderOverlay(placeholderStatus as any);
 
   try {
@@ -284,6 +497,7 @@ function mountPomodoroOverlay(payload: PomodoroBlockMessage['payload']) {
 
 function hidePage() {
   const STYLE_ID = 'tws-page-hide';
+  pageHideRefCount += 1;
   let styleTag = document.getElementById(STYLE_ID) as HTMLStyleElement | null;
   if (!styleTag) {
     styleTag = document.createElement('style');
@@ -295,7 +509,10 @@ function hidePage() {
     document.documentElement.prepend(styleTag);
   }
   return () => {
-    styleTag?.remove();
+    pageHideRefCount = Math.max(0, pageHideRefCount - 1);
+    if (pageHideRefCount === 0) {
+      styleTag?.remove();
+    }
     document.documentElement.style.visibility = '';
     document.body.style.visibility = '';
   };
@@ -342,4 +559,49 @@ function handleSessionFade(payload: SessionFadeMessage['payload']) {
   if (fadeOverlay) {
     fadeOverlay.style.opacity = ratio.toString();
   }
+}
+
+let encourageHost: HTMLDivElement | null = null;
+let encourageShadow: ShadowRoot | null = null;
+let encourageMessageEl: HTMLDivElement | null = null;
+let encourageTimer: number | null = null;
+
+function showEncouragementOverlay(message: string) {
+  const trimmed = (message ?? '').trim();
+  if (!trimmed) return;
+
+  if (!encourageHost) {
+    encourageHost = document.createElement('div');
+    encourageHost.id = 'tws-encourage-host';
+    encourageHost.style.position = 'fixed';
+    encourageHost.style.inset = '0';
+    encourageHost.style.pointerEvents = 'none';
+    encourageHost.style.zIndex = '2147483645';
+    document.body.appendChild(encourageHost);
+
+    encourageShadow = encourageHost.attachShadow({ mode: 'open' });
+    const styleSheet = document.createElement('style');
+    styleSheet.textContent = styles;
+    encourageShadow.appendChild(styleSheet);
+
+    encourageMessageEl = document.createElement('div');
+    encourageMessageEl.className = 'tws-encourage-banner';
+    encourageShadow.appendChild(encourageMessageEl);
+  }
+
+  if (encourageMessageEl) {
+    encourageMessageEl.textContent = trimmed;
+    encourageMessageEl.style.animation = 'none';
+    void encourageMessageEl.offsetHeight;
+    encourageMessageEl.style.animation = '';
+  }
+
+  if (encourageTimer) window.clearTimeout(encourageTimer);
+  encourageTimer = window.setTimeout(() => {
+    encourageHost?.remove();
+    encourageHost = null;
+    encourageShadow = null;
+    encourageMessageEl = null;
+    encourageTimer = null;
+  }, 5200);
 }

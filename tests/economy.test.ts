@@ -191,4 +191,30 @@ describe('EconomyEngine', () => {
     expect(paused).toHaveBeenCalled();
     economy.destroy();
   });
+
+  it('applies escalating multipliers for chained pack purchases', () => {
+    const wallet = new FakeWallet();
+    wallet.balance = 200;
+    const market = new FakeMarket({
+      'reddit.com': {
+        domain: 'reddit.com',
+        ratePerMin: 2,
+        packs: [{ minutes: 5, price: 10 }],
+        hourlyModifiers: Array(24).fill(1)
+      }
+    });
+    const paywall = new PaywallManager(wallet as any, market as any);
+    const economy = new EconomyEngine(wallet as any, market as any, paywall);
+
+    economy.buyPack('reddit.com', 5); // x1.00
+    economy.buyPack('reddit.com', 5); // x1.35
+    economy.buyPack('reddit.com', 5); // x1.75
+
+    expect(wallet.getSnapshot().balance).toBe(158);
+    const session = paywall.getSession('reddit.com');
+    expect(session?.mode).toBe('pack');
+    expect(session?.packChainCount).toBe(3);
+    expect(session?.remainingSeconds).toBe(15 * 60);
+    economy.destroy();
+  });
 });

@@ -81,8 +81,7 @@ export class WebSocketBroadcaster extends EventEmitter {
 
     handleConnection(socket: WebSocket) {
         this.clients.add(socket);
-        this.lastExtensionSeen = Date.now();
-        this.emit('status', { connected: true, lastSeen: this.lastExtensionSeen });
+        this.touchExtensionPresence();
         logger.info('WS client connected', this.clients.size);
 
         socket.on('message', (msg: string) => {
@@ -100,10 +99,18 @@ export class WebSocketBroadcaster extends EventEmitter {
         });
     }
 
+    private touchExtensionPresence() {
+        this.lastExtensionSeen = Date.now();
+        this.emit('status', { connected: this.clients.size > 0, lastSeen: this.lastExtensionSeen });
+    }
+
     private handleMessage(data: any, socket: WebSocket) {
         const { economy, paywall, handleActivity, emergency, pomodoro } = this.ctx;
+        this.touchExtensionPresence();
 
-        if (data.type === 'activity' && data.payload) {
+        if (data.type === 'extension:heartbeat') {
+            return;
+        } else if (data.type === 'activity' && data.payload) {
             logger.info('Received activity from extension:', data.payload.domain);
             handleActivity({
                 timestamp: new Date(data.payload.timestamp),

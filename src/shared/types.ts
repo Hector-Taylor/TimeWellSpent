@@ -202,6 +202,7 @@ export type LibraryItem = {
   note?: string;
   purpose: LibraryPurpose;
   price?: number;
+  isPublic?: boolean;
   createdAt: string;
   updatedAt?: string;
   lastUsedAt?: string;
@@ -263,10 +264,13 @@ export type PaywallSession = {
   ratePerMin: number;
   remainingSeconds: number;
   startedAt?: number;
+  lastTick?: number;
   paused?: boolean;
   purchasePrice?: number;
   purchasedSeconds?: number;
   spendRemainder?: number;
+  packChainCount?: number;
+  meteredMultiplier?: number;
   justification?: string;
   lastReminder?: number;
   allowedUrl?: string;
@@ -299,6 +303,20 @@ export type FriendConnection = {
   displayName?: string | null;
   color?: string | null;
   pinnedTrophies?: string[] | null;
+  createdAt: string;
+};
+
+export type FriendLibraryItem = {
+  id: string;
+  userId: string;
+  handle?: string | null;
+  displayName?: string | null;
+  color?: string | null;
+  url: string;
+  domain?: string;
+  title?: string | null;
+  note?: string | null;
+  price?: number | null;
   createdAt: string;
 };
 
@@ -510,6 +528,18 @@ export type RendererApi = {
     updateCompetitiveMinActiveHours(value: number): Promise<void>;
     continuityWindowSeconds(): Promise<number>;
     updateContinuityWindowSeconds(value: number): Promise<void>;
+    productivityGoalHours(): Promise<number>;
+    updateProductivityGoalHours(value: number): Promise<void>;
+    dailyOnboardingState(): Promise<DailyOnboardingState>;
+    updateDailyOnboardingState(value: Partial<DailyOnboardingState>): Promise<DailyOnboardingState>;
+    cameraModeEnabled(): Promise<boolean>;
+    updateCameraModeEnabled(value: boolean): Promise<void>;
+  };
+  camera: {
+    listPhotos(limit?: number): Promise<CameraPhoto[]>;
+    storePhoto(payload: { dataUrl: string; subject?: string | null; domain?: string | null }): Promise<CameraPhoto>;
+    deletePhoto(id: string): Promise<void>;
+    revealPhoto(id: string): Promise<void>;
   };
   integrations: {
     zotero: {
@@ -520,10 +550,10 @@ export type RendererApi = {
   };
   library: {
     list(): Promise<LibraryItem[]>;
-    add(payload: { kind: 'url' | 'app'; url?: string; app?: string; title?: string; note?: string; purpose: LibraryPurpose; price?: number | null }): Promise<LibraryItem>;
+    add(payload: { kind: 'url' | 'app'; url?: string; app?: string; title?: string; note?: string; purpose: LibraryPurpose; price?: number | null; isPublic?: boolean }): Promise<LibraryItem>;
     update(
       id: number,
-      payload: { title?: string | null; note?: string | null; purpose?: LibraryPurpose; price?: number | null; consumedAt?: string | null }
+      payload: { title?: string | null; note?: string | null; purpose?: LibraryPurpose; price?: number | null; consumedAt?: string | null; isPublic?: boolean }
     ): Promise<LibraryItem>;
     remove(id: number): Promise<void>;
     findByUrl(url: string): Promise<LibraryItem | null>;
@@ -553,6 +583,7 @@ export type RendererApi = {
     summaries(windowHours?: number): Promise<Record<string, FriendSummary>>;
     meSummary(windowHours?: number): Promise<FriendSummary | null>;
     timeline(userId: string, windowHours?: number): Promise<FriendTimeline | null>;
+    publicLibrary(userId?: string, windowHours?: number): Promise<FriendLibraryItem[]>;
   };
   trophies: {
     list(): Promise<TrophyStatus[]>;
@@ -575,6 +606,15 @@ export type RendererApi = {
   };
 };
 
+export type CameraPhoto = {
+  id: string;
+  capturedAt: string;
+  filePath: string;
+  fileUrl: string;
+  subject: string | null;
+  domain: string | null;
+};
+
 export type ZoteroIntegrationMode = 'recent' | 'collection';
 
 export type ZoteroIntegrationConfig = {
@@ -593,6 +633,21 @@ export type ZoteroCollection = {
 export type JournalConfig = {
   url: string | null;
   minutes: number;
+};
+
+export type DailyOnboardingNote = {
+  day: string; // YYYY-MM-DD
+  message: string;
+  deliveredAt?: string | null;
+  acknowledged?: boolean;
+};
+
+export type DailyOnboardingState = {
+  completedDay: string | null;
+  lastPromptedDay: string | null;
+  lastSkippedDay: string | null;
+  lastForcedDay?: string | null;
+  note: DailyOnboardingNote | null;
 };
 
 export type PeekConfig = {

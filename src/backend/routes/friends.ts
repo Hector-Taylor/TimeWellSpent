@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import type { FriendConnection, FriendProfile, FriendSummary, FriendTimeline } from '@shared/types';
+import type { FriendConnection, FriendProfile, FriendSummary, FriendTimeline, FriendLibraryItem } from '@shared/types';
 
 type FriendsRoutesContext = {
   profile: () => Promise<FriendProfile | null>;
@@ -8,6 +8,7 @@ type FriendsRoutesContext = {
   summaries: (windowHours?: number) => Promise<Record<string, FriendSummary>>;
   timeline: (userId: string, windowHours?: number) => Promise<FriendTimeline | null>;
   competitive?: () => { optIn: boolean; minActiveHours: number };
+  publicLibrary?: (windowHours?: number) => Promise<FriendLibraryItem[]>;
 };
 
 export function createFriendsRoutes(context: FriendsRoutesContext) {
@@ -15,14 +16,15 @@ export function createFriendsRoutes(context: FriendsRoutesContext) {
 
   router.get('/', async (req, res) => {
     const hours = Number(req.query.hours ?? 24);
-    const [friends, summaries, profile, meSummary] = await Promise.all([
+    const [friends, summaries, profile, meSummary, publicLibrary] = await Promise.all([
       context.list(),
       context.summaries(Number.isFinite(hours) ? hours : 24),
       context.profile(),
-      context.meSummary ? context.meSummary(Number.isFinite(hours) ? hours : 24) : Promise.resolve(null)
+      context.meSummary ? context.meSummary(Number.isFinite(hours) ? hours : 24) : Promise.resolve(null),
+      context.publicLibrary ? context.publicLibrary(168) : Promise.resolve([])
     ]);
     const competitive = context.competitive ? context.competitive() : null;
-    res.json({ friends, summaries, profile, meSummary, competitive });
+    res.json({ friends, summaries, profile, meSummary, competitive, publicLibrary });
   });
 
   router.get('/:userId', async (req, res) => {

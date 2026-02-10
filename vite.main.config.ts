@@ -26,18 +26,8 @@ export default defineConfig({
     }
   },
   build: {
-    outDir: 'out/main',
-    emptyOutDir: true,
     sourcemap: true,
-    minify: false,
     rollupOptions: {
-      input: {
-        main: 'src/main/main.ts'
-      },
-      output: {
-        format: 'es',
-        entryFileNames: '[name].js'
-      },
       external: externals
     }
   }

@@ -1,12 +1,17 @@
 import 'dotenv/config';
 import path from 'node:path';
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, Notification, nativeTheme, dialog } from 'electron';
+import { promisify } from 'node:util';
+import { execFile } from 'node:child_process';
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, Notification, nativeTheme, dialog, session } from 'electron';
 import { createBackend } from '@backend/server';
 import { Database } from '@backend/storage';
 import { createUrlWatcher } from '@backend/urlWatcher';
 import { createIpc } from './ipc';
 import { SyncService } from './sync';
 import { logger } from '@shared/logger';
+
+declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string;
+declare const MAIN_WINDOW_VITE_NAME: string;
 
 const isMac = process.platform === 'darwin';
 let mainWindow: BrowserWindow | null = null;
@@ -18,6 +23,23 @@ let lastTrayLabel = 'TimeWellSpent';
 let syncService: SyncService | null = null;
 let pendingAuthUrl: string | null = null;
 let pomodoroSessionState: { sessionId: string; startBalance: number; plannedMinutes: number } | null = null;
+const CAMERA_CAPTURE_INTERVAL_MS = 60 * 1000;
+let lastCameraCaptureAt = 0;
+const MONITOR_HEALTH_CHECK_INTERVAL_MS = 20_000;
+const EXTENSION_STALE_AFTER_MS = 70_000;
+const MISSING_EXTENSION_ALERT_INTERVAL_MS = 45_000;
+let monitorHealthInterval: NodeJS.Timeout | null = null;
+let lastMissingExtensionAlertAt = 0;
+const execFileAsync = promisify(execFile);
+
+async function isChromeRunning() {
+  try {
+    await execFileAsync('pgrep', ['-x', 'Google Chrome']);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function createWindow() {
   mainWindow = new BrowserWindow({
@@ -35,7 +57,7 @@ async function createWindow() {
       autoHideMenuBar: true
     }),
     webPreferences: {
-      preload: path.join(__dirname, '../preload/preload.js'),
+      preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: false
@@ -50,7 +72,7 @@ async function createWindow() {
     mainWindow = null;
   });
 
-  let rendererUrl = process.env.ELECTRON_RENDERER_URL || process.env.MAIN_WINDOW_VITE_DEV_SERVER_URL;
+  let rendererUrl = process.env.ELECTRON_RENDERER_URL || MAIN_WINDOW_VITE_DEV_SERVER_URL || process.env.MAIN_WINDOW_VITE_DEV_SERVER_URL;
 
   if (!rendererUrl && !app.isPackaged) {
     rendererUrl = 'http://127.0.0.1:5173';
@@ -64,7 +86,7 @@ async function createWindow() {
     mainWindow.show(); // Force show for debugging
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
-    await mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+    await mainWindow.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
     mainWindow.show();
   }
 
@@ -119,6 +141,15 @@ async function bootstrap() {
   await app.whenReady();
   console.log('App ready');
 
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+    if (permission === 'media') {
+      const wantsVideo = details?.mediaTypes?.includes('video');
+      callback(Boolean(wantsVideo));
+      return;
+    }
+    callback(false);
+  });
+
   if (!app.isDefaultProtocolClient('timewellspent')) {
     if (process.defaultApp) {
       app.setAsDefaultProtocolClient('timewellspent', process.execPath, [path.resolve(process.argv[1])]);
@@ -169,7 +200,8 @@ async function bootstrap() {
       },
       list: async () => (syncService ? syncService.listFriends() : []),
       summaries: async (windowHours) => (syncService ? syncService.getFriendSummaries(windowHours ?? 24) : {}),
-      timeline: async (userId, windowHours) => (syncService ? syncService.getFriendTimeline(userId, windowHours ?? 24) : null)
+      timeline: async (userId, windowHours) => (syncService ? syncService.getFriendTimeline(userId, windowHours ?? 24) : null),
+      publicLibrary: async (windowHours) => (syncService ? syncService.getFriendPublicLibraryItems(windowHours ?? 168) : [])
     }
   });
   console.log('Backend created');
@@ -479,6 +511,22 @@ async function bootstrap() {
     }
   });
 
+  backend.economy.on('activity', (payload: { activeCategory: string | null; activeDomain: string | null; activeApp: string | null }) => {
+    if (!isMac) return;
+    if (payload.activeCategory !== 'frivolity') return;
+    if (!backend.settings.getCameraModeEnabled()) return;
+    const now = Date.now();
+    if (now - lastCameraCaptureAt < CAMERA_CAPTURE_INTERVAL_MS) return;
+    const subject = payload.activeDomain ?? payload.activeApp ?? null;
+    const domain = payload.activeDomain ?? null;
+    const windows = BrowserWindow.getAllWindows();
+    if (!windows.length) return;
+    windows.forEach((win) => {
+      win.webContents.send('camera:capture', { subject, domain });
+    });
+    lastCameraCaptureAt = now;
+  });
+
   const watcher = createUrlWatcher({
     onActivity: (event) => backend.handleActivity(event, 'system')
   });
@@ -506,6 +554,27 @@ async function bootstrap() {
 
   createIpc({ backend, db, sync: syncService });
 
+  monitorHealthInterval = setInterval(async () => {
+    const chromeRunning = await isChromeRunning();
+    if (!chromeRunning) return;
+
+    const extensionStatus = backend.extension.status();
+    const now = Date.now();
+    const stale = !extensionStatus.lastSeen || (now - extensionStatus.lastSeen > EXTENSION_STALE_AFTER_MS);
+    if (!stale) return;
+    if (now - lastMissingExtensionAlertAt < MISSING_EXTENSION_ALERT_INTERVAL_MS) return;
+
+    lastMissingExtensionAlertAt = now;
+    try {
+      new Notification({
+        title: 'TimeWellSpent',
+        body: 'Wear your digital condom!!! Chrome is running without the extension.'
+      }).show();
+    } catch {
+      // ignore notification errors
+    }
+  }, MONITOR_HEALTH_CHECK_INTERVAL_MS);
+
   await createWindow();
   console.log('Window created');
 
@@ -530,6 +599,10 @@ app.on('window-all-closed', async () => {
 });
 
 app.on('before-quit', async () => {
+  if (monitorHealthInterval) {
+    clearInterval(monitorHealthInterval);
+    monitorHealthInterval = null;
+  }
   stopWatcher?.();
   if (stopBackend) {
     await stopBackend();

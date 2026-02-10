@@ -19,6 +19,7 @@ export function createLibraryRoutes(library: LibraryService): Router {
                 note?: string;
                 purpose: LibraryPurpose;
                 price?: number | null;
+                isPublic?: boolean;
             };
             const item = library.add(payload);
             res.json(item);
@@ -39,6 +40,7 @@ export function createLibraryRoutes(library: LibraryService): Router {
                 purpose?: LibraryPurpose;
                 price?: number | null;
                 consumedAt?: string | null;
+                isPublic?: boolean;
             };
             const item = library.update(id, payload);
             res.json(item);

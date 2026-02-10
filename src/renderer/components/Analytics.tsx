@@ -6,6 +6,7 @@ import type {
     TimeOfDayStats,
     TrendPoint,
 } from '@shared/types';
+import { DAY_START_HOUR, shiftHourToDayStart } from '@shared/time';
 
 interface AnalyticsProps {
     api: RendererApi;
@@ -203,7 +204,7 @@ export default function Analytics({ api }: AnalyticsProps) {
                                             <span className="bar-segment draining" style={{ height: `${drainPct}%` }} />
                                         </div>
                                         <span className="heatmap-label">
-                                            {hour.hour % 6 === 0 ? formatHour(hour.hour) : ''}
+                                            {shiftHourToDayStart(hour.hour, DAY_START_HOUR) % 6 === 0 ? formatHour(hour.hour) : ''}
                                         </span>
                                     </div>
                                 );

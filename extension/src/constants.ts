@@ -1,7 +1,7 @@
 // Extension constants and shared config
 
-export const DESKTOP_API_URL = 'http://127.0.0.1:17600';
-export const DESKTOP_WS_URL = 'ws://127.0.0.1:17600/events';
+export const DESKTOP_API_URL = 'http://localhost:17600';
+export const DESKTOP_WS_URL = 'ws://localhost:17600/events';
 export const DEFAULT_UNLOCK_PRICE = 12;
 export const NOTIFICATION_ICON = chrome.runtime.getURL('assets/notification.png');
 

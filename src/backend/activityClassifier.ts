@@ -33,7 +33,9 @@ export class ActivityClassifier {
     const idleThreshold = category === 'frivolity' ? frivolousThreshold : baseThreshold;
 
     const idleSeconds = Math.max(0, Math.round(event.idleSeconds ?? 0));
-    const isIdle = idleSeconds >= idleThreshold;
+    const isLiveSession = this.isLiveSessionContext(event);
+    const effectiveIdleThreshold = isLiveSession ? Number.MAX_SAFE_INTEGER : idleThreshold;
+    const isIdle = idleSeconds >= effectiveIdleThreshold;
 
     return {
       ...event,
@@ -41,13 +43,32 @@ export class ActivityClassifier {
       domain,
       appName,
       isIdle,
-      idleThresholdSeconds: idleThreshold,
+      idleThresholdSeconds: effectiveIdleThreshold,
       suppressContext
     };
   }
 
+  // Live meetings often involve long periods without mouse/keyboard input.
+  // Treating these as idle undercounts actual attended meeting time.
+  private isLiveSessionContext(event: ActivityEvent & { idleSeconds?: number }) {
+    const haystack = `${event.appName ?? ''} ${event.domain ?? ''} ${event.windowTitle ?? ''}`.toLowerCase();
+    const markers = [
+      'zoom',
+      'zoom.us',
+      'teams',
+      'microsoft teams',
+      'meet.google.com',
+      'google meet',
+      'webex',
+      'whereby',
+      'huddle',
+      'hangout'
+    ];
+    return markers.some((marker) => haystack.includes(marker));
+  }
+
   public matchesCategory(domain: string | null, appName: string, config: CategorisationConfig, category: ActivityCategory): boolean {
-    const domainCandidates = this.expandDomainCandidates(domain);
+    const domainCandidates = this.expandDomainCandidates(domain, appName);
     const normalizedApp = appName.toLowerCase();
     const patterns =
       category === 'productive' ? config.productive
@@ -58,7 +79,7 @@ export class ActivityClassifier {
   }
 
   private resolveCategory(domain: string | null, appName: string, config: CategorisationConfig): ActivityCategory {
-    const domainCandidates = this.expandDomainCandidates(domain);
+    const domainCandidates = this.expandDomainCandidates(domain, appName);
     const normalizedApp = appName.toLowerCase();
 
     if (this.matches(domainCandidates, normalizedApp, config.productive)) return 'productive';
@@ -68,7 +89,7 @@ export class ActivityClassifier {
     return 'neutral';
   }
 
-  private expandDomainCandidates(domain: string | null): string[] {
+  private expandDomainCandidates(domain: string | null, appName?: string | null): string[] {
     // Aliases map subdomains/variants to their canonical domain for consistent matching
     const aliasMap: Record<string, string> = {
       'x.com': 'twitter.com',
@@ -79,9 +100,26 @@ export class ActivityClassifier {
       'mobile.twitter.com': 'twitter.com',
       'm.youtube.com': 'youtube.com'
     };
+    const appAliasMap: Array<{ needle: string; domain: string }> = [
+      { needle: 'whatsapp', domain: 'whatsapp.com' },
+      { needle: 'telegram', domain: 'telegram.org' },
+      { needle: 'signal', domain: 'signal.org' },
+      { needle: 'discord', domain: 'discord.com' },
+      { needle: 'messenger', domain: 'messenger.com' },
+      { needle: 'wechat', domain: 'wechat.com' }
+    ];
     const normalizedDomain = domain?.toLowerCase() ?? '';
     const expandedDomain = aliasMap[normalizedDomain] ?? normalizedDomain;
-    return Array.from(new Set([normalizedDomain, expandedDomain])).filter(Boolean);
+    const candidates = new Set<string>([normalizedDomain, expandedDomain].filter(Boolean));
+    const normalizedApp = (appName ?? '').toLowerCase();
+    if (normalizedApp) {
+      for (const entry of appAliasMap) {
+        if (normalizedApp.includes(entry.needle)) {
+          candidates.add(entry.domain);
+        }
+      }
+    }
+    return Array.from(candidates);
   }
 
   private matches(domains: string[], appName: string, patterns: string[]) {
@@ -104,8 +142,16 @@ export class ActivityClassifier {
         return appName === needle;
       }
 
-      // Fallback to loose matching for app names or simple keywords
-      return domains.some((domain) => domain && domain.includes(needle)) || appName.includes(needle);
+      // Domain fallback remains loose for convenience ("docs" can match docs.google.com),
+      // but app names require token boundaries to avoid false positives like "Code" -> "Codex".
+      return domains.some((domain) => domain && domain.includes(needle)) || this.matchesAppToken(appName, needle);
     });
+  }
+
+  private matchesAppToken(appName: string, needle: string) {
+    if (!appName || !needle) return false;
+    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i');
+    return re.test(appName);
   }
 }

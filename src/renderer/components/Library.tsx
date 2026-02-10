@@ -113,6 +113,7 @@ export default function Library({ api }: Props) {
   const [newPrice, setNewPrice] = useState(12);
   const [newTitle, setNewTitle] = useState('');
   const [newNote, setNewNote] = useState('');
+  const [newPublic, setNewPublic] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -121,6 +122,7 @@ export default function Library({ api }: Props) {
   const [editPrice, setEditPrice] = useState(12);
   const [editTitle, setEditTitle] = useState('');
   const [editNote, setEditNote] = useState('');
+  const [editPublic, setEditPublic] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
 
   const [isSaving, setIsSaving] = useState(false);
@@ -190,6 +192,7 @@ export default function Library({ api }: Props) {
     setNewPrice(12);
     setNewTitle('');
     setNewNote('');
+    setNewPublic(false);
     setError(null);
   };
 
@@ -215,7 +218,8 @@ export default function Library({ api }: Props) {
         title: newTitle.trim() || undefined,
         note: newNote.trim() || undefined,
         purpose: newPurpose,
-        price
+        price,
+        isPublic: newPublic
       });
       setIsAdding(false);
       resetAddForm();
@@ -234,6 +238,7 @@ export default function Library({ api }: Props) {
     setEditPrice(typeof item.price === 'number' ? item.price : 12);
     setEditTitle(item.title ?? '');
     setEditNote(item.note ?? '');
+    setEditPublic(Boolean(item.isPublic));
     setEditError(null);
   };
 
@@ -262,7 +267,8 @@ export default function Library({ api }: Props) {
         title: title ? title : null,
         note: note ? note : null,
         purpose: editPurpose,
-        price
+        price,
+        isPublic: editPublic
       });
       setEditingId(null);
       await loadItems();
@@ -420,6 +426,18 @@ export default function Library({ api }: Props) {
                   <label>Note (optional)</label>
                   <textarea value={newNote} onChange={(e) => setNewNote(e.target.value)} disabled={isSaving} />
                 </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                    <input
+                      type="checkbox"
+                      checked={newPublic}
+                      disabled={isSaving}
+                      onChange={(e) => setNewPublic(e.target.checked)}
+                    />
+                    Share with friends (public)
+                  </label>
+                  <p className="subtle" style={{ margin: 0 }}>Only friends will see this in their feeds.</p>
+                </div>
                 <div className="form-actions">
                   <button
                     type="button"
@@ -501,6 +519,7 @@ export default function Library({ api }: Props) {
                       <div className="library-meta">
                         <span>{urlLabel || item.app || 'Saved item'}</span>
                         {typeof item.price === 'number' && <span>{item.price} f-coins unlock</span>}
+                        {item.isPublic && <span>Public to friends</span>}
                         {item.kind === 'app' && <span>Desktop app</span>}
                       </div>
 
@@ -615,6 +634,18 @@ export default function Library({ api }: Props) {
                           <div className="form-group" style={{ marginBottom: 0 }}>
                             <label>Note</label>
                             <textarea value={editNote} onChange={(e) => setEditNote(e.target.value)} disabled={isSaving} />
+                          </div>
+                          <div className="form-group" style={{ marginBottom: 0 }}>
+                            <label style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                              <input
+                                type="checkbox"
+                                checked={editPublic}
+                                disabled={isSaving || item.kind === 'app'}
+                                onChange={(e) => setEditPublic(e.target.checked)}
+                              />
+                              Share with friends (public)
+                            </label>
+                            <p className="subtle" style={{ margin: 0 }}>Only friends will see this in their feeds.</p>
                           </div>
 
                           <div className="form-actions" style={{ justifyContent: 'flex-end' }}>

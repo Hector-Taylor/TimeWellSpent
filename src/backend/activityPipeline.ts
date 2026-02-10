@@ -14,13 +14,16 @@ export type ActivityOrigin = 'system' | 'extension';
 export class ActivityPipeline {
   private lastForeground: { appName: string; domain: string | null; ts: number } | null = null;
   private lastProductiveAt: number | null = null;
+  private static readonly DEFAULT_MAX_EXTENSION_EVENT_AGE_MS = 30_000;
 
   constructor(
     private readonly tracker: ActivityTracker,
     private readonly economy: EconomyEngine,
     private readonly classifier: ActivityClassifier,
     private readonly getContinuityWindowSeconds: () => number,
-    private readonly onBlocked?: (event: ClassifiedActivity) => boolean | void
+    private readonly onBlocked?: (event: ClassifiedActivity) => boolean | void,
+    private readonly shouldPreferExtensionForBrowserActivity?: () => boolean,
+    private readonly maxExtensionEventAgeMs = ActivityPipeline.DEFAULT_MAX_EXTENSION_EVENT_AGE_MS
   ) { }
 
   handle(event: ActivityEvent & { idleSeconds?: number }, origin: ActivityOrigin = 'system') {
@@ -30,8 +33,15 @@ export class ActivityPipeline {
         domain: event.domain ?? null,
         ts: Date.now()
       };
+      if (this.shouldPreferExtensionForBrowserActivity?.() && this.isBrowserContextEvent(event)) {
+        logger.info('Ignoring system browser activity while extension feed is fresh', event.domain ?? event.appName);
+        return;
+      }
     } else if (origin === 'extension' && !this.shouldAcceptExtension(event)) {
       logger.info('Ignoring background extension activity', event.domain ?? event.appName);
+      return;
+    } else if (origin === 'extension' && this.isStaleExtensionEvent(event)) {
+      logger.info('Ignoring stale extension activity', event.domain ?? event.appName);
       return;
     }
 
@@ -56,6 +66,21 @@ export class ActivityPipeline {
       return false;
     }
     return true;
+  }
+
+  private isBrowserContextEvent(event: ActivityEvent) {
+    const appName = (event.appName ?? '').toLowerCase();
+    const browserNames = ['chrome', 'safari', 'edge', 'brave', 'arc', 'firefox'];
+    const looksBrowser = browserNames.some((name) => appName.includes(name));
+    if (!looksBrowser) return false;
+    return event.source === 'url' || Boolean(event.url) || Boolean(event.domain);
+  }
+
+  private isStaleExtensionEvent(event: ActivityEvent) {
+    const ts = event.timestamp?.getTime?.() ?? Number.NaN;
+    if (!Number.isFinite(ts)) return true;
+    const ageMs = Date.now() - ts;
+    return ageMs > this.maxExtensionEventAgeMs;
   }
 
   private applyContinuity(event: ClassifiedActivity): ClassifiedActivity {

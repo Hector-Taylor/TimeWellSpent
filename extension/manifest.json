@@ -31,6 +31,7 @@
     ],
     "host_permissions": [
         "http://localhost:17600/*",
+        "http://127.0.0.1:17600/*",
         "<all_urls>"
     ],
     "web_accessible_resources": [
@@ -48,6 +49,14 @@
     "background": {
         "service_worker": "src/background.js",
         "type": "module"
+    },
+    "commands": {
+        "quick-add-library": {
+            "suggested_key": {
+                "default": "Ctrl+Shift+L"
+            },
+            "description": "Quick add current page to the Replace library"
+        }
     },
     "content_scripts": [
         {

@@ -12,8 +12,6 @@ export default defineConfig({
     }
   },
   build: {
-    outDir: '../../out/renderer',
-    emptyOutDir: true,
     sourcemap: true,
     target: 'es2021'
   },

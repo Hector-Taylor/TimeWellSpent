@@ -48,6 +48,7 @@ type StatusResponse = {
   };
   lastSync: number;
   desktopConnected: boolean;
+  domainCategory?: 'productive' | 'neutral' | 'frivolous' | 'draining' | null;
 };
 
 type ActiveTabInfo = {

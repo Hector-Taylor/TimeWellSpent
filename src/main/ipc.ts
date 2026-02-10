@@ -1,8 +1,9 @@
-import { BrowserWindow, ipcMain } from 'electron';
+import { BrowserWindow, ipcMain, shell } from 'electron';
 import type { BackendServices } from '@backend/server';
 import type { Database } from '@backend/storage';
 import type { SyncService } from './sync';
 import type {
+  DailyOnboardingState,
   EmergencyPolicyId,
   JournalConfig,
   LibraryPurpose,
@@ -181,6 +182,12 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('settings:update-competitive-min-hours', (_event, value: number) => backend.settings.setCompetitiveMinActiveHours(value));
   ipcMain.handle('settings:continuity-window', () => backend.settings.getContinuityWindowSeconds());
   ipcMain.handle('settings:update-continuity-window', (_event, value: number) => backend.settings.setContinuityWindowSeconds(value));
+  ipcMain.handle('settings:productivity-goal-hours', () => backend.settings.getProductivityGoalHours());
+  ipcMain.handle('settings:update-productivity-goal-hours', (_event, value: number) => backend.settings.setProductivityGoalHours(value));
+  ipcMain.handle('settings:camera-mode', () => backend.settings.getCameraModeEnabled());
+  ipcMain.handle('settings:update-camera-mode', (_event, value: boolean) => backend.settings.setCameraModeEnabled(Boolean(value)));
+  ipcMain.handle('settings:daily-onboarding', () => backend.settings.getDailyOnboardingState());
+  ipcMain.handle('settings:update-daily-onboarding', (_event, value: Partial<DailyOnboardingState>) => backend.settings.updateDailyOnboardingState(value));
 
   // Integrations
   ipcMain.handle('integrations:zotero-config', () => backend.reading.getZoteroIntegrationConfig());
@@ -189,23 +196,38 @@ export function createIpc(context: IpcContext) {
 
   // Library handlers
   ipcMain.handle('library:list', () => backend.library.list());
-  ipcMain.handle('library:add', (_event, payload: { kind: 'url' | 'app'; url?: string; app?: string; title?: string; note?: string; purpose: LibraryPurpose; price?: number | null }) => {
+  ipcMain.handle('library:add', (_event, payload: { kind: 'url' | 'app'; url?: string; app?: string; title?: string; note?: string; purpose: LibraryPurpose; price?: number | null; isPublic?: boolean }) => {
     return backend.library.add(payload);
   });
   ipcMain.handle(
     'library:update',
-    (_event, payload: { id: number; title?: string | null; note?: string | null; purpose?: LibraryPurpose; price?: number | null; consumedAt?: string | null }) => {
+    (_event, payload: { id: number; title?: string | null; note?: string | null; purpose?: LibraryPurpose; price?: number | null; consumedAt?: string | null; isPublic?: boolean }) => {
       return backend.library.update(payload.id, {
         title: payload.title,
         note: payload.note,
         purpose: payload.purpose,
         price: payload.price,
-        consumedAt: payload.consumedAt
+        consumedAt: payload.consumedAt,
+        isPublic: payload.isPublic
       });
     }
   );
   ipcMain.handle('library:remove', (_event, payload: { id: number }) => backend.library.remove(payload.id));
   ipcMain.handle('library:find-by-url', (_event, payload: { url: string }) => backend.library.getByUrl(payload.url));
+
+  // Camera handlers
+  ipcMain.handle('camera:list', (_event, payload: { limit?: number } = {}) => backend.camera.listPhotos(payload.limit));
+  ipcMain.handle('camera:store', (_event, payload: { dataUrl: string; subject?: string | null; domain?: string | null }) =>
+    backend.camera.storePhoto(payload)
+  );
+  ipcMain.handle('camera:delete', (_event, payload: { id: string }) => backend.camera.deletePhoto(payload.id));
+  ipcMain.handle('camera:reveal', async (_event, payload: { id: string }) => {
+    const photo = await backend.camera.getPhoto(payload.id);
+    if (!photo?.filePath) {
+      throw new Error('Photo not found');
+    }
+    shell.showItemInFolder(photo.filePath);
+  });
 
   ipcMain.handle('history:list', (_event, payload: { day: string }) => backend.consumption.listByDay(payload.day));
   ipcMain.handle('history:days', (_event, payload: { rangeDays?: number }) => backend.consumption.listDays(payload.rangeDays ?? 30));
@@ -366,6 +388,10 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('friends:timeline', async (_event, payload: { userId: string; windowHours?: number }) => {
     if (!sync) return null;
     return sync.getFriendTimeline(payload.userId, payload.windowHours ?? 24);
+  });
+  ipcMain.handle('friends:public-library', async (_event, payload: { userId?: string; windowHours?: number }) => {
+    if (!sync) return [];
+    return sync.getFriendPublicLibraryItems(payload.windowHours ?? 168, payload.userId);
   });
 
   ipcMain.handle('trophies:list', async () => {

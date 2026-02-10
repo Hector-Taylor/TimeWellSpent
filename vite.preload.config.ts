@@ -18,18 +18,8 @@ export default defineConfig({
     }
   },
   build: {
-    outDir: 'out/preload',
-    emptyOutDir: true,
     sourcemap: true,
-    minify: false,
     rollupOptions: {
-      input: {
-        preload: 'src/main/preload.ts'
-      },
-      output: {
-        format: 'es',
-        entryFileNames: '[name].js'
-      },
       external: externals
     }
   }

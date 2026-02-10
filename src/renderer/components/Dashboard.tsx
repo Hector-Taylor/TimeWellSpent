@@ -6,6 +6,7 @@ import type {
   AnalyticsOverview,
   EconomyState,
   FriendConnection,
+  FriendLibraryItem,
   FriendProfile,
   FriendSummary,
   FriendTimeline,
@@ -14,6 +15,7 @@ import type {
   TrophyStatus,
   WalletSnapshot
 } from '@shared/types';
+import { DAY_START_HOUR, getLocalDayStartMs } from '@shared/time';
 import PomodoroPanel from './PomodoroPanel';
 import DayCompass from './DayCompass';
 import ActivityChart from './ActivityChart';
@@ -26,9 +28,19 @@ interface DashboardProps {
   api: RendererApi;
   wallet: WalletSnapshot;
   economy: EconomyState | null;
+  productivityGoalHoursOverride?: number;
 }
 
-export default function Dashboard({ api, wallet, economy }: DashboardProps) {
+const DASHBOARD_SCENES = [
+  { id: 'focus', label: 'Focus', hint: 'Ring, streak, and core metrics' },
+  { id: 'signals', label: 'Signals', hint: 'Flow quality and attention telemetry' },
+  { id: 'journey', label: 'Journey', hint: 'Day timeline and orbit map' },
+  { id: 'social', label: 'Social', hint: 'Friends and trophy highlights' }
+] as const;
+
+type DashboardScene = (typeof DASHBOARD_SCENES)[number]['id'];
+
+export default function Dashboard({ api, wallet, economy, productivityGoalHoursOverride }: DashboardProps) {
   const [activities, setActivities] = useState<ActivityRecord[]>([]);
   const [summary, setSummary] = useState<ActivitySummary | null>(null);
   const [loadingSummary, setLoadingSummary] = useState(true);
@@ -48,6 +60,7 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
   const [myProfile, setMyProfile] = useState<FriendProfile | null>(null);
   const [selectedFriend, setSelectedFriend] = useState<FriendConnection | null>(null);
   const [friendTimeline, setFriendTimeline] = useState<FriendTimeline | null>(null);
+  const [friendPublicLibrary, setFriendPublicLibrary] = useState<FriendLibraryItem[]>([]);
   const [friendDetailOpen, setFriendDetailOpen] = useState(false);
   const [trophies, setTrophies] = useState<TrophyStatus[]>([]);
   const [trophySummary, setTrophySummary] = useState<TrophyProfileSummary | null>(null);
@@ -56,8 +69,19 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
   const [journey, setJourney] = useState<ActivityJourney | null>(null);
   const [excludedKeywords, setExcludedKeywords] = useState<string[]>([]);
   const [competitiveOptIn, setCompetitiveOptIn] = useState(false);
-  const [competitiveMinHours, setCompetitiveMinHours] = useState(2);
   const [pomodoroOpen, setPomodoroOpen] = useState(false);
+  const [productivityGoalHours, setProductivityGoalHours] = useState(2);
+  const [dashboardScene, setDashboardScene] = useState<DashboardScene>(() => {
+    try {
+      const saved = window.localStorage.getItem('tws-dashboard-scene');
+      if (saved && DASHBOARD_SCENES.some((scene) => scene.id === saved)) {
+        return saved as DashboardScene;
+      }
+    } catch {
+      // ignore
+    }
+    return 'focus';
+  });
 
   const refresh = useCallback(async (silent = false) => {
     if (!silent) setLoadingSummary(true);
@@ -181,10 +205,15 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
   const openFriendDetail = useCallback(async (friend: FriendConnection) => {
     setSelectedFriend(friend);
     setFriendTimeline(null);
+    setFriendPublicLibrary([]);
     setFriendDetailOpen(true);
     try {
-      const timeline = await api.friends.timeline(friend.userId, 24);
+      const [timeline, publicLibrary] = await Promise.all([
+        api.friends.timeline(friend.userId, 24),
+        api.friends.publicLibrary(friend.userId, 168)
+      ]);
       setFriendTimeline(timeline);
+      setFriendPublicLibrary(publicLibrary ?? []);
     } catch (error) {
       console.error('Failed to load friend timeline', error);
     }
@@ -205,8 +234,19 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
 
   useEffect(() => {
     api.settings.competitiveOptIn().then(setCompetitiveOptIn).catch(() => { });
-    api.settings.competitiveMinActiveHours().then(setCompetitiveMinHours).catch(() => { });
   }, [api]);
+
+  useEffect(() => {
+    api.settings.productivityGoalHours().then(setProductivityGoalHours).catch(() => { });
+  }, [api]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('tws-dashboard-scene', dashboardScene);
+    } catch {
+      // ignore
+    }
+  }, [dashboardScene]);
 
   useEffect(() => {
     const unsub = api.events.on('economy:activity', () => {
@@ -326,16 +366,6 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
     }
     return thrash / summary.windowHours;
   }, [sortedActivities, summary]);
-  // Competitive head-to-head is gated until both sides cross a daily active-time threshold.
-  const competitiveGateSeconds = Math.max(0, competitiveMinHours) * 3600;
-  const meetsCompetitiveGateForMe = useMemo(() => {
-    const totalActive = myFriendSummary?.totalActiveSeconds ?? summary?.totalSeconds ?? 0;
-    return totalActive >= competitiveGateSeconds;
-  }, [myFriendSummary, summary, competitiveGateSeconds]);
-  const meetsCompetitiveGateForFriend = useCallback((friendSummary: FriendSummary | null) => {
-    if (!friendSummary) return false;
-    return friendSummary.totalActiveSeconds >= competitiveGateSeconds;
-  }, [competitiveGateSeconds]);
   const myHeadToHeadSummary = useMemo(() => {
     if (myFriendSummary) return myFriendSummary;
     return summary ? activityToFriendSummary(summary) : null;
@@ -387,6 +417,28 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
   const streakLight = Math.round(48 + 18 * streakProgress);
   const streakColor = lastFrivolityAgeMs ? `hsl(${streakHue} 70% ${streakLight}%)` : 'rgba(200, 149, 108, 0.7)';
   const deepWorkMinutes = useMemo(() => summary ? Math.round(summary.deepWorkSeconds / 60) : null, [summary]);
+  const startOfDayMs = useMemo(() => getLocalDayStartMs(now, DAY_START_HOUR), [now]);
+  const productiveTodaySeconds = useMemo(() => {
+    if (!summary) return 0;
+    if (!summary.timeline?.length) return summary.totalsByCategory.productive ?? 0;
+    return summary.timeline.reduce((acc, slot) => {
+      const slotStart = Date.parse(slot.start);
+      if (!Number.isFinite(slotStart) || slotStart < startOfDayMs) return acc;
+      return acc + (slot.productive ?? 0);
+    }, 0);
+  }, [summary, startOfDayMs]);
+  const goalHours = Number.isFinite(productivityGoalHoursOverride) && (productivityGoalHoursOverride ?? 0) > 0
+    ? (productivityGoalHoursOverride as number)
+    : (Number.isFinite(productivityGoalHours) && productivityGoalHours > 0 ? productivityGoalHours : 2);
+  const goalSeconds = goalHours * 3600;
+  const ringProgressRaw = goalSeconds > 0 ? productiveTodaySeconds / goalSeconds : 0;
+  const ringProgress = Math.max(0, Math.min(1, ringProgressRaw));
+  const ringPercent = Math.round(ringProgressRaw * 100);
+  const ringRadius = 52;
+  const ringCircumference = 2 * Math.PI * ringRadius;
+  const ringOffset = ringCircumference * (1 - ringProgress);
+  const ringComplete = ringProgressRaw >= 1;
+  const remainingSeconds = Math.max(0, goalSeconds - productiveTodaySeconds);
 
   const trophyById = useMemo(() => {
     const map = new Map<string, TrophyStatus>();
@@ -444,14 +496,341 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
               </div>
             )}
           </div>
-
-          <div className="card dashboard-time">
-            <ActivityChart activities={activities} summary={summary} />
-          </div>
         </div>
 
-        <div className="dashboard-side">
-          {friendsReady && (
+        <div className="card dashboard-time">
+          <ActivityChart activities={activities} summary={summary} />
+        </div>
+      </header>
+
+      <div className="dashboard-controls">
+        <div className="dashboard-tabs" role="tablist" aria-label="Dashboard scenes">
+          {DASHBOARD_SCENES.map((scene) => (
+            <button
+              key={scene.id}
+              type="button"
+              role="tab"
+              className={dashboardScene === scene.id ? 'active' : ''}
+              aria-selected={dashboardScene === scene.id}
+              onClick={() => setDashboardScene(scene.id)}
+            >
+              <span className="dashboard-tab-label">{scene.label}</span>
+              <span className="dashboard-tab-hint">{scene.hint}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {pomodoroOpen && (
+        <div className="pomodoro-flyout">
+          <div className="pomodoro-flyout-bar">
+            <div>
+              <p className="eyebrow">Deep work</p>
+              <strong>Pomodoro control</strong>
+            </div>
+            <button type="button" className="ghost" onClick={() => setPomodoroOpen(false)}>Close</button>
+          </div>
+          <PomodoroPanel api={api} />
+        </div>
+      )}
+
+      <div className="dashboard-scenes">
+        {dashboardScene === 'focus' && (
+          <div className="dashboard-focus-grid">
+            <div className={`card productivity-ring ${ringComplete ? 'complete' : ''}`}>
+              <div className="card-header-row">
+                <div>
+                  <p className="eyebrow">Daily productivity</p>
+                  <h2>Close your ring</h2>
+                </div>
+                <span className="pill ghost">{formatGoalHours(goalHours)} goal</span>
+              </div>
+              <div className="productivity-ring-body">
+                <div
+                  className="productivity-ring-graphic"
+                  role="img"
+                  aria-label={`Productivity ring ${formatHoursMinutesFromSeconds(productiveTodaySeconds)} of ${formatGoalHours(goalHours)}`}
+                >
+                  <div className="productivity-ring-glow" />
+                  <svg viewBox="0 0 120 120" aria-hidden>
+                    <circle
+                      className="productivity-ring-track"
+                      cx="60"
+                      cy="60"
+                      r={ringRadius}
+                      strokeWidth="10"
+                    />
+                    <circle
+                      className="productivity-ring-progress"
+                      cx="60"
+                      cy="60"
+                      r={ringRadius}
+                      strokeWidth="10"
+                      strokeDasharray={ringCircumference}
+                      strokeDashoffset={ringOffset}
+                    />
+                  </svg>
+                  <div className="productivity-ring-center">
+                    <strong>{formatHoursMinutesFromSeconds(productiveTodaySeconds)}</strong>
+                    <span>productive</span>
+                  </div>
+                </div>
+                <div className="productivity-ring-meta">
+                  <strong>{loadingSummary ? '--' : `${ringPercent}%`}</strong>
+                  <span className="subtle">
+                    {loadingSummary
+                      ? 'Collecting signal...'
+                      : ringComplete
+                        ? "You've closed your circle."
+                        : `${formatHoursMinutesFromSeconds(remainingSeconds)} to go`}
+                  </span>
+                  <span className="subtle">Today - {formatHoursMinutesFromSeconds(goalSeconds)} target</span>
+                </div>
+              </div>
+            </div>
+
+            <div
+              className={`card dashboard-streak ${streakProgress >= 1 ? 'streak-max' : ''}`}
+              style={{
+                ['--streak-color' as string]: streakColor,
+                ['--streak-progress' as string]: `${Math.round(streakProgress * 100)}%`
+              }}
+            >
+              <div className="streak-header">
+                <span className="eyebrow">Recovery timer</span>
+                <span className={`pill inline ${activeCategory}`}>{activeCategory}</span>
+              </div>
+              <h2>Time since last frivolity</h2>
+              <div className="streak-time">
+                {lastFrivolityLoaded ? (lastFrivolityAgeMs ? formatDuration(lastFrivolityAgeMs) : 'No frivolity logged') : 'Loading...'}
+              </div>
+              <div className="streak-meta">
+                <span className="subtle">
+                  {lastFrivolityAt ? `Last spend ${new Date(lastFrivolityAt).toLocaleString()}` : 'No paid sessions recorded yet.'}
+                </span>
+                <div className="streak-meta-row">
+                  <span className="pill ghost">Goal: 3 days</span>
+                  <span className="pill ghost">{frivolityCount24h ?? 0} frivolity uses (24h)</span>
+                </div>
+              </div>
+              <div className="streak-bar" aria-hidden>
+                <span />
+              </div>
+            </div>
+
+            <div className="card dashboard-focus-metrics">
+              <div className="card-header-row">
+                <div>
+                  <p className="eyebrow">Focus deck</p>
+                  <h2>Session highlights</h2>
+                </div>
+                <span className="pill ghost">{summary ? `${summary.windowHours}h window` : 'Rolling day'}</span>
+              </div>
+              <div className="overview-grid">
+                <div className="overview-metric">
+                  <span className="label">Active time</span>
+                  <strong>{totalHours.toFixed(1)}h</strong>
+                  <span className="subtle">last {summary?.windowHours ?? 24}h</span>
+                </div>
+                <div className="overview-metric">
+                  <span className="label">Productivity</span>
+                  <strong>{overview?.productivityScore ?? '--'}%</strong>
+                  <span className="subtle">last {overview?.periodDays ?? 7}d</span>
+                </div>
+                <div className="overview-metric">
+                  <span className="label">Deep work</span>
+                  <strong>{deepWorkMinutes == null ? '--' : `${deepWorkMinutes}m`}</strong>
+                  <span className="subtle">today</span>
+                </div>
+                <div className="overview-metric">
+                  <span className="label">Frivolity</span>
+                  <strong>{frivolityCount24h == null ? '--' : frivolityCount24h}</strong>
+                  <span className="subtle">last 24h</span>
+                </div>
+              </div>
+              <div className="dashboard-focus-meta">
+                <div>
+                  <span className="metric-label">Active context</span>
+                  <strong>{activeLabel}</strong>
+                </div>
+                <span className={`pill inline ${activeCategory}`}>{activeCategory}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {dashboardScene === 'signals' && (
+          <div className="dashboard-signals-grid">
+            <div className="dashboard-signals-main">
+              <div className="card flow-card dashboard-flow">
+                <div className="card-header-row">
+                  <div>
+                    <p className="eyebrow">Attention stability</p>
+                    <h2>Flow signals</h2>
+                  </div>
+                  <span className="pill ghost">Last 24h</span>
+                </div>
+                <div className="flow-metrics">
+                  <div>
+                    <span className="label">Context switches</span>
+                    <strong>{switchesPerHour == null ? '--' : `${switchesPerHour.toFixed(1)}/h`}</strong>
+                    <span className="subtle">avg across window</span>
+                  </div>
+                  <div>
+                    <span className="label">Thrash rate</span>
+                    <strong>{thrashPerHour == null ? '--' : `${thrashPerHour.toFixed(1)}/h`}</strong>
+                    <span className="subtle">rapid hops</span>
+                  </div>
+                  <div>
+                    <span className="label">Idle ratio</span>
+                    <strong>{idleRatio == null ? '--' : `${Math.round(idleRatio * 100)}%`}</strong>
+                    <span className="subtle">passive time</span>
+                  </div>
+                  <div>
+                    <span className="label">Longest run</span>
+                    <strong>{longestProductiveRunHours}h</strong>
+                    <span className="subtle">productive streak</span>
+                  </div>
+                </div>
+                <div className="flow-toggle">
+                  <button
+                    type="button"
+                    className={`pill ghost ${flowMetric === 'productivity' ? 'active' : ''}`}
+                    onClick={() => setFlowMetric('productivity')}
+                  >
+                    Productivity
+                  </button>
+                  <button
+                    type="button"
+                    className={`pill ghost ${flowMetric === 'switches' ? 'active' : ''}`}
+                    onClick={() => setFlowMetric('switches')}
+                  >
+                    Switches
+                  </button>
+                  <button
+                    type="button"
+                    className={`pill ghost ${flowMetric === 'thrash' ? 'active' : ''}`}
+                    onClick={() => setFlowMetric('thrash')}
+                  >
+                    Thrash
+                  </button>
+                  <button
+                    type="button"
+                    className={`pill ghost ${flowMetric === 'idle' ? 'active' : ''}`}
+                    onClick={() => setFlowMetric('idle')}
+                  >
+                    Idle
+                  </button>
+                </div>
+                <div className="flow-sparkline">
+                  <span className="label">
+                    {flowMetric === 'switches'
+                      ? 'Switches trend'
+                      : flowMetric === 'thrash'
+                        ? 'Thrash trend'
+                        : flowMetric === 'idle'
+                          ? 'Idle trend'
+                          : 'Productive trend'}
+                  </span>
+                  <div className="flow-sparkline-track">
+                    {flowTrend.length > 1 ? (
+                      <svg viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden>
+                        <path
+                          d={buildSparklinePath(flowTrend)}
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                        />
+                      </svg>
+                    ) : (
+                      <span className="subtle">Collecting signal…</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="dashboard-insights">
+                <Insights api={api} overview={overview} loading={loadingOverview} onRefresh={refreshOverview} />
+              </div>
+            </div>
+
+            <div className="card dashboard-overview">
+              <div className="card-header-row">
+                <div>
+                  <p className="eyebrow">Signal deck</p>
+                  <h2>Focus telemetry</h2>
+                </div>
+                <span className="pill ghost">{summary ? `${summary.windowHours}h window` : 'Rolling day'}</span>
+              </div>
+              <div className="overview-grid">
+                <div className="overview-metric">
+                  <span className="label">Active time</span>
+                  <strong>{totalHours.toFixed(1)}h</strong>
+                  <span className="subtle">last {summary?.windowHours ?? 24}h</span>
+                </div>
+                <div className="overview-metric">
+                  <span className="label">Productivity</span>
+                  <strong>{overview?.productivityScore ?? '--'}%</strong>
+                  <span className="subtle">last {overview?.periodDays ?? 7}d</span>
+                </div>
+                <div className="overview-metric">
+                  <span className="label">Avg session</span>
+                  <strong>{overview ? formatDuration(overview.avgSessionLength * 1000) : '--'}</strong>
+                  <span className="subtle">{overview?.totalSessions ?? '--'} sessions</span>
+                </div>
+                <div className="overview-metric">
+                  <span className="label">Peak hour</span>
+                  <strong>{overview ? formatHour(overview.peakProductiveHour) : '--'}</strong>
+                  <span className="subtle">risk {overview ? formatHour(overview.riskHour) : '--'}</span>
+                </div>
+              </div>
+              <div className="overview-breakdown">
+                <span className="label">Category mix</span>
+                <div className="overview-bars">
+                  {renderCategoryBar('Productive', 'productive', overview)}
+                  {renderCategoryBar('Neutral', 'neutral', overview)}
+                  {renderCategoryBar('Frivolity', 'frivolity', overview)}
+                  {renderCategoryBar('Draining', 'draining', overview)}
+                  {renderCategoryBar('Idle', 'idle', overview)}
+                </div>
+              </div>
+              <div className="overview-top">
+                <span className="label">Top contexts</span>
+                <ul className="overview-list">
+                  {topContexts.slice(0, 3).map((ctx) => (
+                    <li key={ctx.label}>
+                      <strong>{ctx.label}</strong>
+                      <span className="subtle">{Math.round(ctx.seconds / 60)}m • {ctx.source === 'url' ? 'Browser' : 'App'}</span>
+                    </li>
+                  ))}
+                  {topContexts.length === 0 && <li className="subtle">No streams yet.</li>}
+                </ul>
+                {overview?.topEngagementDomain && !isExcludedLabel(overview.topEngagementDomain) && (
+                  <div className="overview-highlight">
+                    <span className="label">Most engaging</span>
+                    <strong>{overview.topEngagementDomain}</strong>
+                    <span className="subtle">highest attention hold this week</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {dashboardScene === 'journey' && (
+          <div className="dashboard-journey-grid">
+            <div className="dashboard-orbit">
+              <DayCompass summary={summary} economy={economy} />
+            </div>
+            <div className="dashboard-timeline">
+              <DayJourney journey={journey} loading={loadingSummary} isRemote={isRemoteView} />
+              <AttentionMap journey={journey} loading={loadingSummary} isRemote={isRemoteView} />
+            </div>
+          </div>
+        )}
+
+        {dashboardScene === 'social' && (
+          <div className="dashboard-social-grid">
             <div className="card friends-strip">
               <div className="friends-strip-header">
                 <div>
@@ -460,14 +839,19 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
                 </div>
                 <span className="pill ghost">Last 24h</span>
               </div>
-              <div className="friends-strip-row">
-                {friends.length === 0 ? (
-                  <div className="friends-empty">
-                    <strong>No friends yet</strong>
-                    <span className="subtle">Add a handle in the Friends tab.</span>
-                  </div>
-                ) : (
-                  friends.map((friend) => {
+              {!friendsReady ? (
+                <div className="friends-empty">
+                  <strong>Syncing friends…</strong>
+                  <span className="subtle">Connect the desktop app to pull stats.</span>
+                </div>
+              ) : friends.length === 0 ? (
+                <div className="friends-empty">
+                  <strong>No friends yet</strong>
+                  <span className="subtle">Add a handle in the Friends tab.</span>
+                </div>
+              ) : (
+                <div className="friends-strip-row">
+                  {friends.map((friend) => {
                     const summary = friendSummaries[friend.userId];
                     const totals = summary?.categoryBreakdown ?? null;
                     const active = summary?.totalActiveSeconds ?? 0;
@@ -497,7 +881,7 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
                         </div>
                         {competitiveOptIn ? (
                           <div className="head-to-head">
-                            {meetsCompetitiveGateForMe && meetsCompetitiveGateForFriend(friendSummaries[friend.userId] ?? null) ? (
+                            {friendSummaries[friend.userId] ? (
                               <>
                                 <div className="head-to-head-row">
                                   <span>You</span>
@@ -525,7 +909,7 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
                               </>
                             ) : (
                               <p className="subtle" style={{ marginTop: 6 }}>
-                                Both need {competitiveMinHours}h active to unlock.
+                                Waiting for shared activity data.
                               </p>
                             )}
                           </div>
@@ -544,268 +928,63 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
                         )}
                       </button>
                     );
-                  })
-                )}
-              </div>
-            </div>
-          )}
-
-          <div
-            className={`card dashboard-streak ${streakProgress >= 1 ? 'streak-max' : ''}`}
-            style={{
-              ['--streak-color' as string]: streakColor,
-              ['--streak-progress' as string]: `${Math.round(streakProgress * 100)}%`
-            }}
-          >
-            <div className="streak-header">
-              <span className="eyebrow">Recovery timer</span>
-              <span className={`pill inline ${activeCategory}`}>{activeCategory}</span>
-            </div>
-            <h2>Time since last frivolity</h2>
-            <div className="streak-time">
-              {lastFrivolityLoaded ? (lastFrivolityAgeMs ? formatDuration(lastFrivolityAgeMs) : 'No frivolity logged') : 'Loading...'}
-            </div>
-            <div className="streak-meta">
-              <span className="subtle">
-                {lastFrivolityAt ? `Last spend ${new Date(lastFrivolityAt).toLocaleString()}` : 'No paid sessions recorded yet.'}
-              </span>
-              <div className="streak-meta-row">
-                <span className="pill ghost">Goal: 3 days</span>
-                <span className="pill ghost">{frivolityCount24h ?? 0} frivolity uses (24h)</span>
-              </div>
-            </div>
-            <div className="streak-bar" aria-hidden>
-              <span />
-            </div>
-          </div>
-
-          {trophies.length > 0 && (
-            <div className="card trophy-strip">
-              <div className="trophy-strip-header">
-                <div>
-                  <p className="eyebrow">Trophies</p>
-                  <h2>Case highlights</h2>
-                </div>
-                <span className="pill ghost">Profile view</span>
-              </div>
-              <div className="trophy-strip-row">
-                {pinnedTrophies.length === 0 ? (
-                  <div className="friends-empty">
-                    <strong>No pinned trophies</strong>
-                    <span className="subtle">Pin trophies in your Profile page.</span>
-                  </div>
-                ) : (
-                  pinnedTrophies.map((trophy) => (
-                    <div key={trophy.id} className="trophy-badge">
-                      <span className="emoji">{trophy.emoji}</span>
-                      <span>{trophy.name}</span>
-                    </div>
-                  ))
-                )}
-              </div>
-              {nextTrophy && (
-                <div className="trophy-next">
-                  <span className="label">Next up</span>
-                  <div className="trophy-next-body">
-                    <span className="emoji">{nextTrophy.emoji}</span>
-                    <div>
-                      <strong>{nextTrophy.name}</strong>
-                      <span className="subtle">{nextTrophy.progress.label ?? `${nextTrophy.progress.current}/${nextTrophy.progress.target}`}</span>
-                    </div>
-                  </div>
-                  <div className="progress-bar">
-                    <span style={{ width: `${Math.round(nextTrophy.progress.ratio * 100)}%` }} />
-                  </div>
+                  })}
                 </div>
               )}
-              {trophyToast && (
-                <div className="trophy-toast">
-                  <span className="emoji">{trophyToast.emoji}</span>
+            </div>
+
+            {trophies.length > 0 && (
+              <div className="card trophy-strip">
+                <div className="trophy-strip-header">
                   <div>
-                    <strong>{trophyToast.name}</strong>
-                    <span className="subtle">New trophy earned</span>
+                    <p className="eyebrow">Trophies</p>
+                    <h2>Case highlights</h2>
                   </div>
+                  <span className="pill ghost">Profile view</span>
                 </div>
-              )}
-            </div>
-          )}
-        </div>
-      </header>
-
-      {pomodoroOpen && (
-        <div className="pomodoro-flyout">
-          <div className="pomodoro-flyout-bar">
-            <div>
-              <p className="eyebrow">Deep work</p>
-              <strong>Pomodoro control</strong>
-            </div>
-            <button type="button" className="ghost" onClick={() => setPomodoroOpen(false)}>Close</button>
-          </div>
-          <PomodoroPanel api={api} />
-        </div>
-      )}
-
-      <div className="panel-body dashboard-grid">
-        <div className="dashboard-orbit">
-          <DayCompass summary={summary} economy={economy} />
-        </div>
-
-        <div className="card flow-card dashboard-flow">
-          <div className="card-header-row">
-            <div>
-              <p className="eyebrow">Attention stability</p>
-              <h2>Flow signals</h2>
-            </div>
-            <span className="pill ghost">Last 24h</span>
-          </div>
-          <div className="flow-metrics">
-            <div>
-              <span className="label">Context switches</span>
-              <strong>{switchesPerHour == null ? '--' : `${switchesPerHour.toFixed(1)}/h`}</strong>
-              <span className="subtle">avg across window</span>
-            </div>
-            <div>
-              <span className="label">Thrash rate</span>
-              <strong>{thrashPerHour == null ? '--' : `${thrashPerHour.toFixed(1)}/h`}</strong>
-              <span className="subtle">rapid hops</span>
-            </div>
-            <div>
-              <span className="label">Idle ratio</span>
-              <strong>{idleRatio == null ? '--' : `${Math.round(idleRatio * 100)}%`}</strong>
-              <span className="subtle">passive time</span>
-            </div>
-            <div>
-              <span className="label">Longest run</span>
-              <strong>{longestProductiveRunHours}h</strong>
-              <span className="subtle">productive streak</span>
-            </div>
-          </div>
-          <div className="flow-toggle">
-            <button
-              type="button"
-              className={`pill ghost ${flowMetric === 'productivity' ? 'active' : ''}`}
-              onClick={() => setFlowMetric('productivity')}
-            >
-              Productivity
-            </button>
-            <button
-              type="button"
-              className={`pill ghost ${flowMetric === 'switches' ? 'active' : ''}`}
-              onClick={() => setFlowMetric('switches')}
-            >
-              Switches
-            </button>
-            <button
-              type="button"
-              className={`pill ghost ${flowMetric === 'thrash' ? 'active' : ''}`}
-              onClick={() => setFlowMetric('thrash')}
-            >
-              Thrash
-            </button>
-            <button
-              type="button"
-              className={`pill ghost ${flowMetric === 'idle' ? 'active' : ''}`}
-              onClick={() => setFlowMetric('idle')}
-            >
-              Idle
-            </button>
-          </div>
-          <div className="flow-sparkline">
-            <span className="label">
-              {flowMetric === 'switches'
-                ? 'Switches trend'
-                : flowMetric === 'thrash'
-                  ? 'Thrash trend'
-                  : flowMetric === 'idle'
-                    ? 'Idle trend'
-                    : 'Productive trend'}
-            </span>
-            <div className="flow-sparkline-track">
-              {flowTrend.length > 1 ? (
-                <svg viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden>
-                  <path
-                    d={buildSparklinePath(flowTrend)}
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  />
-                </svg>
-              ) : (
-                <span className="subtle">Collecting signal…</span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="dashboard-insights">
-          <Insights api={api} overview={overview} loading={loadingOverview} onRefresh={refreshOverview} />
-        </div>
-
-        <div className="card dashboard-overview">
-          <div className="card-header-row">
-            <div>
-              <p className="eyebrow">Signal deck</p>
-              <h2>Focus telemetry</h2>
-            </div>
-            <span className="pill ghost">{summary ? `${summary.windowHours}h window` : 'Rolling day'}</span>
-          </div>
-          <div className="overview-grid">
-            <div className="overview-metric">
-              <span className="label">Active time</span>
-              <strong>{totalHours.toFixed(1)}h</strong>
-              <span className="subtle">last {summary?.windowHours ?? 24}h</span>
-            </div>
-            <div className="overview-metric">
-              <span className="label">Productivity</span>
-              <strong>{overview?.productivityScore ?? '--'}%</strong>
-              <span className="subtle">last {overview?.periodDays ?? 7}d</span>
-            </div>
-            <div className="overview-metric">
-              <span className="label">Avg session</span>
-              <strong>{overview ? formatDuration(overview.avgSessionLength * 1000) : '--'}</strong>
-              <span className="subtle">{overview?.totalSessions ?? '--'} sessions</span>
-            </div>
-            <div className="overview-metric">
-              <span className="label">Peak hour</span>
-              <strong>{overview ? formatHour(overview.peakProductiveHour) : '--'}</strong>
-              <span className="subtle">risk {overview ? formatHour(overview.riskHour) : '--'}</span>
-            </div>
-          </div>
-          <div className="overview-breakdown">
-            <span className="label">Category mix</span>
-            <div className="overview-bars">
-              {renderCategoryBar('Productive', 'productive', overview)}
-              {renderCategoryBar('Neutral', 'neutral', overview)}
-              {renderCategoryBar('Frivolity', 'frivolity', overview)}
-              {renderCategoryBar('Draining', 'draining', overview)}
-              {renderCategoryBar('Idle', 'idle', overview)}
-            </div>
-          </div>
-          <div className="overview-top">
-            <span className="label">Top contexts</span>
-            <ul className="overview-list">
-              {topContexts.slice(0, 3).map((ctx) => (
-                <li key={ctx.label}>
-                  <strong>{ctx.label}</strong>
-                  <span className="subtle">{Math.round(ctx.seconds / 60)}m • {ctx.source === 'url' ? 'Browser' : 'App'}</span>
-                </li>
-              ))}
-              {topContexts.length === 0 && <li className="subtle">No streams yet.</li>}
-            </ul>
-            {overview?.topEngagementDomain && !isExcludedLabel(overview.topEngagementDomain) && (
-              <div className="overview-highlight">
-                <span className="label">Most engaging</span>
-                <strong>{overview.topEngagementDomain}</strong>
-                <span className="subtle">highest attention hold this week</span>
+                <div className="trophy-strip-row">
+                  {pinnedTrophies.length === 0 ? (
+                    <div className="friends-empty">
+                      <strong>No pinned trophies</strong>
+                      <span className="subtle">Pin trophies in your Profile page.</span>
+                    </div>
+                  ) : (
+                    pinnedTrophies.map((trophy) => (
+                      <div key={trophy.id} className="trophy-badge">
+                        <span className="emoji">{trophy.emoji}</span>
+                        <span>{trophy.name}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+                {nextTrophy && (
+                  <div className="trophy-next">
+                    <span className="label">Next up</span>
+                    <div className="trophy-next-body">
+                      <span className="emoji">{nextTrophy.emoji}</span>
+                      <div>
+                        <strong>{nextTrophy.name}</strong>
+                        <span className="subtle">{nextTrophy.progress.label ?? `${nextTrophy.progress.current}/${nextTrophy.progress.target}`}</span>
+                      </div>
+                    </div>
+                    <div className="progress-bar">
+                      <span style={{ width: `${Math.round(nextTrophy.progress.ratio * 100)}%` }} />
+                    </div>
+                  </div>
+                )}
+                {trophyToast && (
+                  <div className="trophy-toast">
+                    <span className="emoji">{trophyToast.emoji}</span>
+                    <div>
+                      <strong>{trophyToast.name}</strong>
+                      <span className="subtle">New trophy earned</span>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
-        </div>
-
-        <div className="dashboard-timeline">
-          <DayJourney journey={journey} loading={loadingSummary} isRemote={isRemoteView} />
-          <AttentionMap journey={journey} loading={loadingSummary} isRemote={isRemoteView} />
-        </div>
+        )}
       </div>
 
       <FriendDetailModal
@@ -813,6 +992,7 @@ export default function Dashboard({ api, wallet, economy }: DashboardProps) {
         friend={selectedFriend}
         summary={selectedFriend ? friendSummaries[selectedFriend.userId] ?? null : null}
         timeline={friendTimeline}
+        publicLibraryItems={friendPublicLibrary}
         trophies={trophies}
         onClose={() => setFriendDetailOpen(false)}
       />
@@ -838,6 +1018,18 @@ function formatHour(h: number) {
 function formatHoursFromSeconds(seconds: number) {
   const hours = seconds / 3600;
   return hours >= 10 ? `${hours.toFixed(0)}h` : `${hours.toFixed(1)}h`;
+}
+
+function formatHoursMinutesFromSeconds(seconds: number) {
+  const totalMinutes = Math.max(0, Math.round(seconds / 60));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${minutes}m`;
+}
+
+function formatGoalHours(hours: number) {
+  if (!Number.isFinite(hours)) return '0h';
+  return hours % 1 === 0 ? `${hours.toFixed(0)}h` : `${hours.toFixed(1)}h`;
 }
 
 function formatMinutes(seconds: number) {

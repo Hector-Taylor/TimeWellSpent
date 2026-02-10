@@ -1,15 +1,16 @@
-import type { FriendConnection, FriendSummary, FriendTimeline, TrophyStatus } from '@shared/types';
+import type { FriendConnection, FriendLibraryItem, FriendSummary, FriendTimeline, TrophyStatus } from '@shared/types';
 
 type Props = {
   open: boolean;
   friend: FriendConnection | null;
   summary: FriendSummary | null;
   timeline: FriendTimeline | null;
+  publicLibraryItems?: FriendLibraryItem[];
   trophies?: TrophyStatus[];
   onClose: () => void;
 };
 
-export default function FriendDetailModal({ open, friend, summary, timeline, trophies = [], onClose }: Props) {
+export default function FriendDetailModal({ open, friend, summary, timeline, publicLibraryItems = [], trophies = [], onClose }: Props) {
   if (!open || !friend) return null;
 
   const totals = timeline?.totalsByCategory ?? summary?.categoryBreakdown ?? null;
@@ -89,6 +90,33 @@ export default function FriendDetailModal({ open, friend, summary, timeline, tro
           </div>
         )}
 
+        {publicLibraryItems.length > 0 && (
+          <div className="friend-modal-library">
+            <div className="friend-modal-timeline-header" style={{ marginBottom: 12 }}>
+              <span className="label">Public library</span>
+              <span className="subtle">Shared links</span>
+            </div>
+            <div className="friend-modal-library-list">
+              {publicLibraryItems.map((item) => {
+                const title = item.title ?? item.domain ?? item.url;
+                return (
+                  <div key={item.id} className="friend-modal-library-item">
+                    <div className="friend-modal-library-main">
+                      <strong>{title}</strong>
+                      <span className="subtle">{item.note ?? item.url}</span>
+                    </div>
+                    <div className="friend-modal-library-meta">
+                      <span>Added {formatShortDate(item.createdAt)}</span>
+                      {typeof item.price === 'number' && <span>{item.price} f-coins</span>}
+                      <a className="ghost" href={item.url} target="_blank" rel="noopener noreferrer">Open</a>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="friend-modal-timeline">
           <div className="friend-modal-timeline-header">
             <span className="label">Last {timeline?.windowHours ?? 24}h</span>
@@ -129,4 +157,10 @@ function formatHoursFromSeconds(seconds: number) {
 function maxTimeline(timeline: FriendTimeline | null) {
   if (!timeline || timeline.timeline.length === 0) return 1;
   return Math.max(...timeline.timeline.map((slot) => slot.productive + slot.neutral + slot.frivolity + slot.draining + slot.idle), 1);
+}
+
+function formatShortDate(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }

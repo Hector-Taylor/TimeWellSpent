@@ -93,6 +93,79 @@ describe('ActivityPipeline continuity', () => {
   });
 });
 
+describe('ActivityPipeline source arbitration', () => {
+  it('prefers extension browser activity over system browser activity when extension feed is fresh', () => {
+    const tracker = new FakeTracker();
+    const economy = new FakeEconomy();
+    const classifier = new ActivityClassifier(
+      () => DEFAULT_CATEGORISATION,
+      () => 10,
+      () => 10
+    );
+    const pipeline = new ActivityPipeline(
+      tracker as any,
+      economy as any,
+      classifier,
+      () => 120,
+      undefined,
+      () => true
+    );
+
+    const base = Date.now();
+    pipeline.handle({
+      timestamp: new Date(base),
+      source: 'url',
+      appName: 'Google Chrome',
+      domain: 'example.com',
+      idleSeconds: 0
+    } as any, 'system');
+
+    expect(tracker.records).toHaveLength(0);
+    expect(economy.events).toHaveLength(0);
+
+    pipeline.handle({
+      timestamp: new Date(base + 2000),
+      source: 'url',
+      appName: 'Chrome',
+      domain: 'example.com',
+      idleSeconds: 0
+    } as any, 'extension');
+
+    expect(tracker.records).toHaveLength(1);
+    expect(economy.events).toHaveLength(1);
+  });
+
+  it('drops stale extension activity events', () => {
+    const tracker = new FakeTracker();
+    const economy = new FakeEconomy();
+    const classifier = new ActivityClassifier(
+      () => DEFAULT_CATEGORISATION,
+      () => 10,
+      () => 10
+    );
+    const pipeline = new ActivityPipeline(
+      tracker as any,
+      economy as any,
+      classifier,
+      () => 120,
+      undefined,
+      () => false,
+      1_000
+    );
+
+    pipeline.handle({
+      timestamp: new Date(Date.now() - 5_000),
+      source: 'url',
+      appName: 'Chrome',
+      domain: 'example.com',
+      idleSeconds: 0
+    } as any, 'extension');
+
+    expect(tracker.records).toHaveLength(0);
+    expect(economy.events).toHaveLength(0);
+  });
+});
+
 describe('ActivityClassifier categorization', () => {
   it('classifies WhatsApp variants as draining by default', () => {
     const classifier = new ActivityClassifier(
@@ -150,5 +223,23 @@ describe('ActivityClassifier categorization', () => {
     } as any);
 
     expect(result.category).toBe('productive');
+  });
+
+  it('does not treat "Codex" as productive for the generic "Code" keyword', () => {
+    const classifier = new ActivityClassifier(
+      () => ({ productive: ['Code'], neutral: [], frivolity: [], draining: [] }),
+      () => 10,
+      () => 10
+    );
+
+    const result = classifier.classify({
+      timestamp: new Date(),
+      source: 'app',
+      appName: 'Codex',
+      domain: null,
+      idleSeconds: 0
+    } as any);
+
+    expect(result.category).toBe('neutral');
   });
 });

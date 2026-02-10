@@ -31,6 +31,7 @@ type LibraryItem = {
   note?: string;
   purpose: 'replace' | 'allow' | 'temptation' | 'productive';
   price?: number;
+  isPublic?: boolean;
   createdAt?: string;
   lastUsedAt?: string;
   consumedAt?: string;
@@ -38,7 +39,7 @@ type LibraryItem = {
 
 type FeedEntry = {
   id: string;
-  entryType: 'library' | 'reading';
+  entryType: 'library' | 'reading' | 'friend';
   contentType: 'url' | 'app' | 'reading';
   title: string;
   subtitle: string;
@@ -56,6 +57,10 @@ type FeedEntry = {
   iconDataUrl?: string;
   progress?: number;
   requiresDesktop?: boolean;
+  friendName?: string;
+  friendHandle?: string | null;
+  friendColor?: string | null;
+  addedAt?: string;
 };
 
 type StatusResponse = {
@@ -71,6 +76,8 @@ type StatusResponse = {
     ratePerMin: number;
     remainingSeconds: number;
     paused?: boolean;
+    packChainCount?: number;
+    meteredMultiplier?: number;
     allowedUrl?: string;
   } | null;
   matchedPricedItem?: LibraryItem | null;
@@ -84,9 +91,26 @@ type StatusResponse = {
   };
   lastSync: number | null;
   desktopConnected: boolean;
+  domainCategory?: 'productive' | 'neutral' | 'frivolous' | 'draining' | null;
   emergencyPolicy?: 'off' | 'gentle' | 'balanced' | 'strict';
   discouragementEnabled?: boolean;
+  spendGuardEnabled?: boolean;
   rotMode?: { enabled: boolean; startedAt: number | null };
+  dailyOnboarding?: {
+    completedDay: string | null;
+    lastPromptedDay: string | null;
+    lastSkippedDay: string | null;
+    lastForcedDay?: string | null;
+    note: { day: string; message: string; deliveredAt?: string | null; acknowledged?: boolean } | null;
+  };
+  settings?: {
+    idleThreshold?: number;
+    continuityWindowSeconds?: number;
+    productivityGoalHours?: number;
+    emergencyPolicy?: 'off' | 'gentle' | 'balanced' | 'strict';
+    discouragementIntervalMinutes?: number;
+    cameraModeEnabled?: boolean;
+  };
   emergency?: {
     lastEnded: { domain: string; justification?: string; endedAt: number } | null;
     reviewStats: { total: number; kept: number; notKept: number };
@@ -127,6 +151,20 @@ type FriendTimeline = {
     idle: number;
     dominant: 'productive' | 'neutral' | 'frivolity' | 'idle';
   }>;
+};
+
+type FriendLibraryItem = {
+  id: string;
+  userId: string;
+  handle?: string | null;
+  displayName?: string | null;
+  color?: string | null;
+  url: string;
+  domain?: string;
+  title?: string | null;
+  note?: string | null;
+  price?: number | null;
+  createdAt: string;
 };
 
 type FriendProfile = {
@@ -194,6 +232,10 @@ const SINISTER_PHRASES = [
   'The void is patient. Are you?'
 ];
 
+const DISCOURAGEMENT_VARIANTS = ['flicker', 'sputter', 'slide', 'rails', 'cloud'] as const;
+type DiscouragementVariant = (typeof DISCOURAGEMENT_VARIANTS)[number];
+const DISCOURAGEMENT_INTERVAL_RANGE_MS = { min: 2800, max: 7600 };
+
 type Props = {
   domain: string;
   status: StatusResponse;
@@ -211,6 +253,7 @@ type EmergencyPolicyConfig = {
   urlLocked: boolean;
   debtCoins: number;
 };
+const METERED_PREMIUM_MULTIPLIER = 3.5;
 
 type Suggestion =
   | { type: 'url'; id: string; title: string; subtitle?: string; url: string; libraryId?: number }
@@ -267,6 +310,12 @@ function seededJitter(seed: number, value: string) {
   return state / 0xffff_ffff;
 }
 
+function pickDiscouragementVariant(prev?: DiscouragementVariant) {
+  if (DISCOURAGEMENT_VARIANTS.length <= 1) return DISCOURAGEMENT_VARIANTS[0];
+  const choices = DISCOURAGEMENT_VARIANTS.filter((variant) => variant !== prev);
+  return choices[Math.floor(Math.random() * choices.length)] ?? DISCOURAGEMENT_VARIANTS[0];
+}
+
 function formatPurpose(purpose?: LibraryItem['purpose']) {
   switch (purpose) {
     case 'productive':
@@ -289,6 +338,13 @@ function formatClock(seconds: number) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+function packChainMultiplier(chainCount: number) {
+  if (chainCount <= 0) return 1;
+  if (chainCount === 1) return 1.35;
+  if (chainCount === 2) return 1.75;
+  return 2.35;
+}
+
 function formatDuration(ms: number) {
   const totalMinutes = Math.max(0, Math.floor(ms / 60000));
   const days = Math.floor(totalMinutes / (60 * 24));
@@ -305,6 +361,13 @@ function formatMinutes(seconds: number) {
 function formatCount(value?: number | null) {
   if (typeof value !== 'number') return '—';
   return String(value);
+}
+
+function formatFriendAddedAt(iso?: string) {
+  if (!iso) return '';
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return parsed.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
 function maxPopupTimeline(timeline: FriendTimeline | null) {
@@ -366,6 +429,15 @@ const NAV_ITEMS = [
   { id: 'profile', label: 'Profile' }
 ];
 
+const DASH_SCENES = [
+  { id: 'focus', label: 'Focus' },
+  { id: 'signals', label: 'Signals' },
+  { id: 'library', label: 'Library' },
+  { id: 'social', label: 'Social' }
+] as const;
+
+type DashboardScene = (typeof DASH_SCENES)[number]['id'];
+
 export default function PaywallOverlay({ domain, status, reason, peek, onClose }: Props) {
   const [selectedMinutes, setSelectedMinutes] = useState(15);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -375,7 +447,19 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const [reviewed, setReviewed] = useState(false);
   const [spinKey, setSpinKey] = useState(0);
   const [proceedOpen, setProceedOpen] = useState(reason === 'insufficient-funds');
+  const [proceedConfirm, setProceedConfirm] = useState<{ kind: 'pack' | 'metered'; minutes?: number } | null>(null);
   const [feedView, setFeedView] = useState<'for-you' | 'feed'>('for-you');
+  const [dashScene, setDashScene] = useState<DashboardScene>(() => {
+    try {
+      const saved = localStorage.getItem('tws-dash-scene');
+      if (saved && DASH_SCENES.some((scene) => scene.id === saved)) {
+        return saved as DashboardScene;
+      }
+    } catch {
+      // ignore
+    }
+    return 'focus';
+  });
   const [feedSeed, setFeedSeed] = useState(0);
   const [feedLens, setFeedLens] = useState<'balanced' | 'fresh' | 'wild'>('balanced');
   const [feedVotes, setFeedVotes] = useState<Record<string, number>>({});
@@ -395,6 +479,14 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const [rotModeBusy, setRotModeBusy] = useState(false);
   const [discouragementEnabled, setDiscouragementEnabled] = useState(status.discouragementEnabled ?? true);
   const [discouragementBusy, setDiscouragementBusy] = useState(false);
+  const [discouragementIntervalMinutes, setDiscouragementIntervalMinutes] = useState(
+    status.settings?.discouragementIntervalMinutes ?? 1
+  );
+  const [discouragementIntervalBusy, setDiscouragementIntervalBusy] = useState(false);
+  const [spendGuardEnabled, setSpendGuardEnabled] = useState(status.spendGuardEnabled ?? true);
+  const [spendGuardBusy, setSpendGuardBusy] = useState(false);
+  const [cameraModeEnabled, setCameraModeEnabled] = useState(status.settings?.cameraModeEnabled ?? false);
+  const [cameraModeBusy, setCameraModeBusy] = useState(false);
   const [theme, setTheme] = useState<'lavender' | 'olive'>(() => {
     try {
       const saved = localStorage.getItem('tws-theme');
@@ -406,6 +498,8 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const [sinisterIndex, setSinisterIndex] = useState(() =>
     SINISTER_PHRASES.length ? Math.floor(Math.random() * SINISTER_PHRASES.length) : 0
   );
+  const [discouragementVariant, setDiscouragementVariant] = useState<DiscouragementVariant>('flicker');
+  const [discouragementCycle, setDiscouragementCycle] = useState(0);
   const [overlayView, setOverlayView] = useState<string>('dashboard');
   const [friends, setFriends] = useState<FriendConnection[]>([]);
   const [friendSummaries, setFriendSummaries] = useState<Record<string, FriendSummary>>({});
@@ -415,12 +509,28 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const [friendDetail, setFriendDetail] = useState<FriendConnection | null>(null);
   const [friendTimeline, setFriendTimeline] = useState<FriendTimeline | null>(null);
   const [friendDetailOpen, setFriendDetailOpen] = useState(false);
+  const [friendPublicItems, setFriendPublicItems] = useState<FriendLibraryItem[]>([]);
   const [trophies, setTrophies] = useState<TrophyStatus[]>([]);
   const [trophyProfile, setTrophyProfile] = useState<TrophyProfileSummary | null>(null);
+  const isDevBuild = useMemo(() => {
+    try {
+      return !chrome.runtime.getManifest().update_url;
+    } catch {
+      return false;
+    }
+  }, []);
+  const [devFlags, setDevFlags] = useState<{ isDev: boolean; simulateDisconnect: boolean; logSessionDrift: boolean } | null>(null);
 
-  const ratePerMin = status.rate?.ratePerMin ?? status.session?.ratePerMin ?? 1;
+  const sessionMeteredMultiplier = status.session?.meteredMultiplier ?? METERED_PREMIUM_MULTIPLIER;
+  const baseRatePerMin = status.rate?.ratePerMin
+    ?? (status.session?.mode === 'metered'
+      ? status.session.ratePerMin / Math.max(1, sessionMeteredMultiplier)
+      : status.session?.ratePerMin ?? 1);
+  const ratePerMin = baseRatePerMin;
+  const meteredRatePerMin = baseRatePerMin * METERED_PREMIUM_MULTIPLIER;
   const emergencyPolicy = status.emergencyPolicy ?? 'balanced';
   const peekAllowed = Boolean(peek?.allowed);
+  const isFrivolousDomain = status.domainCategory === 'frivolous';
   const competitiveOptIn = competitiveSettings?.optIn ?? false;
   const competitiveMinHours = competitiveSettings?.minActiveHours ?? 2;
   const competitiveGateSeconds = Math.max(0, competitiveMinHours) * 3600;
@@ -434,6 +544,14 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       setPeekActive(false);
     }
   }, [showEmergencyForm, ritual]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('tws-dash-scene', dashScene);
+    } catch {
+      // ignore
+    }
+  }, [dashScene]);
 
   const emergencyPolicyConfig = useMemo<EmergencyPolicyConfig>(() => {
     switch (emergencyPolicy) {
@@ -516,12 +634,46 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   }, [status.discouragementEnabled]);
 
   useEffect(() => {
-    if (!discouragementEnabled || SINISTER_PHRASES.length === 0) return;
-    const timer = window.setInterval(() => {
-      setSinisterIndex((index) => (index + 1) % SINISTER_PHRASES.length);
-    }, 4200);
-    return () => window.clearInterval(timer);
-  }, [discouragementEnabled]);
+    setDiscouragementIntervalMinutes(status.settings?.discouragementIntervalMinutes ?? 1);
+  }, [status.settings?.discouragementIntervalMinutes]);
+
+  useEffect(() => {
+    setSpendGuardEnabled(status.spendGuardEnabled ?? true);
+  }, [status.spendGuardEnabled]);
+
+  useEffect(() => {
+    setCameraModeEnabled(status.settings?.cameraModeEnabled ?? false);
+  }, [status.settings?.cameraModeEnabled]);
+
+  const showDiscouragement = discouragementEnabled && isFrivolousDomain;
+
+  useEffect(() => {
+    if (!showDiscouragement || SINISTER_PHRASES.length === 0) return;
+    let cancelled = false;
+    let timer: number | null = null;
+    const triggerCycle = (advancePhrase: boolean) => {
+      if (advancePhrase) {
+        setSinisterIndex((index) => (index + 1) % SINISTER_PHRASES.length);
+      }
+      setDiscouragementVariant((prev) => pickDiscouragementVariant(prev));
+      setDiscouragementCycle((cycle) => cycle + 1);
+    };
+    const scheduleNext = () => {
+      const delay = DISCOURAGEMENT_INTERVAL_RANGE_MS.min +
+        Math.random() * (DISCOURAGEMENT_INTERVAL_RANGE_MS.max - DISCOURAGEMENT_INTERVAL_RANGE_MS.min);
+      timer = window.setTimeout(() => {
+        if (cancelled) return;
+        triggerCycle(true);
+        scheduleNext();
+      }, delay);
+    };
+    triggerCycle(false);
+    scheduleNext();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [showDiscouragement]);
 
   useEffect(() => {
     try {
@@ -540,6 +692,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
         profile: FriendProfile | null;
         meSummary: FriendSummary | null;
         competitive: { optIn: boolean; minActiveHours: number } | null;
+        publicLibrary: FriendLibraryItem[];
       };
       if (response?.success) {
         setFriends(response.friends ?? []);
@@ -547,12 +700,14 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
         setMyProfile(response.profile ?? null);
         setMySummary(response.meSummary ?? null);
         setCompetitiveSettings(response.competitive ?? null);
+        setFriendPublicItems(response.publicLibrary ?? []);
       } else {
         setFriends([]);
         setFriendSummaries({});
         setMyProfile(null);
         setMySummary(null);
         setCompetitiveSettings(null);
+        setFriendPublicItems([]);
       }
     } catch {
       setFriends([]);
@@ -560,6 +715,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       setMyProfile(null);
       setMySummary(null);
       setCompetitiveSettings(null);
+      setFriendPublicItems([]);
     }
   };
 
@@ -589,12 +745,47 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       setFriendSummaries({});
       setMyProfile(null);
       setMySummary(null);
+      setFriendPublicItems([]);
       return;
     }
     refreshFriends();
     const id = window.setInterval(refreshFriends, 20000);
     return () => window.clearInterval(id);
   }, [status.desktopConnected]);
+
+  useEffect(() => {
+    if (!isDevBuild) return;
+    let mounted = true;
+    const load = async () => {
+      try {
+        const response = await chrome.runtime.sendMessage({ type: 'GET_DEV_FLAGS' });
+        if (!mounted) return;
+        if (response?.flags) {
+          setDevFlags(response.flags);
+        } else {
+          setDevFlags({ isDev: true, simulateDisconnect: false, logSessionDrift: false });
+        }
+      } catch {
+        if (mounted) setDevFlags({ isDev: true, simulateDisconnect: false, logSessionDrift: false });
+      }
+    };
+    load();
+    return () => {
+      mounted = false;
+    };
+  }, [isDevBuild]);
+
+  const updateDevFlags = async (next: Partial<{ simulateDisconnect: boolean; logSessionDrift: boolean }>) => {
+    if (!isDevBuild) return;
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'SET_DEV_FLAGS', payload: next });
+      if (response?.flags) {
+        setDevFlags(response.flags);
+      }
+    } catch {
+      // ignore
+    }
+  };
 
   useEffect(() => {
     if (!status.desktopConnected) {
@@ -657,6 +848,28 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   };
 
   const sinisterPhrase = SINISTER_PHRASES[sinisterIndex] ?? 'You should know better.';
+  const discouragementCloud = useMemo(() => {
+    if (!showDiscouragement) return [];
+    const picks = pickRandom(SINISTER_PHRASES, 5, discouragementCycle + sinisterIndex);
+    if (picks.length && !picks.includes(sinisterPhrase)) {
+      picks[0] = sinisterPhrase;
+    }
+    return picks.map((message, idx) => {
+      const x = 10 + seededJitter(discouragementCycle + idx, message) * 80;
+      const y = 12 + seededJitter(discouragementCycle + idx + 9, message) * 70;
+      const delay = Math.round(seededJitter(discouragementCycle + idx + 17, message) * 350);
+      const scale = 0.85 + seededJitter(discouragementCycle + idx + 23, message) * 0.35;
+      return {
+        message,
+        style: {
+          left: `${x}%`,
+          top: `${y}%`,
+          transform: `translate(-50%, -50%) scale(${scale})`,
+          animationDelay: `${delay}ms`
+        } as CSSProperties
+      };
+    });
+  }, [showDiscouragement, discouragementCycle, sinisterIndex, sinisterPhrase]);
 
   const peekToggle = peekAllowed ? (
     <div className="tws-peek-controls">
@@ -672,9 +885,73 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     </div>
   ) : null;
 
-  const discouragementBanner = discouragementEnabled && !peekActive ? (
-    <div className="tws-discourage-banner" aria-hidden="true">
-      <span>{sinisterPhrase}</span>
+  const discouragementBanner = showDiscouragement && !peekActive ? (() => {
+    if (discouragementVariant === 'rails') {
+      return (
+        <div key={`discourage-${discouragementCycle}`} className="tws-discourage-rails" aria-hidden="true">
+          <div className="tws-discourage-rail tws-discourage-rail-top" />
+          <div className="tws-discourage-rail tws-discourage-rail-bottom" />
+          <div className="tws-discourage-rail-message">{sinisterPhrase}</div>
+        </div>
+      );
+    }
+    if (discouragementVariant === 'cloud') {
+      return (
+        <div key={`discourage-${discouragementCycle}`} className="tws-discourage-cloud" aria-hidden="true">
+          <div className="tws-discourage-cloud-field">
+            <div className="tws-discourage-cloud-core" />
+            {discouragementCloud.map((item, idx) => (
+              <span key={`${idx}-${item.message}`} className="tws-discourage-cloud-item" style={item.style}>
+                {item.message}
+              </span>
+            ))}
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div
+        key={`discourage-${discouragementCycle}`}
+        className={`tws-discourage-banner tws-discourage-${discouragementVariant}`}
+        aria-hidden="true"
+      >
+        <span>{sinisterPhrase}</span>
+      </div>
+    );
+  })() : null;
+  const discouragementAntechamber = spendGuardEnabled && proceedConfirm ? (
+    <div className="tws-antechamber">
+      <div className="tws-antechamber-body">
+        <p className="tws-eyebrow">{showDiscouragement ? 'One more breath' : 'Confirm spend'}</p>
+        <h3>{showDiscouragement ? sinisterPhrase : 'Proceed with care.'}</h3>
+        <p className="tws-subtle" style={{ marginBottom: 12 }}>
+          A short pause before you spend coins.
+        </p>
+        <div className="tws-antechamber-actions">
+          <button
+            className="tws-secondary"
+            onClick={() => setProceedConfirm(null)}
+            disabled={isProcessing}
+          >
+            Never mind
+          </button>
+          <button
+            className="tws-primary"
+            onClick={async () => {
+              if (!proceedConfirm) return;
+              if (proceedConfirm.kind === 'pack') {
+                await handleBuyPack(proceedConfirm.minutes);
+              } else if (proceedConfirm.kind === 'metered') {
+                await handleStartMetered();
+              }
+              setProceedConfirm(null);
+            }}
+            disabled={isProcessing}
+          >
+            Proceed anyway
+          </button>
+        </div>
+      </div>
     </div>
   ) : null;
 
@@ -935,20 +1212,23 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     for (const pack of status.rate.packs) {
       priceByMinutes.set(pack.minutes, pack.price);
     }
+    const chainCount = status.session?.mode === 'pack' ? (status.session.packChainCount ?? 1) : 0;
+    const multiplier = packChainMultiplier(chainCount);
     return base.map((p) => ({
       minutes: p.minutes,
-      price: priceByMinutes.get(p.minutes) ?? p.price
+      price: Math.max(1, Math.round((priceByMinutes.get(p.minutes) ?? p.price) * multiplier))
     }));
-  }, [ratePerMin, status.rate?.packs]);
+  }, [ratePerMin, status.rate?.packs, status.session?.mode, status.session?.packChainCount]);
 
-  const handleBuyPack = async () => {
+  const handleBuyPack = async (minutesOverride?: number) => {
     if (isProcessing) return;
     setIsProcessing(true);
     setError(null);
     try {
+      const minutes = minutesOverride ?? selectedMinutes;
       const result = await chrome.runtime.sendMessage({
         type: 'BUY_PACK',
-        payload: { domain, minutes: selectedMinutes }
+        payload: { domain, minutes }
       });
       if (!result?.success) throw new Error(result?.error ? String(result.error) : 'Failed to start session');
       onClose();
@@ -1057,7 +1337,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
 
   if (ritual) {
     return (
-      <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''}`}>
+      <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''} ${theme === 'olive' ? 'tws-theme-olive' : ''}`}>
         {peekToggle}
         {discouragementBanner}
         <div className="tws-paywall-modal">
@@ -1144,7 +1424,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
 
   if (showEmergencyForm) {
     return (
-      <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''}`}>
+      <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''} ${theme === 'olive' ? 'tws-theme-olive' : ''}`}>
         {peekToggle}
         {discouragementBanner}
         <div className="tws-paywall-modal">
@@ -1176,16 +1456,17 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                 )}
               </p>
               <textarea
+                className="tws-emergency-input"
                 placeholder="I need to…"
                 value={justification}
                 onChange={(e) => setJustification(e.target.value)}
                 autoFocus
               />
               <div className="tws-emergency-actions">
-                <button className="tws-secondary" onClick={() => setShowEmergencyForm(false)} disabled={isProcessing}>
+                <button type="button" className="tws-secondary" onClick={() => setShowEmergencyForm(false)} disabled={isProcessing}>
                   Back
                 </button>
-                <button className="tws-primary" onClick={handleStartEmergency} disabled={!justification.trim() || isProcessing}>
+                <button type="button" className="tws-primary" onClick={handleStartEmergency} disabled={!justification.trim() || isProcessing}>
                   Start emergency ({emergencyPolicyConfig.minutes}m)
                 </button>
               </div>
@@ -1210,6 +1491,36 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       return !dismissedIds[`productive:${item.id}`];
     });
   }, [dismissedIds, status.library?.productiveItems]);
+  const replaceItems = status.library?.replaceItems ?? [];
+  const activeMinutes = mySummary ? Math.round(mySummary.totalActiveSeconds / 60) : null;
+  const productivityScore = mySummary ? mySummary.productivityScore : null;
+  const emergencyCount = mySummary?.emergencySessions ?? status.emergency?.reviewStats.total ?? null;
+  const sessionMinutesLeft = status.session ? Math.max(0, Math.ceil(status.session.remainingSeconds / 60)) : null;
+  const lastSyncAgo = status.lastSync ? formatDuration(Date.now() - status.lastSync) : null;
+  const categoryBreakdown = mySummary?.categoryBreakdown ?? { productive: 0, neutral: 0, frivolity: 0, idle: 0 };
+  const periodHours = mySummary?.periodHours ?? 24;
+  const categoryTotal =
+    categoryBreakdown.productive +
+    categoryBreakdown.neutral +
+    categoryBreakdown.frivolity +
+    categoryBreakdown.idle;
+  const categoryRows = [
+    { id: 'productive', label: 'Productive', value: categoryBreakdown.productive, color: 'var(--cat-productive)' },
+    { id: 'neutral', label: 'Neutral', value: categoryBreakdown.neutral, color: 'var(--cat-neutral)' },
+    { id: 'frivolity', label: 'Frivolity', value: categoryBreakdown.frivolity, color: 'var(--cat-frivolity)' },
+    { id: 'idle', label: 'Idle', value: categoryBreakdown.idle, color: 'var(--cat-idle)' }
+  ];
+  const goalHours = status.settings?.productivityGoalHours ?? null;
+  const productiveSeconds = mySummary?.categoryBreakdown.productive ?? 0;
+  const goalSeconds = goalHours != null ? goalHours * 3600 : null;
+  const ringProgressRaw = goalSeconds && goalSeconds > 0 ? productiveSeconds / goalSeconds : 0;
+  const ringProgress = Math.max(0, Math.min(1, ringProgressRaw));
+  const ringPercent = goalSeconds && goalSeconds > 0 ? Math.round(ringProgressRaw * 100) : null;
+  const productiveHours = Math.round((productiveSeconds / 3600) * 10) / 10;
+  const ringRadius = 44;
+  const ringCircumference = 2 * Math.PI * ringRadius;
+  const ringOffset = ringCircumference * (1 - ringProgress);
+  const replaceList = replaceItems.filter((item) => item.kind === 'url' && item.url);
 
   const openProductiveItem = (item: LibraryItem) => {
     if (!item || item.kind !== 'url' || !item.url) return;
@@ -1286,8 +1597,33 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
         requiresDesktop: true
       });
     }
+    for (const item of friendPublicItems) {
+      if (!item?.url) continue;
+      const friendName = item.displayName ?? item.handle ?? 'Friend';
+      const addedAt = formatFriendAddedAt(item.createdAt);
+      const notePart = item.note ? ` • ${item.note}` : '';
+      const pricePart = typeof item.price === 'number' ? ` • ${item.price} f-coins` : '';
+      const subtitle = `${friendName} added ${addedAt}${notePart}${pricePart}`.trim();
+      const parsedTime = item.createdAt ? Date.parse(item.createdAt) : 0;
+      const updatedAt = Number.isFinite(parsedTime) ? parsedTime : 0;
+      entries.push({
+        id: `friend:${item.userId}:${item.id}`,
+        entryType: 'friend',
+        contentType: 'url',
+        title: item.title ?? item.domain ?? item.url,
+        subtitle,
+        meta: item.handle ? `@${item.handle}` : friendName,
+        updatedAt,
+        url: item.url,
+        domain: item.domain,
+        friendName,
+        friendHandle: item.handle ?? null,
+        friendColor: item.color ?? null,
+        addedAt: item.createdAt
+      });
+    }
     return entries;
-  }, [dismissedIds, status.library?.items, status.library?.readingItems]);
+  }, [dismissedIds, status.library?.items, status.library?.readingItems, friendPublicItems]);
 
   const feedSorted = useMemo(() => {
     const weights =
@@ -1503,6 +1839,73 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     }
   };
 
+  const handleDiscouragementIntervalChange = async (value: number) => {
+    if (discouragementIntervalBusy) return;
+    setDiscouragementIntervalBusy(true);
+    setError(null);
+    try {
+      const result = await chrome.runtime.sendMessage({
+        type: 'SET_DISCOURAGEMENT_INTERVAL',
+        payload: { minutes: value }
+      });
+      if (!result?.success) {
+        throw new Error(result?.error ? String(result.error) : 'Failed to update discouragement interval');
+      }
+      const minutes = typeof result?.discouragementIntervalMinutes === 'number'
+        ? result.discouragementIntervalMinutes
+        : value;
+      setDiscouragementIntervalMinutes(minutes);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDiscouragementIntervalBusy(false);
+    }
+  };
+
+  const handleSpendGuardToggle = async () => {
+    if (spendGuardBusy) return;
+    const next = !spendGuardEnabled;
+    setSpendGuardBusy(true);
+    setError(null);
+    try {
+      const result = await chrome.runtime.sendMessage({ type: 'SET_SPEND_GUARD', payload: { enabled: next } });
+      if (!result?.success) {
+        throw new Error(result?.error ? String(result.error) : 'Failed to update spend guard');
+      }
+      setSpendGuardEnabled(next);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSpendGuardBusy(false);
+    }
+  };
+
+  const handleCameraModeToggle = async () => {
+    if (cameraModeBusy) return;
+    const next = !cameraModeEnabled;
+    setCameraModeBusy(true);
+    setError(null);
+    try {
+      const result = await chrome.runtime.sendMessage({ type: 'SET_CAMERA_MODE', payload: { enabled: next } });
+      if (!result?.success) {
+        throw new Error(result?.error ? String(result.error) : 'Failed to update camera mode');
+      }
+      setCameraModeEnabled(next);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setCameraModeBusy(false);
+    }
+  };
+
+  const handleOpenShortcuts = async () => {
+    try {
+      await chrome.runtime.sendMessage({ type: 'OPEN_SHORTCUTS' });
+    } catch {
+      // ignore
+    }
+  };
+
   const handleSetDomainCategory = async (category: 'productive' | 'neutral' | 'frivolous') => {
     if (isProcessing) return;
     setIsProcessing(true);
@@ -1523,6 +1926,14 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     }
   };
 
+  const cycleDashScene = () => {
+    setDashScene((current) => {
+      const idx = DASH_SCENES.findIndex((scene) => scene.id === current);
+      const next = DASH_SCENES[(idx + 1) % DASH_SCENES.length];
+      return (next?.id ?? 'focus') as DashboardScene;
+    });
+  };
+
   useEffect(() => {
     if (!navOpen) return;
     const handleKey = (event: KeyboardEvent) => {
@@ -1535,7 +1946,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   return (
     <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''} ${theme === 'olive' ? 'tws-theme-olive' : ''}`}>
       {peekToggle}
-      {discouragementBanner}
+      {discouragementAntechamber || discouragementBanner}
       <div
         className={`tws-nav-backdrop ${navOpen ? 'open' : ''}`}
         aria-hidden={!navOpen}
@@ -1605,14 +2016,14 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
               </div>
             </div>
             {overlayView === 'dashboard' && (
-              <div className="tws-feed-toggle" role="tablist" aria-label="Feed view">
+              <div className="tws-feed-toggle" role="tablist" aria-label="Dashboard view">
                 <button
                   type="button"
                   className={feedView === 'for-you' ? 'active' : ''}
                   onClick={() => setFeedView('for-you')}
                   aria-pressed={feedView === 'for-you'}
                 >
-                  For you
+                  Dashboard
                 </button>
                 <button
                   type="button"
@@ -1659,298 +2070,726 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
             )}
 
             {overlayView === 'dashboard' && feedView === 'for-you' ? (
-              <div className="tws-bins">
-                <section className="tws-paywall-option tws-attractors">
-                  <div className="tws-option-header tws-attractors-header">
-                    <div>
-                      <h3>Instead</h3>
-                      <p className="tws-subtle">Something better?</p>
-                    </div>
-                    <button className="tws-link" type="button" disabled={isProcessing} onClick={() => setSpinKey((k) => k + 1)}>
-                      Spin
+              <div className="tws-dashboard">
+                <div className="tws-dashboard-controls">
+                  <div className="tws-dashboard-tabs" role="tablist" aria-label="Dashboard scenes">
+                    {DASH_SCENES.map((scene) => (
+                      <button
+                        key={scene.id}
+                        type="button"
+                        role="tab"
+                        className={dashScene === scene.id ? 'active' : ''}
+                        aria-selected={dashScene === scene.id}
+                        onClick={() => setDashScene(scene.id)}
+                      >
+                        {scene.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="tws-dashboard-actions">
+                    <button className="tws-secondary tws-compact" type="button" onClick={cycleDashScene}>
+                      Cycle
                     </button>
                   </div>
+                </div>
 
-                  {picks.length === 0 ? (
-                    <p className="tws-subtle" style={{ margin: 0 }}>
-                      Empty. Right-click pages to save replacements.
-                    </p>
-                  ) : (
-                    <div className="tws-attractors-grid">
-                      {picks.map((item) => {
-                        const cardDisabled =
-                          isProcessing ||
-                          (item.type === 'desktop' && item.requiresDesktop && !status.desktopConnected) ||
-                          (item.type === 'app' && item.requiresDesktop && !status.desktopConnected);
+                {dashScene === 'focus' && (
+                  <div className="tws-dashboard-grid">
+                    <section className="tws-paywall-option tws-attractors tws-dashboard-hero">
+                      <div className="tws-option-header tws-attractors-header">
+                        <div>
+                          <h3>Instead</h3>
+                          <p className="tws-subtle">Pick the next best move.</p>
+                        </div>
+                        <button className="tws-link" type="button" disabled={isProcessing} onClick={() => setSpinKey((k) => k + 1)}>
+                          Spin
+                        </button>
+                      </div>
 
-                        if (item.type === 'url') {
-                          const preview = previewFor(item.url);
-                          const thumb =
-                            preview?.imageUrl ??
-                            youtubeThumbFromUrl(item.url) ??
-                            screenshotThumb(item.url) ??
-                            null;
-                          const icon = preview?.iconUrl ?? faviconUrl(item.url);
-                          return (
-                            <div
-                              key={item.id}
-                              className="tws-attractor-card"
-                              onClick={() => {
-                                if (cardDisabled) return;
-                                handleOpenSuggestion(item);
-                              }}
-                              role="button"
-                              tabIndex={cardDisabled ? -1 : 0}
-                              aria-disabled={cardDisabled}
-                              onKeyDown={(e) => {
-                                if (cardDisabled) return;
-                                if (e.key === 'Enter' || e.key === ' ') {
-                                  e.preventDefault();
-                                  handleOpenSuggestion(item);
-                                }
-                              }}
-                            >
-                              <div className="tws-attractor-thumb">
-                                {thumb ? (
-                                  <img className="tws-attractor-thumb-img" src={thumb} alt="" loading="lazy" />
-                                ) : (
-                                  <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
-                                )}
-                                {typeof item.libraryId === 'number' && (
-                                  <button
-                                    type="button"
-                                    className="tws-card-menu-trigger"
-                                    aria-label="More"
-                                    disabled={isProcessing}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setMenuOpenId((cur) => (cur === item.id ? null : item.id));
-                                    }}
-                                  >
-                                    ⋯
-                                  </button>
-                                )}
-                                {menuOpenId === item.id && typeof item.libraryId === 'number' && (
-                                  <div className="tws-card-menu" role="menu" onClick={(e) => e.stopPropagation()}>
-                                    <button
-                                      type="button"
-                                      className="tws-card-menu-item"
-                                      disabled={isProcessing}
-                                      onClick={() => handleMarkConsumed(item)}
-                                    >
-                                      Already consumed
-                                    </button>
-                                  </div>
-                                )}
-                                <img className="tws-attractor-favicon" src={icon} alt="" loading="lazy" />
-                              </div>
-                              <div className="tws-attractor-meta">
-                                <strong>{preview?.title ?? item.title}</strong>
-                                <span>{preview?.description ?? item.subtitle ?? 'saved in your replace pool'}</span>
-                                <small>{new URL(item.url).hostname.replace(/^www\\./, '')}</small>
-                              </div>
-                            </div>
-                          );
-                        }
+                      {picks.length === 0 ? (
+                        <p className="tws-subtle" style={{ margin: 0 }}>
+                          Empty. Right-click pages to save replacements.
+                        </p>
+                      ) : (
+                        <div className="tws-attractors-grid">
+                          {picks.map((item) => {
+                            const cardDisabled =
+                              isProcessing ||
+                              (item.type === 'desktop' && item.requiresDesktop && !status.desktopConnected) ||
+                              (item.type === 'app' && item.requiresDesktop && !status.desktopConnected);
 
-                        if (item.type === 'desktop') {
-                          const progressPct =
-                            item.source === 'zotero' && typeof item.progress === 'number'
-                              ? Math.round(Math.max(0, Math.min(1, item.progress)) * 100)
-                              : null;
-                          const thumb = item.thumbDataUrl ?? (item.source === 'books' ? BOOK_ICON : DOC_ICON);
-                          return (
-                            <div
-                              key={item.id}
-                              className="tws-attractor-card"
-                              onClick={() => {
-                                if (cardDisabled) return;
-                                handleOpenSuggestion(item);
-                              }}
-                              title={item.requiresDesktop && !status.desktopConnected ? 'Requires desktop app' : undefined}
-                              role="button"
-                              tabIndex={cardDisabled ? -1 : 0}
-                              aria-disabled={cardDisabled}
-                              onKeyDown={(e) => {
-                                if (cardDisabled) return;
-                                if (e.key === 'Enter' || e.key === ' ') {
-                                  e.preventDefault();
-                                  handleOpenSuggestion(item);
-                                }
-                              }}
-                            >
-                              <div className="tws-attractor-thumb">
-                                {thumb ? (
-                                  <img className="tws-attractor-thumb-img" src={thumb} alt="" loading="lazy" />
-                                ) : (
-                                  <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
-                                )}
-                                {progressPct !== null && (
-                                  <div className="tws-progress-bar" aria-hidden="true">
-                                    <div className="tws-progress-fill" style={{ width: `${progressPct}%` }} />
-                                  </div>
-                                )}
-                                <button
-                                  type="button"
-                                  className="tws-card-menu-trigger"
-                                  aria-label="More"
-                                  disabled={isProcessing}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setMenuOpenId((cur) => (cur === item.id ? null : item.id));
+                            if (item.type === 'url') {
+                              const preview = previewFor(item.url);
+                              const thumb =
+                                preview?.imageUrl ??
+                                youtubeThumbFromUrl(item.url) ??
+                                screenshotThumb(item.url) ??
+                                null;
+                              const icon = preview?.iconUrl ?? faviconUrl(item.url);
+                              return (
+                                <div
+                                  key={item.id}
+                                  className="tws-attractor-card"
+                                  onClick={() => {
+                                    if (cardDisabled) return;
+                                    handleOpenSuggestion(item);
+                                  }}
+                                  role="button"
+                                  tabIndex={cardDisabled ? -1 : 0}
+                                  aria-disabled={cardDisabled}
+                                  onKeyDown={(e) => {
+                                    if (cardDisabled) return;
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      handleOpenSuggestion(item);
+                                    }
                                   }}
                                 >
-                                  ⋯
-                                </button>
-                                {menuOpenId === item.id && (
-                                  <div className="tws-card-menu" role="menu" onClick={(e) => e.stopPropagation()}>
+                                  <div className="tws-attractor-thumb">
+                                    {thumb ? (
+                                      <img className="tws-attractor-thumb-img" src={thumb} alt="" loading="lazy" />
+                                    ) : (
+                                      <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
+                                    )}
+                                    {typeof item.libraryId === 'number' && (
+                                      <button
+                                        type="button"
+                                        className="tws-card-menu-trigger"
+                                        aria-label="More"
+                                        disabled={isProcessing}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setMenuOpenId((cur) => (cur === item.id ? null : item.id));
+                                        }}
+                                      >
+                                        ⋯
+                                      </button>
+                                    )}
+                                    {menuOpenId === item.id && typeof item.libraryId === 'number' && (
+                                      <div className="tws-card-menu" role="menu" onClick={(e) => e.stopPropagation()}>
+                                        <button
+                                          type="button"
+                                          className="tws-card-menu-item"
+                                          disabled={isProcessing}
+                                          onClick={() => handleMarkConsumed(item)}
+                                        >
+                                          Already consumed
+                                        </button>
+                                      </div>
+                                    )}
+                                    <img className="tws-attractor-favicon" src={icon} alt="" loading="lazy" />
+                                  </div>
+                                  <div className="tws-attractor-meta">
+                                    <strong>{preview?.title ?? item.title}</strong>
+                                    <span>{preview?.description ?? item.subtitle ?? 'saved in your replace pool'}</span>
+                                    <small>{new URL(item.url).hostname.replace(/^www\\./, '')}</small>
+                                  </div>
+                                </div>
+                              );
+                            }
+
+                            if (item.type === 'desktop') {
+                              const progressPct =
+                                item.source === 'zotero' && typeof item.progress === 'number'
+                                  ? Math.round(Math.max(0, Math.min(1, item.progress)) * 100)
+                                  : null;
+                              const thumb = item.thumbDataUrl ?? (item.source === 'books' ? BOOK_ICON : DOC_ICON);
+                              return (
+                                <div
+                                  key={item.id}
+                                  className="tws-attractor-card"
+                                  onClick={() => {
+                                    if (cardDisabled) return;
+                                    handleOpenSuggestion(item);
+                                  }}
+                                  title={item.requiresDesktop && !status.desktopConnected ? 'Requires desktop app' : undefined}
+                                  role="button"
+                                  tabIndex={cardDisabled ? -1 : 0}
+                                  aria-disabled={cardDisabled}
+                                  onKeyDown={(e) => {
+                                    if (cardDisabled) return;
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      handleOpenSuggestion(item);
+                                    }
+                                  }}
+                                >
+                                  <div className="tws-attractor-thumb">
+                                    {thumb ? (
+                                      <img className="tws-attractor-thumb-img" src={thumb} alt="" loading="lazy" />
+                                    ) : (
+                                      <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
+                                    )}
+                                    {progressPct !== null && (
+                                      <div className="tws-progress-bar" aria-hidden="true">
+                                        <div className="tws-progress-fill" style={{ width: `${progressPct}%` }} />
+                                      </div>
+                                    )}
                                     <button
                                       type="button"
-                                      className="tws-card-menu-item"
+                                      className="tws-card-menu-trigger"
+                                      aria-label="More"
                                       disabled={isProcessing}
-                                      onClick={() => handleMarkConsumed(item)}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setMenuOpenId((cur) => (cur === item.id ? null : item.id));
+                                      }}
                                     >
-                                      Already consumed
+                                      ⋯
                                     </button>
+                                    {menuOpenId === item.id && (
+                                      <div className="tws-card-menu" role="menu" onClick={(e) => e.stopPropagation()}>
+                                        <button
+                                          type="button"
+                                          className="tws-card-menu-item"
+                                          disabled={isProcessing}
+                                          onClick={() => handleMarkConsumed(item)}
+                                        >
+                                          Already consumed
+                                        </button>
+                                      </div>
+                                    )}
+                                    {item.iconDataUrl ? (
+                                      <img className="tws-attractor-favicon" src={item.iconDataUrl} alt="" loading="lazy" />
+                                    ) : (
+                                      <div className="tws-attractor-favicon" aria-hidden="true" />
+                                    )}
+                                  </div>
+                                  <div className="tws-attractor-meta">
+                                    <strong>{item.title}</strong>
+                                    <span>{item.subtitle ?? 'reading suggestion'}</span>
+                                    <small>desktop</small>
+                                  </div>
+                                </div>
+                              );
+                            }
+
+                            if (item.type === 'ritual') {
+                              return (
+                                <div
+                                  key={item.id}
+                                  className="tws-attractor-card"
+                                  onClick={() => {
+                                    if (cardDisabled) return;
+                                    handleOpenSuggestion(item);
+                                  }}
+                                  role="button"
+                                  tabIndex={cardDisabled ? -1 : 0}
+                                  aria-disabled={cardDisabled}
+                                  onKeyDown={(e) => {
+                                    if (cardDisabled) return;
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      handleOpenSuggestion(item);
+                                    }
+                                  }}
+                                >
+                                  <div className="tws-attractor-thumb tws-attractor-thumb-ritual">
+                                    <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
+                                    <div className="tws-attractor-app-badge">Ritual</div>
+                                  </div>
+                                  <div className="tws-attractor-meta">
+                                    <strong>{item.title}</strong>
+                                    <span>{item.subtitle ?? 'a small reset'}</span>
+                                    <small>{item.ritual === 'meditation' ? `${item.minutes}m` : 'journal'}</small>
+                                  </div>
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <div
+                                key={item.id}
+                                className="tws-attractor-card"
+                                onClick={() => {
+                                  if (cardDisabled) return;
+                                  handleOpenSuggestion(item);
+                                }}
+                                title={item.requiresDesktop && !status.desktopConnected ? 'Requires desktop app' : undefined}
+                                role="button"
+                                tabIndex={cardDisabled ? -1 : 0}
+                                aria-disabled={cardDisabled}
+                                onKeyDown={(e) => {
+                                  if (cardDisabled) return;
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    handleOpenSuggestion(item);
+                                  }
+                                }}
+                              >
+                                <div className="tws-attractor-thumb tws-attractor-thumb-app">
+                                  <img
+                                    className="tws-attractor-thumb-img"
+                                    src={item.app?.toLowerCase().includes('book') ? BOOK_ICON : DOC_ICON}
+                                    alt=""
+                                    loading="lazy"
+                                  />
+                                  <div className="tws-attractor-app-badge">App</div>
+                                </div>
+                                <div className="tws-attractor-meta">
+                                  <strong>{item.title}</strong>
+                                  <span>{item.subtitle ?? 'open an app'}</span>
+                                  <small>desktop</small>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+
+                    <section className="tws-paywall-option tws-dashboard-brief">
+                      <div className="tws-option-header tws-dashboard-brief-header">
+                        <div>
+                          <h3>Focus snapshot</h3>
+                          <p className="tws-subtle">Live from the last {periodHours}h.</p>
+                        </div>
+                        {status.session && (
+                          <span className="tws-pill">{status.session.paused ? 'Paused' : status.session.mode}</span>
+                        )}
+                      </div>
+                      <div className="tws-dashboard-metric-grid">
+                        <div className="tws-dashboard-metric">
+                          <span>Active</span>
+                          <strong>{activeMinutes != null ? `${activeMinutes}m` : '--'}</strong>
+                          <small>{activeMinutes != null ? 'captured' : 'sync to update'}</small>
+                        </div>
+                        <div className="tws-dashboard-metric">
+                          <span>Productive</span>
+                          <strong>{productivityScore != null ? `${productivityScore}%` : '--'}</strong>
+                          <small>{productivityScore != null ? 'score' : 'sync to update'}</small>
+                        </div>
+                        <div className="tws-dashboard-metric">
+                          <span>Remaining</span>
+                          <strong>{sessionMinutesLeft != null ? `${sessionMinutesLeft}m` : '--'}</strong>
+                          <small>{status.session ? 'this session' : 'no session'}</small>
+                        </div>
+                        <div className="tws-dashboard-metric">
+                          <span>Rate</span>
+                          <strong>{formatCoins(ratePerMin)} f/m</strong>
+                          <small>current domain</small>
+                        </div>
+                      </div>
+                      <div className="tws-dashboard-note">
+                        {lastSyncAgo ? (
+                          <p className="tws-subtle" style={{ margin: 0 }}>
+                            Last sync {lastSyncAgo} ago.
+                          </p>
+                        ) : (
+                          <p className="tws-subtle" style={{ margin: 0 }}>
+                            Open the desktop app for richer signals.
+                          </p>
+                        )}
+                      </div>
+                    </section>
+
+                    <section className="tws-paywall-option tws-goal-card">
+                      <div className="tws-option-header">
+                        <div>
+                          <h3>Productivity goal</h3>
+                          <p className="tws-subtle">Progress from the last {periodHours}h.</p>
+                        </div>
+                        {goalHours != null && (
+                          <span className="tws-pill">{goalHours}h goal</span>
+                        )}
+                      </div>
+                      <div className="tws-goal-ring">
+                        <div className="tws-goal-ring-visual" aria-hidden="true">
+                          <svg viewBox="0 0 120 120" role="img" aria-label="Productivity goal progress">
+                            <circle className="tws-goal-ring-track" cx="60" cy="60" r={ringRadius} strokeWidth="12" />
+                            <circle
+                              className="tws-goal-ring-progress"
+                              cx="60"
+                              cy="60"
+                              r={ringRadius}
+                              strokeWidth="12"
+                              strokeDasharray={ringCircumference}
+                              strokeDashoffset={ringOffset}
+                            />
+                          </svg>
+                          <div className="tws-goal-ring-center">
+                            <strong>{ringPercent != null ? `${ringPercent}%` : '—'}</strong>
+                            <span>of goal</span>
+                          </div>
+                        </div>
+                        <div className="tws-goal-ring-meta">
+                          <strong>{goalHours != null ? `${productiveHours}h` : '--'}</strong>
+                          <span className="tws-subtle">
+                            {goalHours != null ? `${formatMinutes(productiveSeconds)} productive` : 'Set a goal in the desktop app.'}
+                          </span>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section className="tws-paywall-option">
+                      <div className="tws-option-header">
+                        <div>
+                          <h3>Time distribution</h3>
+                          <p className="tws-subtle">Where your attention went.</p>
+                        </div>
+                      </div>
+                      <div className="tws-category-stack">
+                        {categoryRows.map((item) => {
+                          const pct = categoryTotal > 0 ? Math.round((item.value / categoryTotal) * 100) : 0;
+                          return (
+                            <div key={item.id} className="tws-category-row">
+                              <span className="tws-category-label">{item.label}</span>
+                              <div className="tws-category-bar">
+                                <span style={{ width: `${pct}%`, background: item.color }} />
+                              </div>
+                              <span className="tws-category-value">
+                                {pct}% · {formatMinutes(item.value)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
+
+                    <section className="tws-paywall-option tws-library-shelf tws-dashboard-shelf">
+                      <div className="tws-option-header">
+                        <div>
+                          <h3>
+                            Productive library{' '}
+                            {productiveItems.length > 0 && <span className="tws-subtle">({productiveItems.length})</span>}
+                          </h3>
+                          <p className="tws-subtle">Your productive bookmarks</p>
+                        </div>
+                        <button className="tws-link" type="button" onClick={() => setOverlayView('library')}>
+                          Open
+                        </button>
+                      </div>
+                      {productiveItems.length === 0 ? (
+                        <p className="tws-subtle" style={{ margin: 0 }}>
+                          Empty. Right-click pages to add.
+                        </p>
+                      ) : (
+                        <div className="tws-library-scroll tws-library-scroll-compact">
+                          {productiveItems.slice(0, 4).map((item) => {
+                            const preview = previewFor(item.url ?? '');
+                            const title = preview?.title ?? item.title ?? item.domain;
+                            const subtitle = preview?.description ?? item.note ?? item.domain;
+                            const icon = item.url ? preview?.iconUrl ?? faviconUrl(item.url) : null;
+                            return (
+                              <div key={item.id} className="tws-library-item">
+                                <div className="tws-library-info">
+                                  {icon ? (
+                                    <img className="tws-library-favicon" src={icon} alt="" loading="lazy" />
+                                  ) : (
+                                    <div className="tws-library-favicon tws-library-favicon-placeholder" aria-hidden="true" />
+                                  )}
+                                  <div className="tws-library-meta">
+                                    <strong>{title}</strong>
+                                    <span>{subtitle}</span>
+                                  </div>
+                                </div>
+                                <div className="tws-library-actions">
+                                  <button className="tws-secondary" type="button" disabled={isProcessing} onClick={() => openProductiveItem(item)}>
+                                    Open
+                                  </button>
+                                  <button className="tws-link" type="button" disabled={isProcessing} onClick={() => markProductiveConsumed(item)}>
+                                    Done
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+                  </div>
+                )}
+
+                {dashScene === 'signals' && (
+                  <div className="tws-dashboard-grid tws-dashboard-signals">
+                    <section className="tws-paywall-option">
+                      <div className="tws-option-header">
+                        <div>
+                          <h3>Category mix</h3>
+                          <p className="tws-subtle">Where your attention went.</p>
+                        </div>
+                      </div>
+                      <div className="tws-category-stack">
+                        {categoryRows.map((item) => {
+                          const pct = categoryTotal > 0 ? Math.round((item.value / categoryTotal) * 100) : 0;
+                          return (
+                            <div key={item.id} className="tws-category-row">
+                              <span className="tws-category-label">{item.label}</span>
+                              <div className="tws-category-bar">
+                                <span style={{ width: `${pct}%`, background: item.color }} />
+                              </div>
+                              <span className="tws-category-value">
+                                {pct}% · {formatMinutes(item.value)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
+
+                    <section className="tws-paywall-option tws-dashboard-brief">
+                      <div className="tws-option-header tws-dashboard-brief-header">
+                        <div>
+                          <h3>Telemetry</h3>
+                          <p className="tws-subtle">Snapshot of the last day.</p>
+                        </div>
+                        {status.settings?.productivityGoalHours != null && (
+                          <span className="tws-pill">{status.settings.productivityGoalHours}h goal</span>
+                        )}
+                      </div>
+                      <div className="tws-dashboard-metric-grid">
+                        <div className="tws-dashboard-metric">
+                          <span>Active</span>
+                          <strong>{activeMinutes != null ? `${activeMinutes}m` : '--'}</strong>
+                          <small>last 24h</small>
+                        </div>
+                        <div className="tws-dashboard-metric">
+                          <span>Productive</span>
+                          <strong>{productivityScore != null ? `${productivityScore}%` : '--'}</strong>
+                          <small>score</small>
+                        </div>
+                        <div className="tws-dashboard-metric">
+                          <span>Emergencies</span>
+                          <strong>{emergencyCount != null ? emergencyCount : '--'}</strong>
+                          <small>sessions</small>
+                        </div>
+                        <div className="tws-dashboard-metric">
+                          <span>Balance</span>
+                          <strong>{status.balance} f</strong>
+                          <small>f-coins</small>
+                        </div>
+                      </div>
+                      <div className="tws-dashboard-note">
+                        {lastSyncAgo ? (
+                          <p className="tws-subtle" style={{ margin: 0 }}>
+                            Last sync {lastSyncAgo} ago.
+                          </p>
+                        ) : (
+                          <p className="tws-subtle" style={{ margin: 0 }}>
+                            Open the desktop app for richer signals.
+                          </p>
+                        )}
+                      </div>
+                    </section>
+                  </div>
+                )}
+
+                {dashScene === 'library' && (
+                  <div className="tws-dashboard-grid tws-dashboard-duo">
+                    <section className="tws-paywall-option tws-library-shelf">
+                      <div className="tws-option-header">
+                        <div>
+                          <h3>
+                            Productive library{' '}
+                            {productiveItems.length > 0 && <span className="tws-subtle">({productiveItems.length})</span>}
+                          </h3>
+                          <p className="tws-subtle">Your productive bookmarks</p>
+                        </div>
+                        <button className="tws-link" type="button" onClick={() => setOverlayView('library')}>
+                          Open
+                        </button>
+                      </div>
+                      {productiveItems.length === 0 ? (
+                        <p className="tws-subtle" style={{ margin: 0 }}>
+                          Empty. Right-click pages to add.
+                        </p>
+                      ) : (
+                        <div className="tws-library-scroll tws-library-scroll-compact">
+                          {productiveItems.slice(0, 6).map((item) => {
+                            const preview = previewFor(item.url ?? '');
+                            const title = preview?.title ?? item.title ?? item.domain;
+                            const subtitle = preview?.description ?? item.note ?? item.domain;
+                            const icon = item.url ? preview?.iconUrl ?? faviconUrl(item.url) : null;
+                            return (
+                              <div key={item.id} className="tws-library-item">
+                                <div className="tws-library-info">
+                                  {icon ? (
+                                    <img className="tws-library-favicon" src={icon} alt="" loading="lazy" />
+                                  ) : (
+                                    <div className="tws-library-favicon tws-library-favicon-placeholder" aria-hidden="true" />
+                                  )}
+                                  <div className="tws-library-meta">
+                                    <strong>{title}</strong>
+                                    <span>{subtitle}</span>
+                                  </div>
+                                </div>
+                                <div className="tws-library-actions">
+                                  <button className="tws-secondary" type="button" disabled={isProcessing} onClick={() => openProductiveItem(item)}>
+                                    Open
+                                  </button>
+                                  <button className="tws-link" type="button" disabled={isProcessing} onClick={() => markProductiveConsumed(item)}>
+                                    Done
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+
+                    <section className="tws-paywall-option">
+                      <div className="tws-option-header">
+                        <div>
+                          <h3>
+                            Replace pool{' '}
+                            {replaceList.length > 0 && <span className="tws-subtle">({replaceList.length})</span>}
+                          </h3>
+                          <p className="tws-subtle">Saved alternatives for detours.</p>
+                        </div>
+                      </div>
+                      {replaceList.length === 0 ? (
+                        <p className="tws-subtle" style={{ margin: 0 }}>No replace items yet.</p>
+                      ) : (
+                        <div className="tws-library-scroll tws-library-scroll-compact">
+                          {replaceList.slice(0, 6).map((item) => {
+                            const preview = previewFor(item.url ?? '');
+                            const title = preview?.title ?? item.title ?? item.domain;
+                            const subtitle = preview?.description ?? item.note ?? item.domain;
+                            const icon = item.url ? preview?.iconUrl ?? faviconUrl(item.url) : null;
+                            return (
+                              <div key={item.id} className="tws-library-item">
+                                <div className="tws-library-info">
+                                  {icon ? (
+                                    <img className="tws-library-favicon" src={icon} alt="" loading="lazy" />
+                                  ) : (
+                                    <div className="tws-library-favicon tws-library-favicon-placeholder" aria-hidden="true" />
+                                  )}
+                                  <div className="tws-library-meta">
+                                    <strong>{title}</strong>
+                                    <span>{subtitle}</span>
+                                  </div>
+                                </div>
+                                <div className="tws-library-actions">
+                                  <button
+                                    className="tws-secondary"
+                                    type="button"
+                                    disabled={isProcessing}
+                                    onClick={() => handleOpenSuggestion({
+                                      type: 'url',
+                                      id: `replace:${item.id}`,
+                                      title: item.title ?? item.domain,
+                                      subtitle: item.note ?? undefined,
+                                      url: item.url ?? '',
+                                      libraryId: item.id
+                                    })}
+                                  >
+                                    Open
+                                  </button>
+                                  <button
+                                    className="tws-link"
+                                    type="button"
+                                    disabled={isProcessing}
+                                    onClick={() => handleMarkConsumed({
+                                      type: 'url',
+                                      id: `replace:${item.id}`,
+                                      title: item.title ?? item.domain,
+                                      subtitle: item.note ?? undefined,
+                                      url: item.url ?? '',
+                                      libraryId: item.id
+                                    })}
+                                  >
+                                    Done
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+                  </div>
+                )}
+
+                {dashScene === 'social' && (
+                  <div className="tws-bins">
+                    <section className="tws-paywall-option">
+                      <div className="tws-option-header">
+                        <div>
+                          <h3>Friends pulse</h3>
+                          <p className="tws-subtle">Productive minutes vs you.</p>
+                        </div>
+                        <button className="tws-link" type="button" onClick={() => setOverlayView('friends')}>
+                          Open
+                        </button>
+                      </div>
+                      {!competitiveOptIn ? (
+                        <p className="tws-subtle" style={{ margin: 0 }}>
+                          Off. Enable in desktop app.
+                        </p>
+                      ) : friends.length === 0 ? (
+                        <p className="tws-subtle" style={{ margin: 0 }}>
+                          No friends yet.
+                        </p>
+                      ) : (
+                        <div className="tws-friends-list">
+                          {friends.slice(0, 3).map((friend) => {
+                            const summary = friendSummaries[friend.userId];
+                            const headToHead = headToHeadPercent(mySummary, summary);
+                            const friendTrophies = (friend.pinnedTrophies ?? [])
+                              .map((id) => trophyById.get(id))
+                              .filter((trophy): trophy is TrophyStatus => Boolean(trophy));
+                            return (
+                              <button
+                                key={friend.id}
+                                type="button"
+                                className="tws-friend-row"
+                                onClick={() => openFriendDetail(friend)}
+                              >
+                                <div className="tws-friend-row-header">
+                                  <div>
+                                    <strong>{friend.displayName ?? friend.handle ?? 'Friend'}</strong>
+                                    <span className="tws-subtle">@{friend.handle ?? 'no-handle'}</span>
+                                  </div>
+                                  <span className="tws-pill">{summary ? `${summary.productivityScore}%` : '--'}</span>
+                                </div>
+                                <div className="tws-head-to-head">
+                                  {meetsCompetitiveGate(mySummary) && meetsCompetitiveGate(summary) ? (
+                                    <>
+                                      <div className="tws-head-to-head-bar fancy">
+                                        <span
+                                          className="tws-head-to-head-left"
+                                          style={{ width: `${headToHead}%`, background: myProfile?.color ?? 'var(--accent)' }}
+                                        />
+                                        <span
+                                          className="tws-head-to-head-right"
+                                          style={{ width: `${100 - headToHead}%`, background: friend.color ?? 'rgba(255, 255, 255, 0.3)' }}
+                                        />
+                                        <div className="tws-head-to-head-glow" />
+                                      </div>
+                                      <div className="tws-head-to-head-meta">
+                                        <span>{formatMinutes(mySummary?.categoryBreakdown.productive ?? 0)} productive</span>
+                                        <span>{formatMinutes(summary?.categoryBreakdown.productive ?? 0)} productive</span>
+                                      </div>
+                                      <div className="tws-head-to-head-meta">
+                                        <span>{formatCount(mySummary?.emergencySessions)} emergency</span>
+                                        <span>{formatCount(summary?.emergencySessions)} emergency</span>
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <p className="tws-subtle" style={{ margin: '6px 0 0' }}>
+                                      Both need {competitiveMinHours}h active to unlock.
+                                    </p>
+                                  )}
+                                </div>
+                                {friendTrophies.length > 0 && (
+                                  <div className="tws-friend-trophies">
+                                    {friendTrophies.slice(0, 2).map((trophy) => (
+                                      <span key={trophy.id} className="tws-badge">
+                                        <span className="emoji">{trophy.emoji}</span>
+                                        {trophy.name}
+                                      </span>
+                                    ))}
                                   </div>
                                 )}
-                                {item.iconDataUrl ? (
-                                  <img className="tws-attractor-favicon" src={item.iconDataUrl} alt="" loading="lazy" />
-                                ) : (
-                                  <div className="tws-attractor-favicon" aria-hidden="true" />
-                                )}
-                              </div>
-                              <div className="tws-attractor-meta">
-                                <strong>{item.title}</strong>
-                                <span>{item.subtitle ?? 'reading suggestion'}</span>
-                                <small>desktop</small>
-                              </div>
-                            </div>
-                          );
-                        }
-
-                        if (item.type === 'ritual') {
-                          return (
-                            <div
-                              key={item.id}
-                              className="tws-attractor-card"
-                              onClick={() => {
-                                if (cardDisabled) return;
-                                handleOpenSuggestion(item);
-                              }}
-                              role="button"
-                              tabIndex={cardDisabled ? -1 : 0}
-                              aria-disabled={cardDisabled}
-                              onKeyDown={(e) => {
-                                if (cardDisabled) return;
-                                if (e.key === 'Enter' || e.key === ' ') {
-                                  e.preventDefault();
-                                  handleOpenSuggestion(item);
-                                }
-                              }}
-                            >
-                              <div className="tws-attractor-thumb tws-attractor-thumb-ritual">
-                                <div className="tws-attractor-thumb-placeholder" aria-hidden="true" />
-                                <div className="tws-attractor-app-badge">Ritual</div>
-                              </div>
-                              <div className="tws-attractor-meta">
-                                <strong>{item.title}</strong>
-                                <span>{item.subtitle ?? 'a small reset'}</span>
-                                <small>{item.ritual === 'meditation' ? `${item.minutes}m` : 'journal'}</small>
-                              </div>
-                            </div>
-                          );
-                        }
-
-                        return (
-                          <div
-                            key={item.id}
-                            className="tws-attractor-card"
-                            onClick={() => {
-                              if (cardDisabled) return;
-                              handleOpenSuggestion(item);
-                            }}
-                            title={item.requiresDesktop && !status.desktopConnected ? 'Requires desktop app' : undefined}
-                            role="button"
-                            tabIndex={cardDisabled ? -1 : 0}
-                            aria-disabled={cardDisabled}
-                            onKeyDown={(e) => {
-                              if (cardDisabled) return;
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                handleOpenSuggestion(item);
-                              }
-                            }}
-                          >
-                            <div className="tws-attractor-thumb tws-attractor-thumb-app">
-                              <img
-                                className="tws-attractor-thumb-img"
-                                src={item.app?.toLowerCase().includes('book') ? BOOK_ICON : DOC_ICON}
-                                alt=""
-                                loading="lazy"
-                              />
-                              <div className="tws-attractor-app-badge">App</div>
-                            </div>
-                            <div className="tws-attractor-meta">
-                              <strong>{item.title}</strong>
-                              <span>{item.subtitle ?? 'open an app'}</span>
-                              <small>desktop</small>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </section>
-
-                <section className="tws-paywall-option tws-library-shelf">
-                  <div className="tws-option-header">
-                    <div>
-                      <h3>
-                        Productive library{' '}
-                        {productiveItems.length > 0 && <span className="tws-subtle">({productiveItems.length})</span>}
-                      </h3>
-                      <p className="tws-subtle">Your productive bookmarks</p>
-                    </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
                   </div>
-                  {productiveItems.length === 0 ? (
-                    <p className="tws-subtle" style={{ margin: 0 }}>
-                      Empty. Right-click pages to add.
-                    </p>
-                  ) : (
-                    <div className="tws-library-scroll">
-                      {productiveItems.map((item) => {
-                        const preview = previewFor(item.url ?? '');
-                        const title = preview?.title ?? item.title ?? item.domain;
-                        const subtitle = preview?.description ?? item.note ?? item.domain;
-                        const icon = item.url ? preview?.iconUrl ?? faviconUrl(item.url) : null;
-                        return (
-                          <div key={item.id} className="tws-library-item">
-                            <div className="tws-library-info">
-                              {icon ? (
-                                <img className="tws-library-favicon" src={icon} alt="" loading="lazy" />
-                              ) : (
-                                <div className="tws-library-favicon tws-library-favicon-placeholder" aria-hidden="true" />
-                              )}
-                              <div className="tws-library-meta">
-                                <strong>{title}</strong>
-                                <span>{subtitle}</span>
-                              </div>
-                            </div>
-                            <div className="tws-library-actions">
-                              <button className="tws-secondary" type="button" disabled={isProcessing} onClick={() => openProductiveItem(item)}>
-                                Open
-                              </button>
-                              <button className="tws-link" type="button" disabled={isProcessing} onClick={() => markProductiveConsumed(item)}>
-                                Done
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </section>
+                )}
               </div>
             ) : overlayView === 'dashboard' && feedView === 'feed' ? (
               <div className="tws-feed">
@@ -2010,7 +2849,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                         item.contentType === 'reading' && typeof item.progress === 'number'
                           ? Math.round(Math.max(0, Math.min(1, item.progress)) * 100)
                           : null;
-                      const canMarkDone = item.entryType === 'reading' || (item.entryType === 'library' && item.contentType === 'url');
+                      const canMarkDone = item.entryType === 'reading' || (item.entryType === 'library' && item.contentType === 'url' && typeof item.libraryId === 'number');
 
                       return (
                         <article
@@ -2314,6 +3153,62 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                     </div>
                     <div className="tws-toggle-row">
                       <div>
+                        <span className="tws-toggle-title">Discouragement cadence</span>
+                        <span className="tws-subtle">How often the nudge appears mid-session.</span>
+                      </div>
+                      <select
+                        className="tws-select"
+                        value={discouragementIntervalMinutes}
+                        onChange={(e) => handleDiscouragementIntervalChange(Number(e.target.value))}
+                        disabled={discouragementIntervalBusy || isProcessing}
+                      >
+                        {[1, 2, 3, 5, 10].map((minutes) => (
+                          <option key={minutes} value={minutes}>
+                            {minutes} min
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="tws-toggle-row">
+                      <div>
+                        <span className="tws-toggle-title">Spend guard</span>
+                        <span className="tws-subtle">Add a pause with a nudge before proceeding.</span>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={spendGuardEnabled}
+                        className={`tws-switch ${spendGuardEnabled ? 'active' : ''}`}
+                        onClick={handleSpendGuardToggle}
+                        disabled={spendGuardBusy || isProcessing}
+                      >
+                        <span className="tws-switch-track" aria-hidden="true">
+                          <span className="tws-switch-knob" />
+                        </span>
+                        <span className="tws-switch-label">{spendGuardEnabled ? 'On' : 'Off'}</span>
+                      </button>
+                    </div>
+                    <div className="tws-toggle-row">
+                      <div>
+                        <span className="tws-toggle-title">Camera mode</span>
+                        <span className="tws-subtle">Capture stills during frivolity (Mac desktop).</span>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={cameraModeEnabled}
+                        className={`tws-switch ${cameraModeEnabled ? 'active' : ''}`}
+                        onClick={handleCameraModeToggle}
+                        disabled={cameraModeBusy || isProcessing}
+                      >
+                        <span className="tws-switch-track" aria-hidden="true">
+                          <span className="tws-switch-knob" />
+                        </span>
+                        <span className="tws-switch-label">{cameraModeEnabled ? 'On' : 'Off'}</span>
+                      </button>
+                    </div>
+                    <div className="tws-toggle-row">
+                      <div>
                         <span className="tws-toggle-title">Theme</span>
                         <span className="tws-subtle">Lavender or Olive Garden.</span>
                       </div>
@@ -2326,6 +3221,15 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                         <option value="lavender">Lavender (default)</option>
                         <option value="olive">Olive Garden Feast</option>
                       </select>
+                    </div>
+                    <div className="tws-toggle-row">
+                      <div>
+                        <span className="tws-toggle-title">Quick add hotkey</span>
+                        <span className="tws-subtle">Adds current page to Replace library.</span>
+                      </div>
+                      <button className="tws-secondary" type="button" onClick={handleOpenShortcuts} disabled={isProcessing}>
+                        Manage
+                      </button>
                     </div>
                     <p className="tws-subtle" style={{ margin: 0 }}>Use the desktop app for full settings.</p>
                   </div>
@@ -2583,6 +3487,51 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
             </div>
           </div>
 
+          {devFlags?.isDev && (
+            <div className="tws-rail-card tws-rail-toggles">
+              <div className="tws-rail-row">
+                <strong>Dev tools</strong>
+                <span className="tws-rail-label">Debug</span>
+              </div>
+              <div className="tws-toggle-row">
+                <div>
+                  <span className="tws-toggle-title">Simulate desktop disconnect</span>
+                  <span className="tws-subtle">Force offline mode.</span>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={devFlags.simulateDisconnect}
+                  className={`tws-switch ${devFlags.simulateDisconnect ? 'active' : ''}`}
+                  onClick={() => updateDevFlags({ simulateDisconnect: !devFlags.simulateDisconnect })}
+                >
+                  <span className="tws-switch-track" aria-hidden="true">
+                    <span className="tws-switch-knob" />
+                  </span>
+                  <span className="tws-switch-label">{devFlags.simulateDisconnect ? 'On' : 'Off'}</span>
+                </button>
+              </div>
+              <div className="tws-toggle-row">
+                <div>
+                  <span className="tws-toggle-title">Log session drift</span>
+                  <span className="tws-subtle">Compare desktop vs local timers.</span>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={devFlags.logSessionDrift}
+                  className={`tws-switch ${devFlags.logSessionDrift ? 'active' : ''}`}
+                  onClick={() => updateDevFlags({ logSessionDrift: !devFlags.logSessionDrift })}
+                >
+                  <span className="tws-switch-track" aria-hidden="true">
+                    <span className="tws-switch-knob" />
+                  </span>
+                  <span className="tws-switch-label">{devFlags.logSessionDrift ? 'On' : 'Off'}</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="tws-proceed-dock">
             <details className="tws-details" open={proceedOpen} onToggle={(e) => setProceedOpen((e.target as HTMLDetailsElement).open)}>
               <summary>
@@ -2644,7 +3593,12 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                 <section className="tws-paywall-option" style={{ margin: 0 }}>
                   <div className="tws-option-header">
                     <h3>Timebox</h3>
-                    <p className="tws-subtle">Fixed duration, auto-close.</p>
+                    <p className="tws-subtle">
+                      Fixed duration, auto-close.
+                      {status.session?.mode === 'pack' && (
+                        <> Chain pricing x{packChainMultiplier(status.session.packChainCount ?? 1).toFixed(2)}</>
+                      )}
+                    </p>
                   </div>
                   <div className="tws-option-action tws-pack-buttons">
                     {quickPacks.map((pack) => {
@@ -2656,7 +3610,11 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                           className="tws-primary"
                           onClick={async () => {
                             setSelectedMinutes(pack.minutes);
-                            await handleBuyPack();
+                            if (spendGuardEnabled) {
+                              setProceedConfirm({ kind: 'pack', minutes: pack.minutes });
+                            } else {
+                              await handleBuyPack(pack.minutes);
+                            }
                           }}
                           disabled={disabled}
                           title={affordable ? undefined : 'Need more f-coins'}
@@ -2675,10 +3633,17 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                   </div>
                   <div className="tws-option-action">
                     <div className="tws-price-tag">
-                      <strong>{formatCoins(ratePerMin)}</strong>
+                      <strong>{formatCoins(meteredRatePerMin)}</strong>
                       <small>f-coins / min</small>
                     </div>
-                    <button className="tws-secondary" onClick={handleStartMetered} disabled={status.balance < 1 || isProcessing}>
+                    <button
+                      className="tws-secondary"
+                      onClick={() => {
+                        if (spendGuardEnabled) setProceedConfirm({ kind: 'metered' });
+                        else handleStartMetered();
+                      }}
+                      disabled={status.balance < 1 || isProcessing}
+                    >
                       Proceed metered
                     </button>
                   </div>
@@ -2686,11 +3651,11 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
 
                 <div className="tws-emergency-link">
                   {emergencyPolicy === 'off' ? (
-                    <button disabled title="Emergency access is disabled in Settings.">
+                    <button type="button" disabled title="Emergency access is disabled in Settings.">
                       Emergency disabled
                     </button>
                   ) : (
-                    <button onClick={() => { setReviewed(false); setShowEmergencyForm(true); }}>
+                    <button type="button" onClick={() => { setReviewed(false); setShowEmergencyForm(true); }}>
                       Emergency
                     </button>
                   )}

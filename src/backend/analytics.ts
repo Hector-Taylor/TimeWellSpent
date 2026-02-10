@@ -18,6 +18,7 @@ import type {
 } from '@shared/types';
 import { logger } from '@shared/logger';
 import { HOUR_MS, overlapMs, floorToHourMs } from './activityTime';
+import { DAY_START_HOUR, getLocalDayStartMs, shiftHourToDayStart, unshiftHourFromDayStart } from '@shared/time';
 
 type ActivityRow = {
     id: number;
@@ -201,8 +202,8 @@ export class AnalyticsService {
         const activities = this.activitiesInRangeStmt.all(rangeEnd, rangeStart) as ActivityRow[];
 
         // Initialize 24 hour buckets
-        const buckets: TimeOfDayStats[] = Array.from({ length: 24 }, (_, hour) => ({
-            hour,
+        const buckets: TimeOfDayStats[] = Array.from({ length: 24 }, (_, offset) => ({
+            hour: unshiftHourFromDayStart(offset, DAY_START_HOUR),
             productive: 0,
             neutral: 0,
             frivolity: 0,
@@ -238,7 +239,8 @@ export class AnalyticsService {
                 const activeSlice = clip.activeSeconds * fraction;
                 const idleSlice = clip.idleSeconds * fraction;
                 const hour = new Date(hourStartMs).getHours();
-                const bucket = buckets[hour];
+                const bucketIndex = shiftHourToDayStart(hour, DAY_START_HOUR);
+                const bucket = buckets[bucketIndex];
 
                 bucket.sampleCount += 1;
                 bucket.idle += idleSlice;
@@ -249,7 +251,7 @@ export class AnalyticsService {
                 else bucket.neutral += activeSlice;
 
                 if (!suppressed) {
-                    const hourDomains = domainCounts.get(hour)!;
+                    const hourDomains = domainCounts.get(bucketIndex)!;
                     hourDomains.set(domain, (hourDomains.get(domain) ?? 0) + activeSlice);
                 }
             }
@@ -666,7 +668,9 @@ export class AnalyticsService {
         const msPerUnit = granularity === 'hour' ? 3600000 : granularity === 'day' ? 86400000 : 604800000;
         const bucketCount = granularity === 'hour' ? 24 : granularity === 'day' ? 30 : 12;
 
-        const rangeStartMs = now - bucketCount * msPerUnit;
+        const rangeStartMs = granularity === 'day'
+            ? getLocalDayStartMs(now, DAY_START_HOUR) - (bucketCount - 1) * msPerUnit
+            : now - bucketCount * msPerUnit;
         const rangeEndMs = now;
         const rangeStart = new Date(rangeStartMs).toISOString();
         const rangeEnd = new Date(rangeEndMs).toISOString();
@@ -675,7 +679,7 @@ export class AnalyticsService {
         // Initialize buckets
         const buckets: TrendPoint[] = [];
         for (let i = 0; i < bucketCount; i++) {
-            const timestamp = new Date(now - (bucketCount - 1 - i) * msPerUnit);
+            const timestamp = new Date(rangeStartMs + i * msPerUnit);
             const label = granularity === 'hour'
                 ? timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                 : granularity === 'day'

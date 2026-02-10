@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { FriendConnection, FriendProfile, FriendRequest, FriendSummary, FriendTimeline, RendererApi, TrophyStatus } from '@shared/types';
+import type { FriendConnection, FriendLibraryItem, FriendProfile, FriendRequest, FriendSummary, FriendTimeline, RendererApi, TrophyStatus } from '@shared/types';
 import FriendDetailModal from './FriendDetailModal';
 
 type Props = {
@@ -46,6 +46,7 @@ export default function Friends({ api }: Props) {
   const [myProfile, setMyProfile] = useState<FriendProfile | null>(null);
   const [selectedFriend, setSelectedFriend] = useState<FriendConnection | null>(null);
   const [selectedTimeline, setSelectedTimeline] = useState<FriendTimeline | null>(null);
+  const [selectedPublicLibrary, setSelectedPublicLibrary] = useState<FriendLibraryItem[]>([]);
   const [detailOpen, setDetailOpen] = useState(false);
   const [trophies, setTrophies] = useState<TrophyStatus[]>([]);
   const [handleInput, setHandleInput] = useState('');
@@ -55,7 +56,6 @@ export default function Friends({ api }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [syncReady, setSyncReady] = useState(false);
   const [competitiveOptIn, setCompetitiveOptIn] = useState(false);
-  const [competitiveMinHours, setCompetitiveMinHours] = useState(2);
 
   async function refreshAll() {
     setError(null);
@@ -64,15 +64,14 @@ export default function Friends({ api }: Props) {
       const ready = status.configured && status.authenticated;
       setSyncReady(ready);
       if (!ready) return;
-      const [profileResult, friendResult, requestResult, summaryResult, mySummaryResult, trophyResult, competitive, minHours] = await Promise.all([
+      const [profileResult, friendResult, requestResult, summaryResult, mySummaryResult, trophyResult, competitive] = await Promise.all([
         api.friends.profile(),
         api.friends.list(),
         api.friends.requests(),
         api.friends.summaries(24),
         api.friends.meSummary(24),
         api.trophies.list(),
-        api.settings.competitiveOptIn(),
-        api.settings.competitiveMinActiveHours()
+        api.settings.competitiveOptIn()
       ]);
       setProfile(profileResult);
       setMyProfile(profileResult);
@@ -83,7 +82,6 @@ export default function Friends({ api }: Props) {
       setMySummary(mySummaryResult);
       setTrophies(trophyResult);
       setCompetitiveOptIn(competitive);
-      setCompetitiveMinHours(minHours);
     } catch (err) {
       console.error(err);
       setError((err as Error).message);
@@ -107,13 +105,6 @@ export default function Friends({ api }: Props) {
       return { friend, summary, totals, productivePct, neutralPct, frivolityPct, drainingPct };
     });
   }, [friends, summaries]);
-
-  // Competitive head-to-head is gated until both sides cross a daily active-time threshold.
-  const competitiveGateSeconds = Math.max(0, competitiveMinHours) * 3600;
-  const meetsCompetitiveGate = (summary: FriendSummary | null) => {
-    if (!summary) return false;
-    return summary.totalActiveSeconds >= competitiveGateSeconds;
-  };
 
   const trophyById = useMemo(() => {
     const map = new Map<string, TrophyStatus>();
@@ -218,10 +209,15 @@ export default function Friends({ api }: Props) {
   async function openFriendDetail(friend: FriendConnection) {
     setSelectedFriend(friend);
     setSelectedTimeline(null);
+    setSelectedPublicLibrary([]);
     setDetailOpen(true);
     try {
-      const timeline = await api.friends.timeline(friend.userId, 24);
+      const [timeline, publicLibrary] = await Promise.all([
+        api.friends.timeline(friend.userId, 24),
+        api.friends.publicLibrary(friend.userId, 168)
+      ]);
       setSelectedTimeline(timeline);
+      setSelectedPublicLibrary(publicLibrary ?? []);
     } catch (err) {
       console.error('Failed to load friend detail', err);
     }
@@ -234,15 +230,6 @@ export default function Friends({ api }: Props) {
     } catch (err) {
       setError((err as Error).message || 'Failed to update preference');
       setCompetitiveOptIn(!next);
-    }
-  }
-
-  async function updateCompetitiveMinHours(next: number) {
-    setCompetitiveMinHours(next);
-    try {
-      await api.settings.updateCompetitiveMinActiveHours(next);
-    } catch (err) {
-      setError((err as Error).message || 'Failed to update competitive gate');
     }
   }
 
@@ -291,21 +278,7 @@ export default function Friends({ api }: Props) {
             />
             <span className="subtle">{competitiveOptIn ? 'Enabled' : 'Disabled'}</span>
           </label>
-          <label>
-            Min active hours
-            <input
-              type="number"
-              min="0"
-              max="12"
-              step="0.5"
-              value={competitiveMinHours}
-              onChange={(e) => updateCompetitiveMinHours(Number(e.target.value))}
-            />
-          </label>
         </div>
-        <p className="subtle" style={{ margin: 0 }}>
-          Head-to-head only shows once both sides cross this daily active time.
-        </p>
       </div>
 
       <div className="card" style={{ marginBottom: 16 }}>
@@ -383,7 +356,7 @@ export default function Friends({ api }: Props) {
             <p className="subtle">Add a handle to start a tiny, supportive feed.</p>
           </div>
         ) : (
-          friendCards.map(({ friend, summary, totals, productivePct, neutralPct, frivolityPct }) => {
+          friendCards.map(({ friend, summary, totals, productivePct, neutralPct, frivolityPct, drainingPct }) => {
             const friendTrophies = (friend.pinnedTrophies ?? [])
               .map((id) => trophyById.get(id))
               .filter((trophy): trophy is TrophyStatus => Boolean(trophy));
@@ -407,7 +380,7 @@ export default function Friends({ api }: Props) {
 
               {competitiveOptIn ? (
                 <div className="head-to-head">
-                  {meetsCompetitiveGate(mySummary) && meetsCompetitiveGate(summary) ? (
+                  {summary ? (
                     <>
                       <div className="head-to-head-row">
                         <span>You</span>
@@ -435,7 +408,7 @@ export default function Friends({ api }: Props) {
                     </>
                   ) : (
                     <p className="subtle" style={{ marginTop: 6 }}>
-                      Both need {competitiveMinHours}h active to unlock.
+                      Waiting for shared activity data.
                     </p>
                   )}
                 </div>
@@ -506,6 +479,7 @@ export default function Friends({ api }: Props) {
         friend={selectedFriend}
         summary={selectedFriend ? summaries[selectedFriend.userId] ?? null : null}
         timeline={selectedTimeline}
+        publicLibraryItems={selectedPublicLibrary}
         trophies={trophies}
         onClose={() => setDetailOpen(false)}
       />

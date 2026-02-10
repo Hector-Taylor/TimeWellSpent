@@ -5,7 +5,7 @@
   "description": "Mac-first focus companion that rewards deep work with f-coins and enforces browsing budgets.",
   "author": "",
   "license": "MIT",
-  "main": "out/main/main.js",
+  "main": ".vite/build/main.js",
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "preinstall": "npx only-allow pnpm",

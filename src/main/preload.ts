@@ -92,7 +92,20 @@ const api: RendererApi = {
     competitiveMinActiveHours: () => ipcRenderer.invoke('settings:competitive-min-hours'),
     updateCompetitiveMinActiveHours: (value) => ipcRenderer.invoke('settings:update-competitive-min-hours', value),
     continuityWindowSeconds: () => ipcRenderer.invoke('settings:continuity-window'),
-    updateContinuityWindowSeconds: (value) => ipcRenderer.invoke('settings:update-continuity-window', value)
+    updateContinuityWindowSeconds: (value) => ipcRenderer.invoke('settings:update-continuity-window', value),
+    productivityGoalHours: () => ipcRenderer.invoke('settings:productivity-goal-hours'),
+    updateProductivityGoalHours: (value) => ipcRenderer.invoke('settings:update-productivity-goal-hours', value),
+    cameraModeEnabled: () => ipcRenderer.invoke('settings:camera-mode'),
+    updateCameraModeEnabled: (value) => ipcRenderer.invoke('settings:update-camera-mode', value),
+    dailyOnboardingState: () => ipcRenderer.invoke('settings:daily-onboarding'),
+    updateDailyOnboardingState: (value) => ipcRenderer.invoke('settings:update-daily-onboarding', value)
+  },
+  camera: {
+    listPhotos: (limit?: number) => ipcRenderer.invoke('camera:list', { limit }),
+    storePhoto: (payload: { dataUrl: string; subject?: string | null; domain?: string | null }) =>
+      ipcRenderer.invoke('camera:store', payload),
+    deletePhoto: (id: string) => ipcRenderer.invoke('camera:delete', { id }),
+    revealPhoto: (id: string) => ipcRenderer.invoke('camera:reveal', { id })
   },
   integrations: {
     zotero: {
@@ -132,7 +145,8 @@ const api: RendererApi = {
     remove: (id) => ipcRenderer.invoke('friends:remove', { id }),
     summaries: (windowHours) => ipcRenderer.invoke('friends:summaries', { windowHours }),
     meSummary: (windowHours) => ipcRenderer.invoke('friends:me-summary', { windowHours }),
-    timeline: (userId, windowHours) => ipcRenderer.invoke('friends:timeline', { userId, windowHours })
+    timeline: (userId, windowHours) => ipcRenderer.invoke('friends:timeline', { userId, windowHours }),
+    publicLibrary: (userId, windowHours) => ipcRenderer.invoke('friends:public-library', { userId, windowHours })
   },
   trophies: {
     list: () => ipcRenderer.invoke('trophies:list'),

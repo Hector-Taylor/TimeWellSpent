@@ -14,6 +14,8 @@ export type PaywallSession = {
   purchasePrice?: number;
   purchasedSeconds?: number;
   spendRemainder?: number;
+  packChainCount?: number;
+  meteredMultiplier?: number;
   justification?: string;
   lastReminder?: number;
   allowedUrl?: string;
@@ -91,18 +93,20 @@ export class PaywallManager extends EventEmitter {
     return session;
   }
 
-  startMetered(domain: string) {
+  startMetered(domain: string, ratePerMin?: number, meteredMultiplier = 1) {
     const rate = this.market.getRate(domain);
     if (!rate) throw new Error(`No market rate configured for ${domain}`);
+    const effectiveRate = Number.isFinite(ratePerMin as number) ? Number(ratePerMin) : rate.ratePerMin;
     const session: PaywallSession = {
       domain,
       mode: 'metered',
-      ratePerMin: rate.ratePerMin,
+      ratePerMin: effectiveRate,
       remainingSeconds: Infinity,
       lastTick: Date.now(),
       startedAt: Date.now(),
       paused: false,
-      spendRemainder: 0
+      spendRemainder: 0,
+      meteredMultiplier
     };
     this.sessions.set(domain, session);
     this.emit('session-started', session);
@@ -137,20 +141,38 @@ export class PaywallManager extends EventEmitter {
   buyPack(domain: string, minutes: number, price: number) {
     const rate = this.market.getRate(domain);
     if (!rate) throw new Error(`No market rate configured for ${domain}`);
+    const now = Date.now();
+    const existing = this.sessions.get(domain);
     this.wallet.spend(price, { type: 'frivolity-pack', domain, minutes });
     this.emit('wallet-update', this.wallet.getSnapshot());
-    const session: PaywallSession = {
-      domain,
-      mode: 'pack',
-      ratePerMin: rate.ratePerMin,
-      remainingSeconds: minutes * 60,
-      lastTick: Date.now(),
-      startedAt: Date.now(),
-      paused: false,
-      spendRemainder: 0,
-      purchasePrice: price,
-      purchasedSeconds: minutes * 60
-    };
+    const purchasedSeconds = minutes * 60;
+    const existingPack = existing?.mode === 'pack' ? existing : null;
+    const session: PaywallSession = existingPack
+      ? {
+        ...existingPack,
+        mode: 'pack',
+        ratePerMin: rate.ratePerMin,
+        remainingSeconds: Math.max(0, existingPack.remainingSeconds) + purchasedSeconds,
+        lastTick: now,
+        paused: false,
+        spendRemainder: 0,
+        purchasePrice: (existingPack.purchasePrice ?? 0) + price,
+        purchasedSeconds: (existingPack.purchasedSeconds ?? 0) + purchasedSeconds,
+        packChainCount: (existingPack.packChainCount ?? 1) + 1
+      }
+      : {
+        domain,
+        mode: 'pack',
+        ratePerMin: rate.ratePerMin,
+        remainingSeconds: purchasedSeconds,
+        lastTick: now,
+        startedAt: now,
+        paused: false,
+        spendRemainder: 0,
+        purchasePrice: price,
+        purchasedSeconds,
+        packChainCount: 1
+      };
     this.sessions.set(domain, session);
     this.emit('session-started', session);
     return session;
@@ -247,7 +269,8 @@ export class PaywallManager extends EventEmitter {
         const marketRate = this.market.getRate(session.domain);
         if (marketRate) {
           const modifier = marketRate.hourlyModifiers?.[currentHour] ?? 1;
-          currentRate = marketRate.ratePerMin * modifier;
+          const meteredMultiplier = session.meteredMultiplier ?? 1;
+          currentRate = marketRate.ratePerMin * modifier * meteredMultiplier;
         }
         if (session.ratePerMin !== currentRate) {
           session.ratePerMin = currentRate;
