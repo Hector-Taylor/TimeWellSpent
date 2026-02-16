@@ -520,7 +520,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     status.settings?.reflectionSlideshowLookbackDays ?? 1
   );
   const [reflectionIntervalMs, setReflectionIntervalMs] = useState(
-    status.settings?.reflectionSlideshowIntervalMs ?? 2400
+    status.settings?.reflectionSlideshowIntervalMs ?? 900
   );
   const [reflectionMaxPhotos, setReflectionMaxPhotos] = useState(
     status.settings?.reflectionSlideshowMaxPhotos ?? 18
@@ -551,14 +551,6 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const [friendPublicItems, setFriendPublicItems] = useState<FriendLibraryItem[]>([]);
   const [trophies, setTrophies] = useState<TrophyStatus[]>([]);
   const [trophyProfile, setTrophyProfile] = useState<TrophyProfileSummary | null>(null);
-  const isDevBuild = useMemo(() => {
-    try {
-      return !chrome.runtime.getManifest().update_url;
-    } catch {
-      return false;
-    }
-  }, []);
-  const [devFlags, setDevFlags] = useState<{ isDev: boolean; simulateDisconnect: boolean; logSessionDrift: boolean } | null>(null);
 
   const sessionMeteredMultiplier = status.session?.meteredMultiplier ?? METERED_PREMIUM_MULTIPLIER;
   const baseRatePerMin = status.rate?.ratePerMin
@@ -566,10 +558,8 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       ? status.session.ratePerMin / Math.max(1, sessionMeteredMultiplier)
       : status.session?.ratePerMin ?? 1);
   const effectiveColorFilter: GuardrailColorFilter = alwaysGreyscale ? 'greyscale' : guardrailColorFilter;
-  const activeSessionFilter = status.session?.colorFilter ?? null;
-  const rateFilter = activeSessionFilter ?? effectiveColorFilter;
-  const ratePerMin = baseRatePerMin * getColorFilterPriceMultiplier(rateFilter);
-  const meteredRatePerMin = baseRatePerMin * METERED_PREMIUM_MULTIPLIER;
+  const ratePerMin = baseRatePerMin * getColorFilterPriceMultiplier(effectiveColorFilter);
+  const meteredRatePerMin = ratePerMin * METERED_PREMIUM_MULTIPLIER;
   const emergencyPolicy = status.emergencyPolicy ?? 'balanced';
   const peekAllowed = Boolean(peek?.allowed);
   const isFrivolousDomain = status.domainCategory === 'frivolous';
@@ -699,7 +689,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     setReflectionLookbackDays(status.settings?.reflectionSlideshowLookbackDays ?? 1);
   }, [status.settings?.reflectionSlideshowLookbackDays]);
   useEffect(() => {
-    setReflectionIntervalMs(status.settings?.reflectionSlideshowIntervalMs ?? 2400);
+    setReflectionIntervalMs(status.settings?.reflectionSlideshowIntervalMs ?? 900);
   }, [status.settings?.reflectionSlideshowIntervalMs]);
   useEffect(() => {
     setReflectionMaxPhotos(status.settings?.reflectionSlideshowMaxPhotos ?? 18);
@@ -812,40 +802,6 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     const id = window.setInterval(refreshFriends, 20000);
     return () => window.clearInterval(id);
   }, [status.desktopConnected]);
-
-  useEffect(() => {
-    if (!isDevBuild) return;
-    let mounted = true;
-    const load = async () => {
-      try {
-        const response = await chrome.runtime.sendMessage({ type: 'GET_DEV_FLAGS' });
-        if (!mounted) return;
-        if (response?.flags) {
-          setDevFlags(response.flags);
-        } else {
-          setDevFlags({ isDev: true, simulateDisconnect: false, logSessionDrift: false });
-        }
-      } catch {
-        if (mounted) setDevFlags({ isDev: true, simulateDisconnect: false, logSessionDrift: false });
-      }
-    };
-    load();
-    return () => {
-      mounted = false;
-    };
-  }, [isDevBuild]);
-
-  const updateDevFlags = async (next: Partial<{ simulateDisconnect: boolean; logSessionDrift: boolean }>) => {
-    if (!isDevBuild) return;
-    try {
-      const response = await chrome.runtime.sendMessage({ type: 'SET_DEV_FLAGS', payload: next });
-      if (response?.flags) {
-        setDevFlags(response.flags);
-      }
-    } catch {
-      // ignore
-    }
-  };
 
   useEffect(() => {
     if (!status.desktopConnected) {
@@ -2242,7 +2198,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
               </div>
             )}
 
-            {overlayView === 'dashboard' && (
+            {overlayView === 'dashboard' && cameraModeEnabled && (
               <ReflectionSlideshow
                 domain={domain}
                 enabled={reflectionSlideshowEnabled}
@@ -2550,7 +2506,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                           <small>{status.session ? 'this session' : 'no session'}</small>
                         </div>
                         <div className="tws-dashboard-metric">
-                          <span>Rate</span>
+                          <span>Pack rate</span>
                           <strong>{formatCoins(ratePerMin)} f/m</strong>
                           <small>current domain</small>
                         </div>
@@ -3285,6 +3241,10 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                       <span className="tws-rail-label">Rate</span>
                       <strong>{formatCoins(ratePerMin)} f-coins/min</strong>
                     </div>
+                    <div className="tws-rail-row">
+                      <span className="tws-rail-label">Metered</span>
+                      <strong>{formatCoins(meteredRatePerMin)} f-coins/min</strong>
+                    </div>
                   </div>
                 </section>
               </div>
@@ -3439,10 +3399,10 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                         onChange={(e) => handleReflectionIntervalChange(Number(e.target.value))}
                         disabled={reflectionBusy || isProcessing}
                       >
-                        <option value={1500}>Fast</option>
-                        <option value={2400}>Balanced</option>
-                        <option value={3600}>Slow</option>
-                        <option value={5000}>Very slow</option>
+                        <option value={700}>Mirror</option>
+                        <option value={900}>Fast</option>
+                        <option value={1500}>Balanced</option>
+                        <option value={2400}>Slow</option>
                       </select>
                     </div>
                     <div className="tws-toggle-row">
@@ -3663,11 +3623,15 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
         <aside className="tws-paywall-rail">
           <div className="tws-rail-card">
             <div className="tws-rail-row">
-              <span className="tws-rail-label">Rate</span>
+              <span className="tws-rail-label">Pack rate</span>
               <strong>{formatCoins(ratePerMin)} f-coins/min</strong>
             </div>
+            <div className="tws-rail-row">
+              <span className="tws-rail-label">Metered</span>
+              <strong>{formatCoins(meteredRatePerMin)} f-coins/min</strong>
+            </div>
             <p className="tws-subtle" style={{ margin: 0 }}>
-              Frivolity costs.
+              Matches proceed pricing for this domain.
             </p>
           </div>
 
@@ -3777,51 +3741,6 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
               </button>
             </div>
           </div>
-
-          {devFlags?.isDev && (
-            <div className="tws-rail-card tws-rail-toggles">
-              <div className="tws-rail-row">
-                <strong>Dev tools</strong>
-                <span className="tws-rail-label">Debug</span>
-              </div>
-              <div className="tws-toggle-row">
-                <div>
-                  <span className="tws-toggle-title">Simulate desktop disconnect</span>
-                  <span className="tws-subtle">Force offline mode.</span>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={devFlags.simulateDisconnect}
-                  className={`tws-switch ${devFlags.simulateDisconnect ? 'active' : ''}`}
-                  onClick={() => updateDevFlags({ simulateDisconnect: !devFlags.simulateDisconnect })}
-                >
-                  <span className="tws-switch-track" aria-hidden="true">
-                    <span className="tws-switch-knob" />
-                  </span>
-                  <span className="tws-switch-label">{devFlags.simulateDisconnect ? 'On' : 'Off'}</span>
-                </button>
-              </div>
-              <div className="tws-toggle-row">
-                <div>
-                  <span className="tws-toggle-title">Log session drift</span>
-                  <span className="tws-subtle">Compare desktop vs local timers.</span>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={devFlags.logSessionDrift}
-                  className={`tws-switch ${devFlags.logSessionDrift ? 'active' : ''}`}
-                  onClick={() => updateDevFlags({ logSessionDrift: !devFlags.logSessionDrift })}
-                >
-                  <span className="tws-switch-track" aria-hidden="true">
-                    <span className="tws-switch-knob" />
-                  </span>
-                  <span className="tws-switch-label">{devFlags.logSessionDrift ? 'On' : 'Off'}</span>
-                </button>
-              </div>
-            </div>
-          )}
 
           <div className="tws-proceed-dock">
             <details className="tws-details" open={proceedOpen} onToggle={(e) => setProceedOpen((e.target as HTMLDetailsElement).open)}>

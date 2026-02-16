@@ -34,6 +34,7 @@
   --danger: #d4a8a8;
   --border: rgba(184, 168, 216, 0.08);
   --border-strong: rgba(184, 168, 216, 0.16);
+  --focus-ring: rgba(184, 168, 216, 0.55);
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
@@ -83,6 +84,7 @@
   --danger: #d87a6c;
   --border: rgba(254, 250, 224, 0.12);
   --border-strong: rgba(254, 250, 224, 0.22);
+  --focus-ring: rgba(221, 161, 94, 0.55);
 }
 
 /* Soft dithering overlay */
@@ -448,12 +450,15 @@
   gap: 20px;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1024px) {
   .tws-paywall-shell {
     grid-template-columns: 1fr;
+    padding: 20px 16px 28px;
   }
   .tws-paywall-rail {
-    order: -1;
+    order: 2;
+    position: static;
+    top: auto;
   }
 }
 
@@ -735,6 +740,17 @@
 .tws-feed-toggle button.active {
   background: var(--bg-elevated);
   color: var(--fg);
+}
+
+@media (max-width: 1024px) {
+  .tws-paywall-topbar {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .tws-feed-toggle {
+    width: 100%;
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1800,6 +1816,13 @@
   height: fit-content;
 }
 
+@media (max-height: 820px) and (min-width: 1025px), (max-aspect-ratio: 11/8) and (min-width: 1025px) {
+  .tws-paywall-rail {
+    position: static;
+    top: auto;
+  }
+}
+
 .tws-rail-card {
   padding: 16px;
   border-radius: var(--radius-md);
@@ -2074,6 +2097,10 @@
   background: rgba(255, 255, 255, 0.02);
 }
 
+.tws-details summary:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
 .tws-details summary::-webkit-details-marker {
   display: none;
 }
@@ -2278,6 +2305,10 @@
   color: var(--fg);
 }
 
+.tws-secondary:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
 .tws-secondary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -2301,6 +2332,21 @@
 .tws-link:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.tws-primary:focus-visible,
+.tws-secondary:focus-visible,
+.tws-link:focus-visible,
+.tws-nav-toggle:focus-visible,
+.tws-feed-toggle button:focus-visible,
+.tws-sidebar-nav button:focus-visible,
+.tws-switch:focus-visible,
+.tws-friend-row:focus-visible,
+.tws-attractor-card:focus-visible,
+.tws-card-menu-item:focus-visible,
+.tws-details summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

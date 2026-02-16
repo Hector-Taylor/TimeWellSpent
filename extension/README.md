@@ -7,6 +7,7 @@ A Chrome extension companion for the TimeWellSpent desktop app that provides rel
 - **Real-time URL tracking**: Uses Chrome APIs to track active tabs and send activity to the desktop app.
 - **In-browser blocking**: Shows a blocking overlay when a paywall is enforced (instead of closing the tab).
 - **WebSocket connection**: Connects to the desktop app at `ws://localhost:17600/events`.
+- **New-tab homepage**: Overrides Chrome's new tab page with a TimeWellSpent dashboard.
 
 ## Development
 
@@ -33,6 +34,8 @@ Tip: open the extension’s **Service worker** console from `chrome://extensions
 3. Enable "Developer mode" (top right)
 4. Click "Load unpacked"
 5. Select the `dist/` directory
+
+After install, opening a new tab should show the TimeWellSpent homepage automatically.
 
 ## Architecture
 

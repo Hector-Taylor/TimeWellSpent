@@ -49,6 +49,7 @@ export default function ReflectionSlideshow({
   const [activeIndex, setActiveIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
+  const effectiveIntervalMs = Math.max(450, Math.min(intervalMs, 900));
 
   const current = useMemo(
     () => (photos.length ? photos[activeIndex % photos.length] : null),
@@ -88,11 +89,11 @@ export default function ReflectionSlideshow({
     if (!enabled || photos.length <= 1) return;
     const timer = window.setInterval(() => {
       setActiveIndex((index) => (index + 1) % photos.length);
-    }, intervalMs);
+    }, effectiveIntervalMs);
     return () => window.clearInterval(timer);
-  }, [enabled, photos.length, intervalMs]);
+  }, [enabled, photos.length, effectiveIntervalMs]);
 
-  if (!enabled) return null;
+  if (!enabled || !cameraModeEnabled) return null;
 
   return (
     <section className="tws-paywall-option tws-reflection-card">
@@ -111,25 +112,19 @@ export default function ReflectionSlideshow({
         </button>
       </div>
 
-      {!cameraModeEnabled && (
-        <p className="tws-subtle" style={{ margin: 0 }}>
-          Turn on Camera mode in Settings to build this reel.
-        </p>
-      )}
-
-      {cameraModeEnabled && loading && (
+      {loading && (
         <p className="tws-subtle" style={{ margin: 0 }}>
           Loading your capture reel...
         </p>
       )}
 
-      {cameraModeEnabled && !loading && photos.length === 0 && (
+      {!loading && photos.length === 0 && (
         <p className="tws-subtle" style={{ margin: 0 }}>
           No captures yet for {lookbackLabel(lookbackDays)}.
         </p>
       )}
 
-      {cameraModeEnabled && !loading && current && (
+      {!loading && current && (
         <>
           <div className="tws-reflection-stage">
             <img

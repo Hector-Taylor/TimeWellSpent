@@ -314,7 +314,7 @@ const DEFAULT_STATE: ExtensionState = {
         alwaysGreyscale: false,
         reflectionSlideshowEnabled: true,
         reflectionSlideshowLookbackDays: 1,
-        reflectionSlideshowIntervalMs: 2400,
+        reflectionSlideshowIntervalMs: 900,
         reflectionSlideshowMaxPhotos: 18
     },
     dailyOnboarding: {
@@ -364,7 +364,7 @@ const MAX_PENDING_WALLET_TRANSACTIONS = 1000;
 const MAX_PENDING_CONSUMPTION_EVENTS = 1000;
 const MAX_PENDING_ACTIVITY_EVENTS = 2400;
 const REFLECTION_LOOKBACK_DAYS_RANGE = { min: 1, max: 14 };
-const REFLECTION_INTERVAL_MS_RANGE = { min: 1200, max: 10000 };
+const REFLECTION_INTERVAL_MS_RANGE = { min: 450, max: 10000 };
 const REFLECTION_MAX_PHOTOS_RANGE = { min: 4, max: 40 };
 
 function normalizePaywallSession(
@@ -417,7 +417,7 @@ function normalizeReflectionSlideshowSettings(raw: Partial<ReflectionSlideshowSe
         : (DEFAULT_STATE.settings.reflectionSlideshowLookbackDays ?? 1);
     const intervalMs = Number.isFinite(intervalInput)
         ? Math.max(REFLECTION_INTERVAL_MS_RANGE.min, Math.min(REFLECTION_INTERVAL_MS_RANGE.max, Math.round(intervalInput)))
-        : (DEFAULT_STATE.settings.reflectionSlideshowIntervalMs ?? 2400);
+        : (DEFAULT_STATE.settings.reflectionSlideshowIntervalMs ?? 900);
     const maxPhotos = Number.isFinite(maxPhotosInput)
         ? Math.max(REFLECTION_MAX_PHOTOS_RANGE.min, Math.min(REFLECTION_MAX_PHOTOS_RANGE.max, Math.round(maxPhotosInput)))
         : (DEFAULT_STATE.settings.reflectionSlideshowMaxPhotos ?? 18);

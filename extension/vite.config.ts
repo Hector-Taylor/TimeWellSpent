@@ -20,6 +20,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         popup: resolve(__dirname, 'index.html'),
+        newtab: resolve(__dirname, 'newtab.html'),
         background: resolve(__dirname, 'src/background.ts'),
         content: resolve(__dirname, 'src/content.tsx'),
       },

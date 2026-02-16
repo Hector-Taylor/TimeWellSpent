@@ -2967,7 +2967,7 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
             alwaysGreyscale: Boolean(state.settings.alwaysGreyscale),
             reflectionSlideshowEnabled: state.settings.reflectionSlideshowEnabled ?? true,
             reflectionSlideshowLookbackDays: state.settings.reflectionSlideshowLookbackDays ?? 1,
-            reflectionSlideshowIntervalMs: state.settings.reflectionSlideshowIntervalMs ?? 2400,
+            reflectionSlideshowIntervalMs: state.settings.reflectionSlideshowIntervalMs ?? 900,
             reflectionSlideshowMaxPhotos: state.settings.reflectionSlideshowMaxPhotos ?? 18
         },
         journal: state.settings.journal ?? { url: null, minutes: 10 },

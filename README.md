@@ -36,6 +36,8 @@ Open:
 - `http://127.0.0.1:5174/home.html` (new web homepage)
 - `http://127.0.0.1:5174/` (existing renderer entry)
 
+If you want homepage behavior on every Chrome new tab, load the extension from `extension/dist/` once. It now overrides new tab directly, so you do not need `pnpm dev:web` for that flow.
+
 The desktop app logs the local API at `http://127.0.0.1:17600` and the SQLite path under `~/Library/Application Support/TimeWellSpent/`.
 
 ## Optional Chrome extension
