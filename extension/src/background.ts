@@ -1,4 +1,4 @@
-import { storage, type DailyOnboardingState, type LibraryItem, type LibraryPurpose, type PendingActivityEvent, type PomodoroSession, type PomodoroAllowlistEntry, type PaywallSession } from './storage';
+import { storage, type DailyOnboardingState, type LibraryItem, type LibraryPurpose, type PendingActivityEvent, type PomodoroSession, type PomodoroAllowlistEntry, type PaywallSession, type ReflectionSlideshowSettings } from './storage';
 import { DESKTOP_API_URL, DESKTOP_WS_URL } from './constants';
 
 type IdleState = 'active' | 'idle' | 'locked';
@@ -37,19 +37,46 @@ const PENDING_USAGE_FLUSH_LIMIT = 200;
 const rotModeStartInFlight = new Set<string>();
 let pendingUsageFlushTimer: number | null = null;
 const lastEncouragement = new Map<string, number>();
+const lastEncouragementMessage = new Map<string, string>();
+const doomscrollNotificationMap = new Map<string, string>();
 const ENCOURAGEMENT_MESSAGES = [
-    'You can stop anytime.',
-    'You can leave anytime you want!',
-    'Get out of here!',
-    'I trust you, fam. Do something else.',
-    'This tab owes you nothing.',
-    'That scroll can wait.',
-    'Future you will be proud if you bounce.',
-    'Close it now, win the day.',
-    'Trade this for something that matters.',
-    'Take a lap, not a scroll.',
-    'Your attention is expensive—save it.'
+    'Quick check: is {domain} worth it?',
+    'Close the tab; keep the focus.',
+    'You can exit now and still win.',
+    'This click is optional.',
+    'Trade this minute for progress.',
+    'Tiny break, big return.',
+    'Breathe, then decide.',
+    'The scroll will not finish you.',
+    'Choose intention over habit.',
+    'Leave {domain} for later.',
+    'Do the next small thing.',
+    'If it is noise, walk away.',
+    'Future you is watching.',
+    'Reclaim the wheel.',
+    'Soft nudge: step back.',
+    'Less feed, more you.',
+    'Reset the streak right here.',
+    'Attention is a budget.',
+    'Close it, start the real work.',
+    'Is this helping today?',
+    'End the loop.',
+    'Spend your focus wisely.',
+    'Pause; nothing urgent here.',
+    'Aim at what matters.',
+    'One clean choice now.',
+    'Remove {domain} from the path.',
+    'Give tonight a calmer brain.',
+    'Pick the hard task, then breathe.',
+    'You are allowed to stop.',
+    'Leave now; you will thank yourself.'
 ];
+const NYT_GAME_LINKS = [
+    { label: 'NYT Mini', url: 'https://www.nytimes.com/crosswords/game/mini' },
+    { label: 'NYT Connections', url: 'https://www.nytimes.com/games/connections' },
+    { label: 'NYT Crossword', url: 'https://www.nytimes.com/crosswords/game/daily' },
+    { label: 'NYT Wordle', url: 'https://www.nytimes.com/games/wordle/index.html' }
+] as const;
 
 type RouletteOpen = {
     openedAt: number;
@@ -71,7 +98,72 @@ type TabPeekState = {
 const tabPeekState = new Map<number, TabPeekState>();
 const PEEK_NEW_PAGE_WINDOW_MS = 5000;
 const METERED_PREMIUM_MULTIPLIER = 3.5;
+type GuardrailColorFilter = 'full-color' | 'greyscale' | 'redscale';
+const COLOR_FILTER_PRICE_MULTIPLIER: Record<GuardrailColorFilter, number> = {
+    'full-color': 1,
+    greyscale: 0.55,
+    redscale: 0.7
+};
 const EXTENSION_HEARTBEAT_INTERVAL_MS = 20_000;
+const BEHAVIOR_EVENT_FLUSH_BATCH = 200;
+const BEHAVIOR_EVENT_FLUSH_DELAY_MS = 2_000;
+const BEHAVIOR_EVENT_FLUSH_RETRY_MS = 8_000;
+const MAX_PENDING_BEHAVIOR_EVENTS = 2_000;
+const DOOMSCROLL_WINDOW_MS = 90_000;
+const DOOMSCROLL_MIN_RELEVANT_EVENTS = 16;
+const DOOMSCROLL_MIN_SCROLL_EVENTS = 12;
+const DOOMSCROLL_MAX_KEY_EVENTS = 1;
+const DOOMSCROLL_MAX_CLICK_EVENTS = 3;
+const DOOMSCROLL_MIN_SCROLL_RATIO = 0.8;
+const DOOMSCROLL_MIN_SESSION_AGE_MS = 45_000;
+const DOOMSCROLL_INTERVENTION_COOLDOWN_MS = 2 * 60_000;
+
+type BehaviorEventType = 'scroll' | 'click' | 'keystroke' | 'focus' | 'blur' | 'idle_start' | 'idle_end' | 'visibility';
+type UserActivityKind = 'mouse-move' | 'mouse-down' | 'key-down' | 'scroll' | 'wheel' | 'touch-start' | 'focus';
+type UserActivityPayload = {
+    kind?: string;
+    ts?: number;
+    url?: string;
+    title?: string;
+};
+
+type ReflectionPhoto = {
+    id: string;
+    capturedAt: string;
+    subject: string | null;
+    domain: string | null;
+    imageDataUrl: string;
+};
+type BehaviorEventPayload = {
+    timestamp: string;
+    domain: string;
+    eventType: BehaviorEventType;
+    valueInt?: number;
+    valueFloat?: number;
+    metadata?: Record<string, unknown>;
+};
+type DoomscrollWindow = {
+    windowStartMs: number;
+    lastEventMs: number;
+    scrollEvents: number;
+    keyEvents: number;
+    clickEvents: number;
+};
+const behaviorEventQueue: BehaviorEventPayload[] = [];
+let behaviorEventFlushTimer: number | null = null;
+let behaviorEventFlushInFlight = false;
+const doomscrollByDomain = new Map<string, DoomscrollWindow>();
+const lastDoomscrollIntervention = new Map<string, number>();
+
+function normalizeGuardrailColorFilter(value: unknown): GuardrailColorFilter {
+    return value === 'greyscale' || value === 'redscale' || value === 'full-color'
+        ? value
+        : 'full-color';
+}
+
+function getColorFilterPriceMultiplier(mode: GuardrailColorFilter): number {
+    return COLOR_FILTER_PRICE_MULTIPLIER[mode] ?? 1;
+}
 
 function packChainMultiplier(chainCount: number) {
     if (chainCount <= 0) return 1;
@@ -213,6 +305,96 @@ function baseUrl(urlString: string): string | null {
     }
 }
 
+function parseDomainFromUrl(urlString: string | null | undefined): string | null {
+    if (!urlString) return null;
+    try {
+        return normalizeDomain(new URL(urlString).hostname);
+    } catch {
+        return null;
+    }
+}
+
+function toBehaviorEvent(payload: UserActivityPayload, domain: string, tsMs: number): BehaviorEventPayload | null {
+    const kind = payload.kind;
+    if (kind !== 'scroll' && kind !== 'wheel' && kind !== 'mouse-down' && kind !== 'touch-start' && kind !== 'key-down' && kind !== 'focus') {
+        return null;
+    }
+    const metadata: Record<string, unknown> = { kind };
+    if (typeof payload.url === 'string' && payload.url) metadata.url = payload.url;
+    if (typeof payload.title === 'string' && payload.title) metadata.title = payload.title;
+    if (kind === 'scroll' || kind === 'wheel') {
+        return { timestamp: new Date(tsMs).toISOString(), domain, eventType: 'scroll', valueInt: 1, metadata };
+    }
+    if (kind === 'mouse-down' || kind === 'touch-start') {
+        return { timestamp: new Date(tsMs).toISOString(), domain, eventType: 'click', valueInt: 1, metadata };
+    }
+    if (kind === 'key-down') {
+        return { timestamp: new Date(tsMs).toISOString(), domain, eventType: 'keystroke', valueInt: 1, metadata };
+    }
+    return { timestamp: new Date(tsMs).toISOString(), domain, eventType: 'focus', metadata };
+}
+
+function queueBehaviorEvent(event: BehaviorEventPayload) {
+    behaviorEventQueue.push(event);
+    if (behaviorEventQueue.length > MAX_PENDING_BEHAVIOR_EVENTS) {
+        behaviorEventQueue.splice(0, behaviorEventQueue.length - MAX_PENDING_BEHAVIOR_EVENTS);
+    }
+    scheduleBehaviorEventFlush();
+}
+
+function scheduleBehaviorEventFlush(delayMs = BEHAVIOR_EVENT_FLUSH_DELAY_MS) {
+    if (behaviorEventFlushTimer != null) return;
+    behaviorEventFlushTimer = setTimeout(() => {
+        behaviorEventFlushTimer = null;
+        flushBehaviorEvents().catch(() => { });
+    }, delayMs);
+}
+
+async function flushBehaviorEvents() {
+    if (behaviorEventFlushInFlight || behaviorEventQueue.length === 0) return;
+    behaviorEventFlushInFlight = true;
+    try {
+        while (behaviorEventQueue.length > 0) {
+            const batch = behaviorEventQueue.slice(0, BEHAVIOR_EVENT_FLUSH_BATCH);
+            try {
+                const response = await fetch(`${DESKTOP_API_URL}/analytics/behavior-events`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ events: batch }),
+                    cache: 'no-store'
+                });
+                if (!response.ok) throw new Error(`Behavior event ingest failed (${response.status})`);
+                behaviorEventQueue.splice(0, batch.length);
+            } catch {
+                scheduleBehaviorEventFlush(BEHAVIOR_EVENT_FLUSH_RETRY_MS);
+                return;
+            }
+        }
+    } finally {
+        behaviorEventFlushInFlight = false;
+    }
+}
+
+function updateDoomscrollWindow(domain: string, kind: UserActivityKind, now: number): DoomscrollWindow {
+    const existing = doomscrollByDomain.get(domain);
+    const stale = !existing || now - existing.windowStartMs > DOOMSCROLL_WINDOW_MS;
+    const next: DoomscrollWindow = stale
+        ? {
+            windowStartMs: now,
+            lastEventMs: now,
+            scrollEvents: 0,
+            keyEvents: 0,
+            clickEvents: 0
+        }
+        : { ...existing };
+    next.lastEventMs = now;
+    if (kind === 'scroll' || kind === 'wheel') next.scrollEvents += 1;
+    else if (kind === 'key-down') next.keyEvents += 1;
+    else if (kind === 'mouse-down' || kind === 'touch-start') next.clickEvents += 1;
+    doomscrollByDomain.set(domain, next);
+    return next;
+}
+
 function dayKeyFor(date: Date) {
     const local = new Date(date);
     if (local.getHours() < DAILY_START_HOUR) {
@@ -346,6 +528,15 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.notifications?.onButtonClicked?.addListener((notificationId, buttonIndex) => {
+    const doomscrollUrl = doomscrollNotificationMap.get(notificationId);
+    if (doomscrollUrl) {
+        doomscrollNotificationMap.delete(notificationId);
+        if (buttonIndex === 0) {
+            chrome.tabs.create({ url: doomscrollUrl, active: true }).catch(() => { });
+        }
+        return;
+    }
+
     const session = rouletteNotificationMap.get(notificationId);
     if (!session) return;
     rouletteNotificationMap.delete(notificationId);
@@ -370,6 +561,7 @@ chrome.notifications?.onButtonClicked?.addListener((notificationId, buttonIndex)
 });
 
 chrome.notifications?.onClosed?.addListener((notificationId) => {
+    doomscrollNotificationMap.delete(notificationId);
     rouletteNotificationMap.delete(notificationId);
 });
 
@@ -403,6 +595,7 @@ function tryConnectToDesktop() {
         await flushPendingUsage();
         await flushPendingActivity();
         await flushPendingPomodoroBlocks();
+        await flushBehaviorEvents();
     };
 
     ws.onclose = () => {
@@ -1292,6 +1485,32 @@ async function maybeSendSessionFade(tabId: number, session: PaywallSession) {
     }
 }
 
+async function deliverEncouragement(
+    tabId: number,
+    domain: string,
+    message: string,
+    options?: { title?: string; notify?: boolean; notificationId?: string }
+) {
+    try {
+        await ensureContentScript(tabId);
+        await chrome.tabs.sendMessage(tabId, { type: 'ENCOURAGEMENT_OVERLAY', payload: { message } });
+    } catch {
+        // ignore overlay errors
+    }
+    if (options?.notify === false) return;
+    const now = Date.now();
+    try {
+        await chrome.notifications?.create(options?.notificationId ?? `tws-encourage-${domain}-${now}`, {
+            type: 'basic',
+            iconUrl: 'icons/icon128.png',
+            title: options?.title ?? 'Keep your edge',
+            message
+        });
+    } catch {
+        // ignore notification errors
+    }
+}
+
 async function maybeSendEncouragement(tabId: number, domain: string, session: PaywallSession) {
     if (session.paused) return;
     const discouragementEnabled = await storage.getDiscouragementEnabled();
@@ -1305,23 +1524,97 @@ async function maybeSendEncouragement(tabId: number, domain: string, session: Pa
     if (now - last < intervalMs) return;
     lastEncouragement.set(domain, now);
 
-    const message = ENCOURAGEMENT_MESSAGES[Math.floor(Math.random() * ENCOURAGEMENT_MESSAGES.length)];
-    try {
-        await ensureContentScript(tabId);
-        await chrome.tabs.sendMessage(tabId, { type: 'ENCOURAGEMENT_OVERLAY', payload: { message } });
-    } catch {
-        // ignore overlay errors
+    const previous = lastEncouragementMessage.get(domain) ?? null;
+    let template = ENCOURAGEMENT_MESSAGES[Math.floor(Math.random() * ENCOURAGEMENT_MESSAGES.length)] ?? 'You are paying for this minute. Make it count.';
+    if (ENCOURAGEMENT_MESSAGES.length > 1) {
+        let attempts = 0;
+        while (template === previous && attempts < 5) {
+            template = ENCOURAGEMENT_MESSAGES[Math.floor(Math.random() * ENCOURAGEMENT_MESSAGES.length)] ?? template;
+            attempts += 1;
+        }
     }
+    lastEncouragementMessage.set(domain, template);
+    const message = template.replaceAll('{domain}', domain);
+    await deliverEncouragement(tabId, domain, message);
+}
+
+async function maybeTriggerDoomscrollIntervention(
+    tabId: number,
+    domain: string,
+    kind: UserActivityKind,
+    session: PaywallSession,
+    now: number
+) {
+    if (session.paused) return;
+    if (session.mode === 'emergency') return;
+    const discouragementEnabled = await storage.getDiscouragementEnabled();
+    if (!discouragementEnabled) return;
+    const isFriv = await storage.isFrivolous(domain);
+    if (!isFriv) return;
+
+    const startedAt = Number.isFinite(session.startedAt) ? session.startedAt : now;
+    if (now - startedAt < DOOMSCROLL_MIN_SESSION_AGE_MS) return;
+
+    const metrics = updateDoomscrollWindow(domain, kind, now);
+    const relevant = metrics.scrollEvents + metrics.keyEvents + metrics.clickEvents;
+    if (relevant < DOOMSCROLL_MIN_RELEVANT_EVENTS) return;
+    if (metrics.scrollEvents < DOOMSCROLL_MIN_SCROLL_EVENTS) return;
+    if (metrics.keyEvents > DOOMSCROLL_MAX_KEY_EVENTS) return;
+    if (metrics.clickEvents > DOOMSCROLL_MAX_CLICK_EVENTS) return;
+    const scrollRatio = metrics.scrollEvents / Math.max(1, relevant);
+    if (scrollRatio < DOOMSCROLL_MIN_SCROLL_RATIO) return;
+
+    const intervalMinutes = await storage.getDiscouragementIntervalMinutes();
+    const cooldownMs = Math.max(Math.max(1, intervalMinutes) * 60_000, DOOMSCROLL_INTERVENTION_COOLDOWN_MS);
+    const last = lastDoomscrollIntervention.get(domain) ?? 0;
+    if (now - last < cooldownMs) return;
+    lastDoomscrollIntervention.set(domain, now);
+
+    const game = NYT_GAME_LINKS[Math.floor(Math.random() * NYT_GAME_LINKS.length)] ?? NYT_GAME_LINKS[0];
+    const message = `Doomscroll signature on ${domain}: heavy scroll, low intent. Pattern break: ${game.label}.`;
+    await deliverEncouragement(tabId, domain, message, { title: 'Pattern interrupt', notify: false });
+    const notificationId = `tws-doomscroll-${domain}-${now}`;
+    doomscrollNotificationMap.set(notificationId, game.url);
     try {
-        await chrome.notifications?.create(`tws-encourage-${domain}-${now}`, {
+        await chrome.notifications?.create(notificationId, {
             type: 'basic',
             iconUrl: 'icons/icon128.png',
-            title: 'Keep your edge',
-            message
+            title: 'Pattern interrupt',
+            message: `Switch tracks: ${game.label}`,
+            buttons: [{ title: `Open ${game.label}` }]
         });
     } catch {
-        // ignore notification errors
+        doomscrollNotificationMap.delete(notificationId);
     }
+}
+
+async function handleUserActivity(payload: UserActivityPayload, sender: chrome.runtime.MessageSender) {
+    const tabId = sender.tab?.id;
+    const ts = typeof payload?.ts === 'number' && Number.isFinite(payload.ts) ? payload.ts : Date.now();
+    if (tabId != null && sender.tab?.active !== false) {
+        recordTabInteraction(tabId, ts);
+    }
+
+    const domainFromPayload = parseDomainFromUrl(typeof payload?.url === 'string' ? payload.url : null);
+    const domainFromSender = parseDomainFromUrl(sender.tab?.url ?? null);
+    const domain = domainFromPayload ?? domainFromSender;
+    if (!domain) return;
+
+    const behaviorEvent = toBehaviorEvent(payload, domain, ts);
+    if (behaviorEvent) {
+        queueBehaviorEvent(behaviorEvent);
+    }
+
+    if (tabId == null || sender.tab?.active === false) return;
+    const kind = payload?.kind;
+    if (kind !== 'mouse-move' && kind !== 'mouse-down' && kind !== 'key-down' && kind !== 'scroll' && kind !== 'wheel' && kind !== 'touch-start' && kind !== 'focus') {
+        return;
+    }
+    if (kind === 'mouse-move' || kind === 'focus') return;
+
+    const session = await storage.getSession(domain);
+    if (!session) return;
+    await maybeTriggerDoomscrollIntervention(tabId, domain, kind, session, ts);
 }
 
 async function notifyPomodoroBlock(domain: string, mode: PomodoroSession['mode'], reason?: string) {
@@ -1394,6 +1687,40 @@ async function preferDesktopEmergency(payload: { domain: string; justification: 
     }
 }
 
+async function preferDesktopChallengePass(payload: {
+    domain: string;
+    durationSeconds?: number;
+    solvedSquares?: number;
+    requiredSquares?: number;
+    elapsedSeconds?: number;
+}) {
+    try {
+        const response = await fetch(`${DESKTOP_API_URL}/paywall/challenge-pass`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            cache: 'no-store',
+        });
+        if (!response.ok) {
+            const body = await response.json().catch(() => null);
+            const message = body?.error ? String(body.error) : 'Desktop rejected challenge pass';
+            return { ok: false as const, error: message };
+        }
+        const session = await response.json();
+        await storage.updateFromDesktop({
+            sessions: {
+                [session.domain]: session
+            } as any
+        });
+        await storage.setLastFrivolityAt(Date.now());
+        await syncFromDesktop();
+        return { ok: true as const, session };
+    } catch (error) {
+        console.log('Desktop challenge pass failed, falling back to local', error);
+        return { ok: false as const, error: (error as Error).message };
+    }
+}
+
 async function preferDesktopEnd(domain: string) {
     try {
         const response = await fetch(`${DESKTOP_API_URL}/paywall/end`, {
@@ -1419,6 +1746,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'GET_STATUS') {
         handleGetStatus(message.payload).then(sendResponse);
         return true; // Async response
+    } else if (message.type === 'GET_REFLECTION_PHOTOS') {
+        handleGetReflectionPhotos(message.payload).then(sendResponse);
+        return true;
     } else if (message.type === 'GET_DEV_FLAGS') {
         sendResponse?.({
             success: true,
@@ -1483,11 +1813,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         handlePageHeartbeat(message.payload, _sender).then(sendResponse);
         return true;
     } else if (message.type === 'USER_ACTIVITY') {
-        const tabId = _sender.tab?.id;
-        if (tabId != null && _sender.tab?.active !== false) {
-            const ts = typeof message.payload?.ts === 'number' ? message.payload.ts : Date.now();
-            recordTabInteraction(tabId, ts);
-        }
+        void handleUserActivity((message.payload ?? {}) as UserActivityPayload, _sender);
         sendResponse?.({ ok: true });
         return true;
     } else if (message.type === 'GET_LINK_PREVIEWS') {
@@ -1529,6 +1855,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message.type === 'START_EMERGENCY') {
         handleStartEmergency(message.payload).then(sendResponse);
         return true;
+    } else if (message.type === 'START_CHALLENGE_PASS') {
+        handleStartChallengePass(message.payload).then(sendResponse);
+        return true;
     } else if (message.type === 'START_STORE_SESSION') {
         handleStartStoreSession(message.payload).then(sendResponse);
         return true;
@@ -1555,6 +1884,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return true;
     } else if (message.type === 'SET_CAMERA_MODE') {
         handleSetCameraMode(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'SET_GUARDRAIL_COLOR_FILTER') {
+        handleSetGuardrailColorFilter(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'SET_ALWAYS_GREYSCALE') {
+        handleSetAlwaysGreyscale(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'SET_REFLECTION_SLIDESHOW_SETTINGS') {
+        handleSetReflectionSlideshowSettings(message.payload).then(sendResponse);
         return true;
     } else if (message.type === 'DAILY_ONBOARDING_SAVE') {
         handleDailyOnboardingSave(message.payload, _sender).then(sendResponse);
@@ -2396,7 +2734,28 @@ async function updateProductivityGoalOnDesktop(hours: number) {
 }
 
 async function updateCameraModeOnDesktop(enabled: boolean) {
-    await fetch(`${DESKTOP_API_URL}/settings/camera-mode`, {
+    const response = await fetch(`${DESKTOP_API_URL}/settings/camera-mode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: Boolean(enabled) }),
+        cache: 'no-store'
+    });
+    if (!response.ok) {
+        throw new Error(`Desktop camera mode update failed (${response.status})`);
+    }
+}
+
+async function updateGuardrailColorFilterOnDesktop(mode: GuardrailColorFilter) {
+    await fetch(`${DESKTOP_API_URL}/settings/guardrail-color-filter`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+        cache: 'no-store'
+    });
+}
+
+async function updateAlwaysGreyscaleOnDesktop(enabled: boolean) {
+    await fetch(`${DESKTOP_API_URL}/settings/always-greyscale`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: Boolean(enabled) }),
@@ -2603,7 +2962,13 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
             productivityGoalHours: state.settings.productivityGoalHours ?? 2,
             emergencyPolicy: state.settings.emergencyPolicy ?? 'balanced',
             discouragementIntervalMinutes: state.settings.discouragementIntervalMinutes ?? 1,
-            cameraModeEnabled: state.settings.cameraModeEnabled ?? false
+            cameraModeEnabled: state.settings.cameraModeEnabled ?? false,
+            guardrailColorFilter: normalizeGuardrailColorFilter(state.settings.guardrailColorFilter),
+            alwaysGreyscale: Boolean(state.settings.alwaysGreyscale),
+            reflectionSlideshowEnabled: state.settings.reflectionSlideshowEnabled ?? true,
+            reflectionSlideshowLookbackDays: state.settings.reflectionSlideshowLookbackDays ?? 1,
+            reflectionSlideshowIntervalMs: state.settings.reflectionSlideshowIntervalMs ?? 2400,
+            reflectionSlideshowMaxPhotos: state.settings.reflectionSlideshowMaxPhotos ?? 18
         },
         journal: state.settings.journal ?? { url: null, minutes: 10 },
         library: {
@@ -2614,6 +2979,38 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
             readingItems
         }
     };
+}
+
+function normalizeReflectionRequest(payload: {
+    lookbackDays?: number;
+    maxPhotos?: number;
+} | null | undefined): { lookbackDays: number; maxPhotos: number } {
+    const lookbackInput = Number(payload?.lookbackDays);
+    const maxPhotosInput = Number(payload?.maxPhotos);
+    const lookbackDays = Number.isFinite(lookbackInput) ? Math.max(1, Math.min(14, Math.round(lookbackInput))) : 1;
+    const maxPhotos = Number.isFinite(maxPhotosInput) ? Math.max(4, Math.min(40, Math.round(maxPhotosInput))) : 18;
+    return { lookbackDays, maxPhotos };
+}
+
+async function handleGetReflectionPhotos(payload: { lookbackDays?: number; maxPhotos?: number }) {
+    const normalized = normalizeReflectionRequest(payload);
+    try {
+        const scope = normalized.lookbackDays <= 1 ? 'day' : 'all';
+        const query = new URLSearchParams({
+            scope,
+            days: String(normalized.lookbackDays),
+            limit: String(normalized.maxPhotos)
+        });
+        const response = await fetch(`${DESKTOP_API_URL}/camera/photos?${query.toString()}`, { cache: 'no-store' });
+        if (!response.ok) {
+            throw new Error(`Desktop camera feed unavailable (${response.status})`);
+        }
+        const data = await response.json() as { photos?: ReflectionPhoto[] };
+        const photos = Array.isArray(data.photos) ? data.photos : [];
+        return { success: true, photos };
+    } catch (error) {
+        return { success: false, error: (error as Error).message, photos: [] as ReflectionPhoto[] };
+    }
 }
 
 async function handleGetFriends() {
@@ -2696,6 +3093,38 @@ async function handleSetCameraMode(payload: { enabled?: boolean }) {
     }
     const cameraModeEnabled = await storage.setCameraModeEnabled(enabled);
     return { success: true, cameraModeEnabled };
+}
+
+async function handleSetGuardrailColorFilter(payload: { mode?: GuardrailColorFilter }) {
+    const mode = normalizeGuardrailColorFilter(payload?.mode);
+    try {
+        await updateGuardrailColorFilterOnDesktop(mode);
+    } catch (error) {
+        console.warn('Failed to sync guardrail color filter to desktop', error);
+    }
+    const guardrailColorFilter = await storage.setGuardrailColorFilter(mode);
+    return { success: true, guardrailColorFilter };
+}
+
+async function handleSetAlwaysGreyscale(payload: { enabled?: boolean }) {
+    const enabled = Boolean(payload?.enabled);
+    try {
+        await updateAlwaysGreyscaleOnDesktop(enabled);
+    } catch (error) {
+        console.warn('Failed to sync always greyscale to desktop', error);
+    }
+    const alwaysGreyscale = await storage.setAlwaysGreyscale(enabled);
+    return { success: true, alwaysGreyscale };
+}
+
+async function handleSetReflectionSlideshowSettings(payload: Partial<ReflectionSlideshowSettings>) {
+    const settings = await storage.updateReflectionSlideshowSettings({
+        enabled: typeof payload?.enabled === 'boolean' ? payload.enabled : undefined,
+        lookbackDays: typeof payload?.lookbackDays === 'number' ? payload.lookbackDays : undefined,
+        intervalMs: typeof payload?.intervalMs === 'number' ? payload.intervalMs : undefined,
+        maxPhotos: typeof payload?.maxPhotos === 'number' ? payload.maxPhotos : undefined
+    });
+    return { success: true, settings };
 }
 
 async function handleStartStoreSession(payload: { domain: string; price: number; url?: string }) {
@@ -2869,9 +3298,16 @@ async function handleMarkReadingConsumed(payload: { id?: string; consumed?: bool
     return { success: true };
 }
 
-async function handleBuyPack(payload: { domain: string; minutes: number }) {
+async function handleBuyPack(payload: { domain: string; minutes: number; colorFilter?: GuardrailColorFilter }) {
     const safeMinutes = Math.max(1, Math.round(Number(payload.minutes)));
-    const result = await preferDesktopPurchase('/paywall/packs', { domain: payload.domain, minutes: safeMinutes });
+    const configuredFilter = normalizeGuardrailColorFilter(payload.colorFilter ?? await storage.getGuardrailColorFilter());
+    const colorFilter = (await storage.getAlwaysGreyscale()) ? 'greyscale' : configuredFilter;
+    const colorMultiplier = getColorFilterPriceMultiplier(colorFilter);
+    const result = await preferDesktopPurchase('/paywall/packs', {
+        domain: payload.domain,
+        minutes: safeMinutes,
+        colorFilter
+    });
     if (result.ok) return { success: true, session: result.session };
 
     // Fallback to local
@@ -2882,7 +3318,8 @@ async function handleBuyPack(payload: { domain: string; minutes: number }) {
     const existing = await storage.getSession(payload.domain);
     const chainCount = existing?.mode === 'pack' ? (existing.packChainCount ?? 1) : 0;
     const multiplier = packChainMultiplier(chainCount);
-    const chargedPrice = Math.max(1, Math.round(basePrice * multiplier));
+    const chargedPrice = Math.max(1, Math.round(basePrice * multiplier * colorMultiplier));
+    const effectiveRatePerMin = rate.ratePerMin * colorMultiplier;
 
     try {
         await storage.spendCoins(chargedPrice);
@@ -2896,7 +3333,9 @@ async function handleBuyPack(payload: { domain: string; minutes: number }) {
                 minutes: safeMinutes,
                 basePrice,
                 chainCount,
-                chainMultiplier: multiplier
+                chainMultiplier: multiplier,
+                colorFilter,
+                colorMultiplier
             }
         });
         const now = Date.now();
@@ -2906,7 +3345,8 @@ async function handleBuyPack(payload: { domain: string; minutes: number }) {
             ? {
                 ...existingPack,
                 mode: 'pack' as const,
-                ratePerMin: rate.ratePerMin,
+                colorFilter,
+                ratePerMin: effectiveRatePerMin,
                 remainingSeconds: Math.max(0, existingPack.remainingSeconds) + purchasedSeconds,
                 lastTick: now,
                 paused: false,
@@ -2918,7 +3358,8 @@ async function handleBuyPack(payload: { domain: string; minutes: number }) {
             : {
                 domain: payload.domain,
                 mode: 'pack' as const,
-                ratePerMin: rate.ratePerMin,
+                colorFilter,
+                ratePerMin: effectiveRatePerMin,
                 remainingSeconds: purchasedSeconds,
                 startedAt: now,
                 lastTick: now,
@@ -2939,7 +3380,9 @@ async function handleBuyPack(payload: { domain: string; minutes: number }) {
                 basePrice,
                 purchasedSeconds,
                 chainCount,
-                chainMultiplier: multiplier
+                chainMultiplier: multiplier,
+                colorFilter,
+                colorMultiplier
             }
         });
         console.log(`✅ Purchased ${safeMinutes} minutes for ${payload.domain} (offline mode, ${chargedPrice} coins)`);
@@ -2949,22 +3392,27 @@ async function handleBuyPack(payload: { domain: string; minutes: number }) {
     }
 }
 
-async function handleStartMetered(payload: { domain: string }) {
-    const result = await preferDesktopPurchase('/paywall/metered', { domain: payload.domain });
+async function handleStartMetered(payload: { domain: string; colorFilter?: GuardrailColorFilter }) {
+    const configuredFilter = normalizeGuardrailColorFilter(payload.colorFilter ?? await storage.getGuardrailColorFilter());
+    const colorFilter = (await storage.getAlwaysGreyscale()) ? 'greyscale' : configuredFilter;
+    const colorMultiplier = getColorFilterPriceMultiplier(colorFilter);
+    const result = await preferDesktopPurchase('/paywall/metered', { domain: payload.domain, colorFilter });
     if (result.ok) return { success: true, session: result.session };
 
     // Fallback to local
     const rate = await storage.getMarketRate(payload.domain);
     if (!rate) return { success: false, error: 'No rate configured for this domain' };
 
+    const meteredMultiplier = METERED_PREMIUM_MULTIPLIER * colorMultiplier;
     const session = {
         domain: payload.domain,
         mode: 'metered' as const,
-        ratePerMin: rate.ratePerMin * METERED_PREMIUM_MULTIPLIER,
+        colorFilter,
+        ratePerMin: rate.ratePerMin * meteredMultiplier,
         remainingSeconds: Infinity,
         startedAt: Date.now(),
         spendRemainder: 0,
-        meteredMultiplier: METERED_PREMIUM_MULTIPLIER
+        meteredMultiplier
     };
 
     await storage.setSession(payload.domain, session);
@@ -2973,7 +3421,7 @@ async function handleStartMetered(payload: { domain: string }) {
         kind: 'frivolous-session',
         title: payload.domain,
         domain: payload.domain,
-        meta: { mode: 'metered' }
+        meta: { mode: 'metered', colorFilter, colorMultiplier }
     });
     console.log(`✅ Started metered session for ${payload.domain} (offline mode)`);
     return { success: true, session };
@@ -3110,6 +3558,64 @@ async function handleStartEmergency(payload: { domain: string; justification: st
         }
     });
     console.log(`✅ Started emergency session for ${payload.domain} (offline mode)`);
+    return { success: true, session };
+}
+
+async function handleStartChallengePass(payload: {
+    domain?: string;
+    durationSeconds?: number;
+    solvedSquares?: number;
+    requiredSquares?: number;
+    elapsedSeconds?: number;
+}) {
+    const domain = typeof payload?.domain === 'string' ? payload.domain.trim() : '';
+    if (!domain) return { success: false, error: 'Missing domain' };
+
+    const durationSeconds = Number.isFinite(payload.durationSeconds)
+        ? Math.max(60, Math.min(3600, Math.round(payload.durationSeconds as number)))
+        : 12 * 60;
+    const solvedSquares = Number.isFinite(payload.solvedSquares) ? Math.max(0, Math.round(payload.solvedSquares as number)) : null;
+    const requiredSquares = Number.isFinite(payload.requiredSquares) ? Math.max(1, Math.round(payload.requiredSquares as number)) : null;
+    const elapsedSeconds = Number.isFinite(payload.elapsedSeconds) ? Math.max(1, Math.round(payload.elapsedSeconds as number)) : null;
+
+    const desktopResult = await preferDesktopChallengePass({
+        domain,
+        durationSeconds,
+        solvedSquares: solvedSquares ?? undefined,
+        requiredSquares: requiredSquares ?? undefined,
+        elapsedSeconds: elapsedSeconds ?? undefined
+    });
+    if (desktopResult.ok) return { success: true, session: desktopResult.session };
+
+    const now = Date.now();
+    const session = {
+        domain,
+        mode: 'emergency' as const,
+        ratePerMin: 0,
+        remainingSeconds: durationSeconds,
+        startedAt: now,
+        lastTick: now,
+        paused: false,
+        spendRemainder: 0,
+        justification: 'Sudoku challenge unlock',
+        lastReminder: now
+    };
+
+    await storage.setSession(domain, session);
+    await storage.setLastFrivolityAt(now);
+    await queueConsumptionEvent({
+        kind: 'emergency-session',
+        title: domain,
+        domain,
+        meta: {
+            source: 'sudoku-challenge',
+            durationSeconds,
+            solvedSquares,
+            requiredSquares,
+            elapsedSeconds
+        }
+    });
+    console.log(`✅ Started Sudoku challenge pass for ${domain} (${durationSeconds}s, offline mode)`);
     return { success: true, session };
 }
 

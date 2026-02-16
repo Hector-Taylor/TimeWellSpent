@@ -261,6 +261,7 @@ export type Budget = {
 export type PaywallSession = {
   domain: string;
   mode: 'metered' | 'pack' | 'emergency' | 'store';
+  colorFilter?: GuardrailColorFilter;
   ratePerMin: number;
   remainingSeconds: number;
   startedAt?: number;
@@ -277,6 +278,7 @@ export type PaywallSession = {
 };
 
 export type EmergencyPolicyId = 'off' | 'gentle' | 'balanced' | 'strict';
+export type GuardrailColorFilter = 'full-color' | 'greyscale' | 'redscale';
 
 export type FriendProfile = {
   id: string;
@@ -494,6 +496,7 @@ export type RendererApi = {
   paywall: {
     startMetered(domain: string): Promise<unknown>;
     buyPack(domain: string, minutes: number): Promise<unknown>;
+    startChallengePass(domain: string, options?: { durationSeconds?: number; solvedSquares?: number }): Promise<unknown>;
     decline(domain: string): Promise<void>;
     cancelPack(domain: string): Promise<void>;
     end(domain: string, options?: { refundUnused?: boolean }): Promise<void>;
@@ -534,6 +537,10 @@ export type RendererApi = {
     updateDailyOnboardingState(value: Partial<DailyOnboardingState>): Promise<DailyOnboardingState>;
     cameraModeEnabled(): Promise<boolean>;
     updateCameraModeEnabled(value: boolean): Promise<void>;
+    guardrailColorFilter(): Promise<GuardrailColorFilter>;
+    updateGuardrailColorFilter(value: GuardrailColorFilter): Promise<void>;
+    alwaysGreyscale(): Promise<boolean>;
+    updateAlwaysGreyscale(value: boolean): Promise<void>;
   };
   camera: {
     listPhotos(limit?: number): Promise<CameraPhoto[]>;

@@ -15,10 +15,14 @@ export default function ActivityChart({ activities, summary }: ActivityChartProp
     idle: 'var(--cat-idle)'
   };
   type CategoryKey = keyof typeof colors;
+  type CategoryTotals = Record<CategoryKey, number>;
+  const isCategoryKey = (value: string): value is CategoryKey => value in colors;
   const [hovered, setHovered] = useState<CategoryKey | null>(null);
   const cutoff = Date.now() - 24 * 60 * 60 * 1000; // rolling 24h window
 
   const stats = useMemo(() => {
+    const initialTotals: CategoryTotals = { productive: 0, neutral: 0, frivolity: 0, draining: 0, idle: 0 };
+
     if (summary) {
       const totals = summary.totalsByCategory;
       const productive = totals.productive ?? 0;
@@ -27,15 +31,17 @@ export default function ActivityChart({ activities, summary }: ActivityChartProp
       const draining = (totals as any).draining ?? 0;
       const idle = totals.idle ?? 0;
       const totalSeconds = productive + neutral + frivolity + draining + idle;
+      const byCategory: CategoryTotals = {
+        ...initialTotals,
+        productive,
+        neutral,
+        frivolity,
+        draining,
+        idle
+      };
       return {
         total: totalSeconds,
-        byCategory: {
-          productive,
-          neutral,
-          frivolity,
-          draining,
-          idle
-        }
+        byCategory
       };
     }
 
@@ -43,10 +49,11 @@ export default function ActivityChart({ activities, summary }: ActivityChartProp
     const totalActive = recentActivities.reduce((acc, curr) => acc + curr.secondsActive, 0);
     const totalIdle = recentActivities.reduce((acc, curr) => acc + curr.idleSeconds, 0);
     const total = totalActive + totalIdle;
-    const byCategory: Record<string, number> = { productive: 0, neutral: 0, frivolity: 0, draining: 0, idle: 0 };
+    const byCategory: CategoryTotals = { ...initialTotals };
     recentActivities.forEach((curr) => {
       const raw = curr.category || 'neutral';
-      byCategory[raw] = (byCategory[raw] || 0) + curr.secondsActive;
+      const category = isCategoryKey(raw) ? raw : 'neutral';
+      byCategory[category] += curr.secondsActive;
     });
     byCategory.idle = totalIdle;
 
@@ -65,7 +72,8 @@ export default function ActivityChart({ activities, summary }: ActivityChartProp
     if (summary?.topContexts) {
       summary.topContexts.forEach((ctx) => {
         if (!ctx.category) return;
-        const cat = ctx.category as CategoryKey;
+        if (!isCategoryKey(ctx.category)) return;
+        const cat = ctx.category;
         base[cat].push({ label: ctx.label, seconds: ctx.seconds });
       });
     } else {
@@ -73,7 +81,7 @@ export default function ActivityChart({ activities, summary }: ActivityChartProp
       const buckets = new Map<string, { label: string; cat: CategoryKey; seconds: number }>();
       recentActivities.forEach((activity) => {
         const raw = activity.category || 'neutral';
-        const cat = raw as CategoryKey;
+        const cat = isCategoryKey(raw) ? raw : 'neutral';
         const label = activity.domain ?? activity.appName ?? 'Unknown';
         const key = `${cat}:${label}`;
         if (!buckets.has(key)) {

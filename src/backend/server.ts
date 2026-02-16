@@ -42,6 +42,7 @@ import {
   createExtensionSyncRoutes,
   createFriendsRoutes,
   createTrophyRoutes,
+  createCameraRoutes,
   createActionsRoutes,
   createUiRoutes,
   createIntegrationsRoutes
@@ -339,6 +340,29 @@ export async function createBackend(
   const ws = expressWs(app);
   const uiEvents = new EventEmitter();
 
+  const loopbackOriginPattern = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/;
+  app.use((req, res, next) => {
+    const origin = typeof req.headers.origin === 'string' ? req.headers.origin : '';
+    const allowLoopback = loopbackOriginPattern.test(origin);
+    const allowNoOrigin = !origin || origin === 'null';
+
+    if (allowLoopback || allowNoOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', allowLoopback ? origin : '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      if (allowLoopback) {
+        res.setHeader('Vary', 'Origin');
+      }
+    }
+
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(204);
+      return;
+    }
+
+    next();
+  });
+
   app.use(express.json());
 
   if (options?.onAuthCallback) {
@@ -383,7 +407,7 @@ export async function createBackend(
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
   app.use('/wallet', createWalletRoutes(wallet));
   app.use('/market', createMarketRoutes({ market, paywall, broadcastMarketRates }));
-  app.use('/paywall', createPaywallRoutes({ economy, paywall, wallet, market, emergency }));
+  app.use('/paywall', createPaywallRoutes({ economy, paywall, wallet, market, emergency, settings, consumption }));
   app.use('/activities', createActivitiesRoutes(activityTracker));
   app.use('/intentions', createIntentionsRoutes(intentions));
   app.use('/budgets', createBudgetsRoutes(budgets));
@@ -392,6 +416,7 @@ export async function createBackend(
   app.use('/settings', createSettingsRoutes({ settings }));
   app.use('/extension', createExtensionSyncRoutes({ settings, market, wallet, paywall, library, consumption, pomodoro }));
   app.use('/trophies', createTrophyRoutes({ trophies, profile: options?.friendsProvider?.profile }));
+  app.use('/camera', createCameraRoutes(camera));
   if (options?.friendsProvider) {
     app.use('/friends', createFriendsRoutes({
       ...options.friendsProvider,

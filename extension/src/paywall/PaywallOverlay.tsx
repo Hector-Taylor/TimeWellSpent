@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import SudokuChallenge from './SudokuChallenge';
+import ReflectionSlideshow from './ReflectionSlideshow';
 
 type LinkPreview = {
   url: string;
@@ -73,6 +75,7 @@ type StatusResponse = {
   session: {
     domain: string;
     mode: 'metered' | 'pack' | 'emergency' | 'store';
+    colorFilter?: 'full-color' | 'greyscale' | 'redscale';
     ratePerMin: number;
     remainingSeconds: number;
     paused?: boolean;
@@ -110,6 +113,12 @@ type StatusResponse = {
     emergencyPolicy?: 'off' | 'gentle' | 'balanced' | 'strict';
     discouragementIntervalMinutes?: number;
     cameraModeEnabled?: boolean;
+    guardrailColorFilter?: 'full-color' | 'greyscale' | 'redscale';
+    alwaysGreyscale?: boolean;
+    reflectionSlideshowEnabled?: boolean;
+    reflectionSlideshowLookbackDays?: number;
+    reflectionSlideshowIntervalMs?: number;
+    reflectionSlideshowMaxPhotos?: number;
   };
   emergency?: {
     lastEnded: { domain: string; justification?: string; endedAt: number } | null;
@@ -235,6 +244,7 @@ const SINISTER_PHRASES = [
 const DISCOURAGEMENT_VARIANTS = ['flicker', 'sputter', 'slide', 'rails', 'cloud'] as const;
 type DiscouragementVariant = (typeof DISCOURAGEMENT_VARIANTS)[number];
 const DISCOURAGEMENT_INTERVAL_RANGE_MS = { min: 2800, max: 7600 };
+const PAYWALL_DISCOURAGEMENT_BANNERS_ENABLED = false;
 
 type Props = {
   domain: string;
@@ -243,6 +253,16 @@ type Props = {
   peek?: { allowed: boolean; isNewPage: boolean };
   onClose(): void;
 };
+type GuardrailColorFilter = 'full-color' | 'greyscale' | 'redscale';
+const COLOR_FILTER_PRICE_MULTIPLIER: Record<GuardrailColorFilter, number> = {
+  'full-color': 1,
+  greyscale: 0.55,
+  redscale: 0.7
+};
+
+function getColorFilterPriceMultiplier(filter: GuardrailColorFilter) {
+  return COLOR_FILTER_PRICE_MULTIPLIER[filter] ?? 1;
+}
 
 type EmergencyPolicyConfig = {
   id: 'off' | 'gentle' | 'balanced' | 'strict';
@@ -254,6 +274,8 @@ type EmergencyPolicyConfig = {
   debtCoins: number;
 };
 const METERED_PREMIUM_MULTIPLIER = 3.5;
+const SUDOKU_REQUIRED_SQUARES = 12;
+const SUDOKU_PASS_MINUTES = 12;
 
 type Suggestion =
   | { type: 'url'; id: string; title: string; subtitle?: string; url: string; libraryId?: number }
@@ -487,6 +509,23 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const [spendGuardBusy, setSpendGuardBusy] = useState(false);
   const [cameraModeEnabled, setCameraModeEnabled] = useState(status.settings?.cameraModeEnabled ?? false);
   const [cameraModeBusy, setCameraModeBusy] = useState(false);
+  const [guardrailColorFilter, setGuardrailColorFilter] = useState<GuardrailColorFilter>(status.settings?.guardrailColorFilter ?? 'full-color');
+  const [guardrailColorFilterBusy, setGuardrailColorFilterBusy] = useState(false);
+  const [alwaysGreyscale, setAlwaysGreyscale] = useState(Boolean(status.settings?.alwaysGreyscale));
+  const [alwaysGreyscaleBusy, setAlwaysGreyscaleBusy] = useState(false);
+  const [reflectionSlideshowEnabled, setReflectionSlideshowEnabled] = useState(
+    status.settings?.reflectionSlideshowEnabled ?? true
+  );
+  const [reflectionLookbackDays, setReflectionLookbackDays] = useState(
+    status.settings?.reflectionSlideshowLookbackDays ?? 1
+  );
+  const [reflectionIntervalMs, setReflectionIntervalMs] = useState(
+    status.settings?.reflectionSlideshowIntervalMs ?? 2400
+  );
+  const [reflectionMaxPhotos, setReflectionMaxPhotos] = useState(
+    status.settings?.reflectionSlideshowMaxPhotos ?? 18
+  );
+  const [reflectionBusy, setReflectionBusy] = useState(false);
   const [theme, setTheme] = useState<'lavender' | 'olive'>(() => {
     try {
       const saved = localStorage.getItem('tws-theme');
@@ -526,7 +565,10 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     ?? (status.session?.mode === 'metered'
       ? status.session.ratePerMin / Math.max(1, sessionMeteredMultiplier)
       : status.session?.ratePerMin ?? 1);
-  const ratePerMin = baseRatePerMin;
+  const effectiveColorFilter: GuardrailColorFilter = alwaysGreyscale ? 'greyscale' : guardrailColorFilter;
+  const activeSessionFilter = status.session?.colorFilter ?? null;
+  const rateFilter = activeSessionFilter ?? effectiveColorFilter;
+  const ratePerMin = baseRatePerMin * getColorFilterPriceMultiplier(rateFilter);
   const meteredRatePerMin = baseRatePerMin * METERED_PREMIUM_MULTIPLIER;
   const emergencyPolicy = status.emergencyPolicy ?? 'balanced';
   const peekAllowed = Boolean(peek?.allowed);
@@ -644,11 +686,29 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   useEffect(() => {
     setCameraModeEnabled(status.settings?.cameraModeEnabled ?? false);
   }, [status.settings?.cameraModeEnabled]);
+  useEffect(() => {
+    setGuardrailColorFilter(status.settings?.guardrailColorFilter ?? 'full-color');
+  }, [status.settings?.guardrailColorFilter]);
+  useEffect(() => {
+    setAlwaysGreyscale(Boolean(status.settings?.alwaysGreyscale));
+  }, [status.settings?.alwaysGreyscale]);
+  useEffect(() => {
+    setReflectionSlideshowEnabled(status.settings?.reflectionSlideshowEnabled ?? true);
+  }, [status.settings?.reflectionSlideshowEnabled]);
+  useEffect(() => {
+    setReflectionLookbackDays(status.settings?.reflectionSlideshowLookbackDays ?? 1);
+  }, [status.settings?.reflectionSlideshowLookbackDays]);
+  useEffect(() => {
+    setReflectionIntervalMs(status.settings?.reflectionSlideshowIntervalMs ?? 2400);
+  }, [status.settings?.reflectionSlideshowIntervalMs]);
+  useEffect(() => {
+    setReflectionMaxPhotos(status.settings?.reflectionSlideshowMaxPhotos ?? 18);
+  }, [status.settings?.reflectionSlideshowMaxPhotos]);
 
   const showDiscouragement = discouragementEnabled && isFrivolousDomain;
 
   useEffect(() => {
-    if (!showDiscouragement || SINISTER_PHRASES.length === 0) return;
+    if (!PAYWALL_DISCOURAGEMENT_BANNERS_ENABLED || !showDiscouragement || SINISTER_PHRASES.length === 0) return;
     let cancelled = false;
     let timer: number | null = null;
     const triggerCycle = (advancePhrase: boolean) => {
@@ -885,7 +945,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     </div>
   ) : null;
 
-  const discouragementBanner = showDiscouragement && !peekActive ? (() => {
+  const discouragementBanner = PAYWALL_DISCOURAGEMENT_BANNERS_ENABLED && showDiscouragement && !peekActive ? (() => {
     if (discouragementVariant === 'rails') {
       return (
         <div key={`discourage-${discouragementCycle}`} className="tws-discourage-rails" aria-hidden="true">
@@ -1203,9 +1263,10 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   };
 
   const quickPacks = useMemo(() => {
+    const colorMultiplier = getColorFilterPriceMultiplier(effectiveColorFilter);
     const base = [
-      { minutes: 5, price: Math.max(1, Math.round(5 * ratePerMin)) },
-      { minutes: 10, price: Math.max(1, Math.round(10 * ratePerMin)) }
+      { minutes: 5, price: Math.max(1, Math.round(5 * baseRatePerMin)) },
+      { minutes: 10, price: Math.max(1, Math.round(10 * baseRatePerMin)) }
     ];
     if (!status.rate?.packs?.length) return base;
     const priceByMinutes = new Map<number, number>();
@@ -1216,9 +1277,9 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     const multiplier = packChainMultiplier(chainCount);
     return base.map((p) => ({
       minutes: p.minutes,
-      price: Math.max(1, Math.round((priceByMinutes.get(p.minutes) ?? p.price) * multiplier))
+      price: Math.max(1, Math.round((priceByMinutes.get(p.minutes) ?? p.price) * multiplier * colorMultiplier))
     }));
-  }, [ratePerMin, status.rate?.packs, status.session?.mode, status.session?.packChainCount]);
+  }, [baseRatePerMin, effectiveColorFilter, status.rate?.packs, status.session?.mode, status.session?.packChainCount]);
 
   const handleBuyPack = async (minutesOverride?: number) => {
     if (isProcessing) return;
@@ -1228,7 +1289,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       const minutes = minutesOverride ?? selectedMinutes;
       const result = await chrome.runtime.sendMessage({
         type: 'BUY_PACK',
-        payload: { domain, minutes }
+        payload: { domain, minutes, colorFilter: effectiveColorFilter }
       });
       if (!result?.success) throw new Error(result?.error ? String(result.error) : 'Failed to start session');
       onClose();
@@ -1244,11 +1305,36 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     setIsProcessing(true);
     setError(null);
     try {
-      const result = await chrome.runtime.sendMessage({ type: 'START_METERED', payload: { domain } });
+      const result = await chrome.runtime.sendMessage({ type: 'START_METERED', payload: { domain, colorFilter: effectiveColorFilter } });
       if (!result?.success) throw new Error(result?.error ? String(result.error) : 'Failed to start metered');
       onClose();
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleStartChallengePass = async (payload: { correctSquares: number; requiredSquares: number; elapsedSeconds: number }) => {
+    if (isProcessing) return;
+    setIsProcessing(true);
+    setError(null);
+    try {
+      const result = await chrome.runtime.sendMessage({
+        type: 'START_CHALLENGE_PASS',
+        payload: {
+          domain,
+          durationSeconds: SUDOKU_PASS_MINUTES * 60,
+          solvedSquares: payload.correctSquares,
+          requiredSquares: payload.requiredSquares,
+          elapsedSeconds: payload.elapsedSeconds
+        }
+      });
+      if (!result?.success) throw new Error(result?.error ? String(result.error) : 'Failed to start challenge pass');
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+      throw e;
     } finally {
       setIsProcessing(false);
     }
@@ -1898,6 +1984,93 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     }
   };
 
+  const handleGuardrailColorFilterChange = async (mode: GuardrailColorFilter) => {
+    if (guardrailColorFilterBusy) return;
+    setGuardrailColorFilterBusy(true);
+    setError(null);
+    try {
+      const result = await chrome.runtime.sendMessage({ type: 'SET_GUARDRAIL_COLOR_FILTER', payload: { mode } });
+      if (!result?.success) {
+        throw new Error(result?.error ? String(result.error) : 'Failed to update color filter');
+      }
+      setGuardrailColorFilter(mode);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setGuardrailColorFilterBusy(false);
+    }
+  };
+
+  const handleAlwaysGreyscaleToggle = async () => {
+    if (alwaysGreyscaleBusy) return;
+    const next = !alwaysGreyscale;
+    setAlwaysGreyscaleBusy(true);
+    setError(null);
+    try {
+      const result = await chrome.runtime.sendMessage({ type: 'SET_ALWAYS_GREYSCALE', payload: { enabled: next } });
+      if (!result?.success) {
+        throw new Error(result?.error ? String(result.error) : 'Failed to update always greyscale');
+      }
+      setAlwaysGreyscale(next);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setAlwaysGreyscaleBusy(false);
+    }
+  };
+
+  const updateReflectionSettings = async (
+    patch: Partial<{
+      enabled: boolean;
+      lookbackDays: number;
+      intervalMs: number;
+      maxPhotos: number;
+    }>
+  ) => {
+    if (reflectionBusy) return;
+    setReflectionBusy(true);
+    setError(null);
+    try {
+      const result = await chrome.runtime.sendMessage({
+        type: 'SET_REFLECTION_SLIDESHOW_SETTINGS',
+        payload: patch
+      });
+      if (!result?.success || !result?.settings) {
+        throw new Error(result?.error ? String(result.error) : 'Failed to update reflection slideshow settings');
+      }
+      const next = result.settings as {
+        enabled: boolean;
+        lookbackDays: number;
+        intervalMs: number;
+        maxPhotos: number;
+      };
+      setReflectionSlideshowEnabled(next.enabled);
+      setReflectionLookbackDays(next.lookbackDays);
+      setReflectionIntervalMs(next.intervalMs);
+      setReflectionMaxPhotos(next.maxPhotos);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setReflectionBusy(false);
+    }
+  };
+
+  const handleReflectionToggle = async () => {
+    await updateReflectionSettings({ enabled: !reflectionSlideshowEnabled });
+  };
+
+  const handleReflectionLookbackChange = async (value: number) => {
+    await updateReflectionSettings({ lookbackDays: value });
+  };
+
+  const handleReflectionIntervalChange = async (value: number) => {
+    await updateReflectionSettings({ intervalMs: value });
+  };
+
+  const handleReflectionMaxPhotosChange = async (value: number) => {
+    await updateReflectionSettings({ maxPhotos: value });
+  };
+
   const handleOpenShortcuts = async () => {
     try {
       await chrome.runtime.sendMessage({ type: 'OPEN_SHORTCUTS' });
@@ -2067,6 +2240,18 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                 <strong>Desktop app offline</strong>
                 <p className="tws-subtle" style={{ margin: 0 }}>Open the desktop app to sync data for this view.</p>
               </div>
+            )}
+
+            {overlayView === 'dashboard' && (
+              <ReflectionSlideshow
+                domain={domain}
+                enabled={reflectionSlideshowEnabled}
+                cameraModeEnabled={cameraModeEnabled}
+                lookbackDays={reflectionLookbackDays}
+                intervalMs={reflectionIntervalMs}
+                maxPhotos={reflectionMaxPhotos}
+                onError={(message) => setError(message)}
+              />
             )}
 
             {overlayView === 'dashboard' && feedView === 'for-you' ? (
@@ -3134,8 +3319,8 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                     </div>
                     <div className="tws-toggle-row">
                       <div>
-                        <span className="tws-toggle-title">Discouragement quotes</span>
-                        <span className="tws-subtle">Rotate a few ominous reminders.</span>
+                        <span className="tws-toggle-title">In-session nudges</span>
+                        <span className="tws-subtle">Show rotating nudges while you are actively on a paid frivolity session.</span>
                       </div>
                       <button
                         type="button"
@@ -3153,8 +3338,8 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                     </div>
                     <div className="tws-toggle-row">
                       <div>
-                        <span className="tws-toggle-title">Discouragement cadence</span>
-                        <span className="tws-subtle">How often the nudge appears mid-session.</span>
+                        <span className="tws-toggle-title">Nudge cadence</span>
+                        <span className="tws-subtle">How often those in-session nudges fire.</span>
                       </div>
                       <select
                         className="tws-select"
@@ -3205,6 +3390,112 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                           <span className="tws-switch-knob" />
                         </span>
                         <span className="tws-switch-label">{cameraModeEnabled ? 'On' : 'Off'}</span>
+                      </button>
+                    </div>
+                    <div className="tws-toggle-row">
+                      <div>
+                        <span className="tws-toggle-title">Reflection slideshow</span>
+                        <span className="tws-subtle">Play captured stills whenever paywall opens.</span>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={reflectionSlideshowEnabled}
+                        className={`tws-switch ${reflectionSlideshowEnabled ? 'active' : ''}`}
+                        onClick={handleReflectionToggle}
+                        disabled={reflectionBusy || isProcessing}
+                      >
+                        <span className="tws-switch-track" aria-hidden="true">
+                          <span className="tws-switch-knob" />
+                        </span>
+                        <span className="tws-switch-label">{reflectionSlideshowEnabled ? 'On' : 'Off'}</span>
+                      </button>
+                    </div>
+                    <div className="tws-toggle-row">
+                      <div>
+                        <span className="tws-toggle-title">Slideshow range</span>
+                        <span className="tws-subtle">How far back to pull captures.</span>
+                      </div>
+                      <select
+                        className="tws-select"
+                        value={reflectionLookbackDays}
+                        onChange={(e) => handleReflectionLookbackChange(Number(e.target.value))}
+                        disabled={reflectionBusy || isProcessing}
+                      >
+                        <option value={1}>Today</option>
+                        <option value={3}>Last 3 days</option>
+                        <option value={7}>This week</option>
+                        <option value={14}>Last 2 weeks</option>
+                      </select>
+                    </div>
+                    <div className="tws-toggle-row">
+                      <div>
+                        <span className="tws-toggle-title">Slide speed</span>
+                        <span className="tws-subtle">How quickly captures rotate.</span>
+                      </div>
+                      <select
+                        className="tws-select"
+                        value={reflectionIntervalMs}
+                        onChange={(e) => handleReflectionIntervalChange(Number(e.target.value))}
+                        disabled={reflectionBusy || isProcessing}
+                      >
+                        <option value={1500}>Fast</option>
+                        <option value={2400}>Balanced</option>
+                        <option value={3600}>Slow</option>
+                        <option value={5000}>Very slow</option>
+                      </select>
+                    </div>
+                    <div className="tws-toggle-row">
+                      <div>
+                        <span className="tws-toggle-title">Max captures</span>
+                        <span className="tws-subtle">Cap feed size for performance.</span>
+                      </div>
+                      <select
+                        className="tws-select"
+                        value={reflectionMaxPhotos}
+                        onChange={(e) => handleReflectionMaxPhotosChange(Number(e.target.value))}
+                        disabled={reflectionBusy || isProcessing}
+                      >
+                        <option value={8}>8</option>
+                        <option value={12}>12</option>
+                        <option value={18}>18</option>
+                        <option value={24}>24</option>
+                        <option value={32}>32</option>
+                      </select>
+                    </div>
+                    <div className="tws-toggle-row">
+                      <div>
+                        <span className="tws-toggle-title">Guardrails color filter</span>
+                        <span className="tws-subtle">Greyscale/redscale make frivolity cheaper.</span>
+                      </div>
+                      <select
+                        className="tws-select"
+                        value={guardrailColorFilter}
+                        onChange={(e) => handleGuardrailColorFilterChange(e.target.value as GuardrailColorFilter)}
+                        disabled={guardrailColorFilterBusy || alwaysGreyscaleBusy || isProcessing}
+                      >
+                        <option value="full-color">Full color (standard)</option>
+                        <option value="greyscale">Greyscale (cheaper)</option>
+                        <option value="redscale">Redscale (cheaper)</option>
+                      </select>
+                    </div>
+                    <div className="tws-toggle-row">
+                      <div>
+                        <span className="tws-toggle-title">Always greyscale</span>
+                        <span className="tws-subtle">Global override, everywhere.</span>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={alwaysGreyscale}
+                        className={`tws-switch ${alwaysGreyscale ? 'active' : ''}`}
+                        onClick={handleAlwaysGreyscaleToggle}
+                        disabled={alwaysGreyscaleBusy || isProcessing}
+                      >
+                        <span className="tws-switch-track" aria-hidden="true">
+                          <span className="tws-switch-knob" />
+                        </span>
+                        <span className="tws-switch-label">{alwaysGreyscale ? 'On' : 'Off'}</span>
                       </button>
                     </div>
                     <div className="tws-toggle-row">
@@ -3647,6 +3938,24 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                       Proceed metered
                     </button>
                   </div>
+                </section>
+
+                <section className="tws-paywall-option tws-sudoku-option" style={{ margin: 0 }}>
+                  <div className="tws-option-header">
+                    <h3>Free unlock game gate</h3>
+                    <p className="tws-subtle">
+                      Solve {SUDOKU_REQUIRED_SQUARES} squares to unlock {SUDOKU_PASS_MINUTES} minutes free.
+                    </p>
+                  </div>
+                  <SudokuChallenge
+                    puzzleKey={domain}
+                    title="Hard Sudoku checkpoint"
+                    subtitle="Type one digit per blank cell."
+                    requiredCorrect={SUDOKU_REQUIRED_SQUARES}
+                    unlockLabel={`Claim ${SUDOKU_PASS_MINUTES}m free pass`}
+                    disabled={isProcessing}
+                    onUnlock={handleStartChallengePass}
+                  />
                 </section>
 
                 <div className="tws-emergency-link">

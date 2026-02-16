@@ -81,6 +81,7 @@ type StatusResponse = {
   session: {
     domain: string;
     mode: 'metered' | 'pack' | 'emergency' | 'store';
+    colorFilter?: 'full-color' | 'greyscale' | 'redscale';
     ratePerMin: number;
     remainingSeconds: number;
     paused?: boolean;
@@ -117,6 +118,13 @@ type StatusResponse = {
     productivityGoalHours?: number;
     emergencyPolicy?: 'off' | 'gentle' | 'balanced' | 'strict';
     discouragementIntervalMinutes?: number;
+    cameraModeEnabled?: boolean;
+    guardrailColorFilter?: 'full-color' | 'greyscale' | 'redscale';
+    alwaysGreyscale?: boolean;
+    reflectionSlideshowEnabled?: boolean;
+    reflectionSlideshowLookbackDays?: number;
+    reflectionSlideshowIntervalMs?: number;
+    reflectionSlideshowMaxPhotos?: number;
   };
   emergency?: {
     lastEnded: { domain: string; justification?: string; endedAt: number } | null;
@@ -132,6 +140,140 @@ let contextInvalidated = false;
 const ACTIVITY_PULSE_MIN_MS = 3000;
 let lastActivityPulse = 0;
 let pageHideRefCount = 0;
+const COLOR_FILTER_STYLE_ID = 'tws-color-filter-style';
+
+type GuardrailColorFilter = 'full-color' | 'greyscale' | 'redscale';
+type ContentSyncState = {
+  settings?: {
+    frivolityDomains?: string[];
+    guardrailColorFilter?: GuardrailColorFilter;
+    alwaysGreyscale?: boolean;
+  };
+  sessions?: Record<string, {
+    domain?: string;
+    mode?: 'metered' | 'pack' | 'emergency' | 'store';
+    colorFilter?: GuardrailColorFilter;
+    remainingSeconds?: number;
+    paused?: boolean;
+    allowedUrl?: string;
+  }>;
+};
+
+function normalizeDomain(domain: string | null | undefined) {
+  if (!domain) return null;
+  const value = domain.trim().toLowerCase().replace(/^www\./, '');
+  if (!value) return null;
+  const aliasMap: Record<string, string> = {
+    'x.com': 'twitter.com',
+    'mobile.twitter.com': 'twitter.com',
+    'm.youtube.com': 'youtube.com',
+    'web.whatsapp.com': 'whatsapp.com',
+    'wa.me': 'whatsapp.com',
+    'web.telegram.org': 'telegram.org'
+  };
+  return aliasMap[value] ?? value;
+}
+
+function normalizeGuardrailFilter(value: unknown): GuardrailColorFilter {
+  return value === 'greyscale' || value === 'redscale' || value === 'full-color' ? value : 'full-color';
+}
+
+function getCurrentDomain() {
+  try {
+    return normalizeDomain(new URL(window.location.href).hostname);
+  } catch {
+    return null;
+  }
+}
+
+function matchesDomain(candidate: string | null | undefined, actual: string | null | undefined) {
+  const left = normalizeDomain(candidate);
+  const right = normalizeDomain(actual);
+  if (!left || !right) return false;
+  return right === left || right.endsWith(`.${left}`);
+}
+
+function toBaseUrl(url: string | null | undefined) {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+function findActiveSessionForDomain(state: ContentSyncState, domain: string | null) {
+  if (!domain) return null;
+  const sessions = state.sessions ?? {};
+  for (const [key, session] of Object.entries(sessions)) {
+    const sessionDomain = session?.domain ?? key;
+    if (!matchesDomain(sessionDomain, domain)) continue;
+    if (session?.paused) continue;
+    if (session?.allowedUrl) {
+      const expected = toBaseUrl(session.allowedUrl);
+      const current = toBaseUrl(window.location.href);
+      if (!expected || !current || expected !== current) continue;
+    }
+    if (session?.mode === 'metered' || session?.mode === 'store') return session;
+    if (typeof session?.remainingSeconds === 'number' && session.remainingSeconds > 0) return session;
+  }
+  return null;
+}
+
+function isFrivolousDomain(state: ContentSyncState, domain: string | null) {
+  if (!domain) return false;
+  const list = state.settings?.frivolityDomains ?? [];
+  return list.some((entry) => matchesDomain(entry, domain));
+}
+
+function applyGuardrailFilter(mode: GuardrailColorFilter) {
+  const existing = document.getElementById(COLOR_FILTER_STYLE_ID) as HTMLStyleElement | null;
+  if (mode === 'full-color') {
+    existing?.remove();
+    return;
+  }
+
+  const css = mode === 'redscale'
+    ? 'html { filter: grayscale(1) sepia(1) saturate(4) hue-rotate(-35deg) brightness(0.92) contrast(1.08) !important; }'
+    : 'html { filter: grayscale(1) !important; }';
+  if (existing) {
+    existing.textContent = css;
+    return;
+  }
+  const style = document.createElement('style');
+  style.id = COLOR_FILTER_STYLE_ID;
+  style.textContent = css;
+  document.documentElement.appendChild(style);
+}
+
+async function refreshGuardrailFilter() {
+  if (contextInvalidated || !isContextValid()) return;
+  try {
+    const result = await chrome.storage.local.get('state');
+    const state = (result?.state ?? {}) as ContentSyncState;
+    const alwaysGreyscale = Boolean(state.settings?.alwaysGreyscale);
+    if (alwaysGreyscale) {
+      applyGuardrailFilter('greyscale');
+      return;
+    }
+    const domain = getCurrentDomain();
+    if (!isFrivolousDomain(state, domain)) {
+      applyGuardrailFilter('full-color');
+      return;
+    }
+    const session = findActiveSessionForDomain(state, domain);
+    if (!session) {
+      applyGuardrailFilter('full-color');
+      return;
+    }
+    const fallback = normalizeGuardrailFilter(state.settings?.guardrailColorFilter);
+    const mode = normalizeGuardrailFilter(session.colorFilter ?? fallback);
+    applyGuardrailFilter(mode);
+  } catch {
+    // Ignore filter sync failures.
+  }
+}
 
 function isContextValid() {
   try {
@@ -165,9 +307,44 @@ function startHeartbeat() {
 }
 
 startHeartbeat();
+void refreshGuardrailFilter();
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') sendHeartbeat();
+  if (document.visibilityState === 'visible') {
+    sendHeartbeat();
+    void refreshGuardrailFilter();
+  }
 });
+window.addEventListener('focus', () => {
+  void refreshGuardrailFilter();
+});
+window.addEventListener('hashchange', () => {
+  void refreshGuardrailFilter();
+});
+window.addEventListener('popstate', () => {
+  void refreshGuardrailFilter();
+});
+
+const originalPushState = history.pushState.bind(history);
+history.pushState = function pushState(...args: Parameters<History['pushState']>) {
+  const result = originalPushState(...args);
+  void refreshGuardrailFilter();
+  return result;
+};
+const originalReplaceState = history.replaceState.bind(history);
+history.replaceState = function replaceState(...args: Parameters<History['replaceState']>) {
+  const result = originalReplaceState(...args);
+  void refreshGuardrailFilter();
+  return result;
+};
+
+try {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local') return;
+    if (changes.state) void refreshGuardrailFilter();
+  });
+} catch {
+  contextInvalidated = true;
+}
 
 function sendUserActivity(kind: string) {
   if (contextInvalidated || !isContextValid()) return;
@@ -212,12 +389,15 @@ try {
     }
     if (message.type === 'BLOCK_SCREEN') {
       mountOverlay(message.payload.domain, message.payload.reason, message.payload.peek);
+      void refreshGuardrailFilter();
     }
     if (message.type === 'POMODORO_BLOCK') {
       mountPomodoroOverlay(message.payload);
+      void refreshGuardrailFilter();
     }
     if (message.type === 'DAILY_ONBOARDING') {
       mountDailyOnboarding(message.payload.domain, message.payload.forced);
+      void refreshGuardrailFilter();
     }
     if (message.type === 'SESSION_FADE') {
       handleSessionFade(message.payload);
@@ -315,6 +495,7 @@ async function mountOverlay(domain: string, reason?: string, peek?: { allowed: b
     host.remove();
     document.body.style.overflow = '';
     removePageHide();
+    void refreshGuardrailFilter();
   };
   const renderOverlay = (status: StatusResponse) => {
     if (closed) return;
@@ -423,6 +604,7 @@ async function mountDailyOnboarding(domain: string, forced?: boolean) {
     host.remove();
     document.body.style.overflow = '';
     removePageHide();
+    void refreshGuardrailFilter();
   };
 
   const renderOverlay = (status: StatusResponse) => {
@@ -492,6 +674,7 @@ function mountPomodoroOverlay(payload: PomodoroBlockMessage['payload']) {
     host.remove();
     document.body.style.overflow = '';
     removePageHide();
+    void refreshGuardrailFilter();
   };
 }
 

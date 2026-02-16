@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import type {
   CameraPhoto,
   EmergencyPolicyId,
+  GuardrailColorFilter,
   JournalConfig,
   PeekConfig,
   RendererApi,
@@ -95,6 +96,8 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
   const [resetBusy, setResetBusy] = useState(false);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
   const [cameraModeEnabled, setCameraModeEnabled] = useState(false);
+  const [guardrailColorFilter, setGuardrailColorFilter] = useState<GuardrailColorFilter>('full-color');
+  const [alwaysGreyscale, setAlwaysGreyscale] = useState(false);
   const [cameraPhotos, setCameraPhotos] = useState<CameraPhoto[]>([]);
   const [cameraLoading, setCameraLoading] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -124,6 +127,8 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
       setExcludedKeywordsText((keywords ?? []).join('\n'));
     }).catch(() => { });
     api.settings.cameraModeEnabled().then(setCameraModeEnabled).catch(() => { });
+    api.settings.guardrailColorFilter().then(setGuardrailColorFilter).catch(() => { });
+    api.settings.alwaysGreyscale().then(setAlwaysGreyscale).catch(() => { });
     api.integrations.zotero.config().then(setZoteroConfig).catch(() => { });
   }, [api.settings, api.integrations.zotero]);
 
@@ -234,6 +239,8 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
       await api.settings.updateContinuityWindowSeconds(continuityWindowSeconds);
       await api.settings.updateProductivityGoalHours(productivityGoalHours);
       await api.settings.updateCameraModeEnabled(cameraModeEnabled);
+      await api.settings.updateGuardrailColorFilter(guardrailColorFilter);
+      await api.settings.updateAlwaysGreyscale(alwaysGreyscale);
       await api.integrations.zotero.updateConfig(zoteroConfig);
       setSaved(true);
       window.setTimeout(() => setSaved(false), 2000);
@@ -606,6 +613,39 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
                     <span className="subtle">Allow peek on new pages</span>
                   </label>
                 </div>
+              </div>
+
+              <div className="card settings-section">
+                <div className="settings-section-header">
+                  <h3>Guardrails: color filters</h3>
+                  <p className="subtle">Make frivolity visually and economically cheaper when filtered.</p>
+                </div>
+                <div className="settings-row">
+                  <label>
+                    Frivolity color filter
+                    <select
+                      value={guardrailColorFilter}
+                      onChange={(e) => setGuardrailColorFilter(e.target.value as GuardrailColorFilter)}
+                    >
+                      <option value="full-color">Full color (standard cost)</option>
+                      <option value="greyscale">Greyscale (cheaper)</option>
+                      <option value="redscale">Redscale (cheaper)</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="settings-inline">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={alwaysGreyscale}
+                      onChange={(e) => setAlwaysGreyscale(e.target.checked)}
+                    />
+                    <span className="subtle">Always greyscale (global override)</span>
+                  </label>
+                </div>
+                <p className="subtle" style={{ margin: 0 }}>
+                  Pricing applies when starting new frivolity sessions.
+                </p>
               </div>
 
               <div className="card settings-section">

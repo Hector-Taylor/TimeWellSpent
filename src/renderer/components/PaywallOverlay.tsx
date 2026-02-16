@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { MarketRate, RendererApi, WalletSnapshot } from '@shared/types';
+import SudokuChallenge from './SudokuChallenge';
 
 interface PaywallOverlayProps {
   open: boolean;
@@ -18,6 +19,8 @@ interface PaywallOverlayProps {
 }
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+const SUDOKU_REQUIRED_SQUARES = 12;
+const SUDOKU_PASS_MINUTES = 12;
 
 export default function PaywallOverlay({ open, state, wallet, api, marketRates, onWallet, onClose }: PaywallOverlayProps) {
   const [loading, setLoading] = useState(false);
@@ -74,6 +77,26 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
     setError(null);
     try {
       await api.paywall.buyPack(state.domain, minutes);
+      const snapshot = await api.wallet.get();
+      onWallet(snapshot);
+      onClose();
+    } catch (error) {
+      console.error(error);
+      setError((error as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function unlockViaSudoku(correctSquares: number) {
+    if (!state) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await api.paywall.startChallengePass(state.domain, {
+        durationSeconds: SUDOKU_PASS_MINUTES * 60,
+        solvedSquares: correctSquares
+      });
       const snapshot = await api.wallet.get();
       onWallet(snapshot);
       onClose();
@@ -240,6 +263,18 @@ export default function PaywallOverlay({ open, state, wallet, api, marketRates, 
               );
             })}
           </div>
+        </section>
+        <section className="paywall-section challenge-section">
+          <div className="eyebrow">Free unlock (game gate)</div>
+          <SudokuChallenge
+            puzzleKey={state.domain}
+            title="Hard Sudoku checkpoint"
+            subtitle={`Solve ${SUDOKU_REQUIRED_SQUARES} correct squares to earn a ${SUDOKU_PASS_MINUTES}-minute free pass.`}
+            requiredCorrect={SUDOKU_REQUIRED_SQUARES}
+            unlockLabel={`Claim ${SUDOKU_PASS_MINUTES}-minute free pass`}
+            onUnlock={({ correctSquares }) => unlockViaSudoku(correctSquares)}
+            disabled={loading}
+          />
         </section>
         {typeof state.remainingSeconds === 'number' && state.remainingSeconds > 0 && (
           <p className="subtle">Remaining: {Math.round(state.remainingSeconds / 60)} min</p>

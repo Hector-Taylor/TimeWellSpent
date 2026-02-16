@@ -74,6 +74,7 @@ export type PendingActivityEvent = {
 export interface PaywallSession {
     domain: string;
     mode: 'metered' | 'pack' | 'emergency' | 'store';
+    colorFilter?: 'full-color' | 'greyscale' | 'redscale';
     ratePerMin: number;
     remainingSeconds: number;
     startedAt: number;
@@ -152,6 +153,13 @@ export type DailyOnboardingState = {
     note: DailyOnboardingNote | null;
 };
 
+export type ReflectionSlideshowSettings = {
+    enabled: boolean;
+    lookbackDays: number;
+    intervalMs: number;
+    maxPhotos: number;
+};
+
 export interface ExtensionState {
     wallet: {
         balance: number;
@@ -177,6 +185,12 @@ export interface ExtensionState {
         continuityWindowSeconds?: number;
         productivityGoalHours?: number;
         cameraModeEnabled?: boolean;
+        guardrailColorFilter?: 'full-color' | 'greyscale' | 'redscale';
+        alwaysGreyscale?: boolean;
+        reflectionSlideshowEnabled?: boolean;
+        reflectionSlideshowLookbackDays?: number;
+        reflectionSlideshowIntervalMs?: number;
+        reflectionSlideshowMaxPhotos?: number;
     };
     dailyOnboarding: DailyOnboardingState;
     pendingDailyOnboarding?: {
@@ -295,7 +309,13 @@ const DEFAULT_STATE: ExtensionState = {
         spendGuardEnabled: true,
         continuityWindowSeconds: 120,
         productivityGoalHours: 2,
-        cameraModeEnabled: false
+        cameraModeEnabled: false,
+        guardrailColorFilter: 'full-color',
+        alwaysGreyscale: false,
+        reflectionSlideshowEnabled: true,
+        reflectionSlideshowLookbackDays: 1,
+        reflectionSlideshowIntervalMs: 2400,
+        reflectionSlideshowMaxPhotos: 18
     },
     dailyOnboarding: {
         completedDay: null,
@@ -343,6 +363,9 @@ const DEFAULT_STATE: ExtensionState = {
 const MAX_PENDING_WALLET_TRANSACTIONS = 1000;
 const MAX_PENDING_CONSUMPTION_EVENTS = 1000;
 const MAX_PENDING_ACTIVITY_EVENTS = 2400;
+const REFLECTION_LOOKBACK_DAYS_RANGE = { min: 1, max: 14 };
+const REFLECTION_INTERVAL_MS_RANGE = { min: 1200, max: 10000 };
+const REFLECTION_MAX_PHOTOS_RANGE = { min: 4, max: 40 };
 
 function normalizePaywallSession(
     session: Partial<PaywallSession>,
@@ -380,6 +403,25 @@ function maxDayString(a: string | null | undefined, b: string | null | undefined
     if (!left) return right;
     if (!right) return left;
     return left >= right ? left : right;
+}
+
+function normalizeReflectionSlideshowSettings(raw: Partial<ReflectionSlideshowSettings> | null | undefined): ReflectionSlideshowSettings {
+    const enabled = typeof raw?.enabled === 'boolean'
+        ? raw.enabled
+        : DEFAULT_STATE.settings.reflectionSlideshowEnabled ?? true;
+    const lookbackInput = Number(raw?.lookbackDays);
+    const intervalInput = Number(raw?.intervalMs);
+    const maxPhotosInput = Number(raw?.maxPhotos);
+    const lookbackDays = Number.isFinite(lookbackInput)
+        ? Math.max(REFLECTION_LOOKBACK_DAYS_RANGE.min, Math.min(REFLECTION_LOOKBACK_DAYS_RANGE.max, Math.round(lookbackInput)))
+        : (DEFAULT_STATE.settings.reflectionSlideshowLookbackDays ?? 1);
+    const intervalMs = Number.isFinite(intervalInput)
+        ? Math.max(REFLECTION_INTERVAL_MS_RANGE.min, Math.min(REFLECTION_INTERVAL_MS_RANGE.max, Math.round(intervalInput)))
+        : (DEFAULT_STATE.settings.reflectionSlideshowIntervalMs ?? 2400);
+    const maxPhotos = Number.isFinite(maxPhotosInput)
+        ? Math.max(REFLECTION_MAX_PHOTOS_RANGE.min, Math.min(REFLECTION_MAX_PHOTOS_RANGE.max, Math.round(maxPhotosInput)))
+        : (DEFAULT_STATE.settings.reflectionSlideshowMaxPhotos ?? 18);
+    return { enabled, lookbackDays, intervalMs, maxPhotos };
 }
 
 function mergeDailyOnboardingState(
@@ -447,6 +489,26 @@ class ExtensionStorage {
         if (typeof this.state.settings.cameraModeEnabled !== 'boolean') {
             this.state.settings.cameraModeEnabled = false;
         }
+        if (
+            this.state.settings.guardrailColorFilter !== 'full-color' &&
+            this.state.settings.guardrailColorFilter !== 'greyscale' &&
+            this.state.settings.guardrailColorFilter !== 'redscale'
+        ) {
+            this.state.settings.guardrailColorFilter = 'full-color';
+        }
+        if (typeof this.state.settings.alwaysGreyscale !== 'boolean') {
+            this.state.settings.alwaysGreyscale = false;
+        }
+        const reflection = normalizeReflectionSlideshowSettings({
+            enabled: this.state.settings.reflectionSlideshowEnabled,
+            lookbackDays: this.state.settings.reflectionSlideshowLookbackDays,
+            intervalMs: this.state.settings.reflectionSlideshowIntervalMs,
+            maxPhotos: this.state.settings.reflectionSlideshowMaxPhotos
+        });
+        this.state.settings.reflectionSlideshowEnabled = reflection.enabled;
+        this.state.settings.reflectionSlideshowLookbackDays = reflection.lookbackDays;
+        this.state.settings.reflectionSlideshowIntervalMs = reflection.intervalMs;
+        this.state.settings.reflectionSlideshowMaxPhotos = reflection.maxPhotos;
         if (!this.state.settings.journal || typeof this.state.settings.journal !== 'object') {
             this.state.settings.journal = { url: null, minutes: 10 };
         } else {
@@ -891,6 +953,64 @@ class ExtensionStorage {
         this.state!.settings.cameraModeEnabled = Boolean(enabled);
         await this.save();
         return this.state!.settings.cameraModeEnabled;
+    }
+
+    async getGuardrailColorFilter(): Promise<'full-color' | 'greyscale' | 'redscale'> {
+        if (!this.state) await this.init();
+        const mode = this.state!.settings.guardrailColorFilter;
+        if (mode === 'full-color' || mode === 'greyscale' || mode === 'redscale') return mode;
+        return 'full-color';
+    }
+
+    async setGuardrailColorFilter(mode: 'full-color' | 'greyscale' | 'redscale') {
+        if (!this.state) await this.init();
+        if (mode !== 'full-color' && mode !== 'greyscale' && mode !== 'redscale') {
+            return this.getGuardrailColorFilter();
+        }
+        this.state!.settings.guardrailColorFilter = mode;
+        await this.save();
+        return this.state!.settings.guardrailColorFilter;
+    }
+
+    async getAlwaysGreyscale(): Promise<boolean> {
+        if (!this.state) await this.init();
+        return Boolean(this.state!.settings.alwaysGreyscale);
+    }
+
+    async setAlwaysGreyscale(enabled: boolean) {
+        if (!this.state) await this.init();
+        this.state!.settings.alwaysGreyscale = Boolean(enabled);
+        await this.save();
+        return this.state!.settings.alwaysGreyscale;
+    }
+
+    async getReflectionSlideshowSettings(): Promise<ReflectionSlideshowSettings> {
+        if (!this.state) await this.init();
+        return normalizeReflectionSlideshowSettings({
+            enabled: this.state!.settings.reflectionSlideshowEnabled,
+            lookbackDays: this.state!.settings.reflectionSlideshowLookbackDays,
+            intervalMs: this.state!.settings.reflectionSlideshowIntervalMs,
+            maxPhotos: this.state!.settings.reflectionSlideshowMaxPhotos
+        });
+    }
+
+    async updateReflectionSlideshowSettings(
+        patch: Partial<ReflectionSlideshowSettings>
+    ): Promise<ReflectionSlideshowSettings> {
+        if (!this.state) await this.init();
+        const current = await this.getReflectionSlideshowSettings();
+        const next = normalizeReflectionSlideshowSettings({
+            enabled: patch.enabled ?? current.enabled,
+            lookbackDays: patch.lookbackDays ?? current.lookbackDays,
+            intervalMs: patch.intervalMs ?? current.intervalMs,
+            maxPhotos: patch.maxPhotos ?? current.maxPhotos
+        });
+        this.state!.settings.reflectionSlideshowEnabled = next.enabled;
+        this.state!.settings.reflectionSlideshowLookbackDays = next.lookbackDays;
+        this.state!.settings.reflectionSlideshowIntervalMs = next.intervalMs;
+        this.state!.settings.reflectionSlideshowMaxPhotos = next.maxPhotos;
+        await this.save();
+        return next;
     }
 
     async getSession(domain: string): Promise<PaywallSession | null> {

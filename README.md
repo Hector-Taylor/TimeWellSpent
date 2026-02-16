@@ -23,6 +23,19 @@ If you want the extension + desktop together (Annika: easiest launch), run:
 pnpm dev:ext & pnpm dev
 ```
 
+## Web homepage (browser)
+
+Run the desktop app first (`pnpm dev`) so the local API is available, then in a second terminal:
+
+```bash
+pnpm dev:web
+```
+
+Open:
+
+- `http://127.0.0.1:5174/home.html` (new web homepage)
+- `http://127.0.0.1:5174/` (existing renderer entry)
+
 The desktop app logs the local API at `http://127.0.0.1:17600` and the SQLite path under `~/Library/Application Support/TimeWellSpent/`.
 
 ## Optional Chrome extension

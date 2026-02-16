@@ -124,6 +124,37 @@ export function createSettingsRoutes(ctx: SettingsRoutesContext): Router {
         }
     });
 
+    router.get('/guardrail-color-filter', (_req, res) => {
+        res.json({ mode: settings.getGuardrailColorFilter() });
+    });
+
+    router.post('/guardrail-color-filter', (req, res) => {
+        try {
+            const { mode } = req.body as { mode?: string };
+            if (mode !== 'full-color' && mode !== 'greyscale' && mode !== 'redscale') {
+                throw new Error('Invalid color filter mode');
+            }
+            settings.setGuardrailColorFilter(mode);
+            res.json({ ok: true });
+        } catch (error) {
+            res.status(400).json({ error: (error as Error).message });
+        }
+    });
+
+    router.get('/always-greyscale', (_req, res) => {
+        res.json({ enabled: settings.getAlwaysGreyscale() });
+    });
+
+    router.post('/always-greyscale', (req, res) => {
+        try {
+            const { enabled } = req.body as { enabled?: boolean };
+            settings.setAlwaysGreyscale(Boolean(enabled));
+            res.json({ ok: true });
+        } catch (error) {
+            res.status(400).json({ error: (error as Error).message });
+        }
+    });
+
     router.get('/daily-onboarding', (_req, res) => {
         res.json(settings.getDailyOnboardingState());
     });
@@ -213,6 +244,7 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
             const sessionsRecord = paywall.listSessions().reduce<Record<string, {
                 domain: string;
                 mode: 'metered' | 'pack' | 'emergency' | 'store';
+                colorFilter?: 'full-color' | 'greyscale' | 'redscale';
                 ratePerMin: number;
                 remainingSeconds: number;
                 startedAt?: number;
@@ -230,6 +262,7 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
                 acc[session.domain] = {
                     domain: session.domain,
                     mode: session.mode,
+                    colorFilter: session.colorFilter,
                     ratePerMin: session.ratePerMin,
                     remainingSeconds: session.remainingSeconds,
                     startedAt: session.startedAt,
@@ -278,7 +311,9 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
                     dailyWalletResetEnabled: settings.getDailyWalletResetEnabled(),
                     continuityWindowSeconds: settings.getContinuityWindowSeconds(),
                     productivityGoalHours: settings.getProductivityGoalHours(),
-                    cameraModeEnabled: settings.getCameraModeEnabled()
+                    cameraModeEnabled: settings.getCameraModeEnabled(),
+                    guardrailColorFilter: settings.getGuardrailColorFilter(),
+                    alwaysGreyscale: settings.getAlwaysGreyscale()
                 },
                 sessions: sessionsRecord
             });

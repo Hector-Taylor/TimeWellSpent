@@ -6,6 +6,7 @@ import PaywallOverlay from './components/PaywallOverlay';
 import Library from './components/Library';
 import Friends from './components/Friends';
 import Profile from './components/Profile';
+import Games from './components/Games';
 import CameraCapture from './components/CameraCapture';
 import { DailyOnboardingModal, DailyNoteModal } from './components/DailyOnboardingModal';
 import type {
@@ -19,8 +20,8 @@ import type {
 
 const api: RendererApi = window.twsp;
 
-type View = 'dashboard' | 'library' | 'analytics' | 'settings' | 'friends' | 'profile';
-const VIEW_LIST: View[] = ['dashboard', 'library', 'analytics', 'settings', 'friends', 'profile'];
+type View = 'dashboard' | 'library' | 'games' | 'analytics' | 'settings' | 'friends' | 'profile';
+const VIEW_LIST: View[] = ['dashboard', 'library', 'games', 'analytics', 'settings', 'friends', 'profile'];
 const isView = (value: string): value is View => VIEW_LIST.includes(value as View);
 
 const DAILY_START_HOUR = 4;
@@ -327,6 +328,12 @@ export default function App() {
             Library
           </button>
           <button
+            className={view === 'games' ? 'active' : ''}
+            onClick={() => setView('games')}
+          >
+            Games
+          </button>
+          <button
             className={view === 'settings' ? 'active' : ''}
             onClick={() => setView('settings')}
           >
@@ -385,6 +392,9 @@ export default function App() {
         )}
         {view === 'library' && (
           <Library api={api} />
+        )}
+        {view === 'games' && (
+          <Games wallet={wallet} />
         )}
         {view === 'friends' && (
           <Friends api={api} />

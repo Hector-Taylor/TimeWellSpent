@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import type { ActivityCategory, MarketRate } from '@shared/types';
+import type { ActivityCategory, GuardrailColorFilter, MarketRate } from '@shared/types';
 import type { WalletManager } from './wallet';
 import type { MarketService } from './market';
 import type { PaywallManager } from './paywall';
@@ -21,6 +21,15 @@ const DEFAULT_RATES: EconomyRateGetters = {
   getSpendIntervalSeconds: () => 15
 };
 const METERED_PREMIUM_MULTIPLIER = 3.5;
+const COLOR_FILTER_PRICE_MULTIPLIER: Record<GuardrailColorFilter, number> = {
+  'full-color': 1,
+  greyscale: 0.55,
+  redscale: 0.7
+};
+
+function getColorFilterPriceMultiplier(filter: GuardrailColorFilter): number {
+  return COLOR_FILTER_PRICE_MULTIPLIER[filter] ?? 1;
+}
 
 function packChainMultiplier(chainCount: number) {
   if (chainCount <= 0) return 1;
@@ -225,10 +234,13 @@ export class EconomyEngine extends EventEmitter {
     return this.state;
   }
 
-  startPayAsYouGo(domain: string) {
+  startPayAsYouGo(domain: string, options?: { colorFilter?: GuardrailColorFilter }) {
     const rate = this.ensureRate(domain);
-    const effectiveRate = rate.ratePerMin * METERED_PREMIUM_MULTIPLIER;
-    const session = this.paywall.startMetered(domain, effectiveRate, METERED_PREMIUM_MULTIPLIER);
+    const colorFilter = options?.colorFilter ?? 'full-color';
+    const colorMultiplier = getColorFilterPriceMultiplier(colorFilter);
+    const meteredMultiplier = METERED_PREMIUM_MULTIPLIER * colorMultiplier;
+    const effectiveRate = rate.ratePerMin * meteredMultiplier;
+    const session = this.paywall.startMetered(domain, effectiveRate, meteredMultiplier, colorFilter);
     return session;
   }
 
@@ -238,19 +250,22 @@ export class EconomyEngine extends EventEmitter {
     return session;
   }
 
-  buyPack(domain: string, minutes: number) {
+  buyPack(domain: string, minutes: number, options?: { colorFilter?: GuardrailColorFilter }) {
     const safeMinutes = Math.max(1, Math.round(minutes));
     const rate = this.ensureRate(domain);
+    const colorFilter = options?.colorFilter ?? 'full-color';
+    const colorMultiplier = getColorFilterPriceMultiplier(colorFilter);
     const pack = rate.packs.find((p) => p.minutes === safeMinutes);
     const basePrice = pack ? pack.price : Math.max(1, Math.round(safeMinutes * rate.ratePerMin));
     const current = this.paywall.getSession(domain);
     const chainCount = current?.mode === 'pack' ? (current.packChainCount ?? 1) : 0;
     const multiplier = packChainMultiplier(chainCount);
-    const price = Math.max(1, Math.round(basePrice * multiplier));
+    const effectiveRatePerMin = rate.ratePerMin * colorMultiplier;
+    const price = Math.max(1, Math.round(basePrice * multiplier * colorMultiplier));
     if (!pack) {
       logger.info(`Creating ad-hoc pack for ${domain} (${safeMinutes} minutes @ ${price} coins, chain x${multiplier})`);
     }
-    return this.paywall.buyPack(domain, safeMinutes, price);
+    return this.paywall.buyPack(domain, safeMinutes, price, { colorFilter, effectiveRatePerMin });
   }
 
   startStore(domain: string, price: number, url?: string) {

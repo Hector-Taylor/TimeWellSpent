@@ -1,11 +1,13 @@
 import { EventEmitter } from 'node:events';
 import type { MarketService } from './market';
 import type { WalletManager } from './wallet';
+import type { GuardrailColorFilter } from '@shared/types';
 import { logger } from '@shared/logger';
 
 export type PaywallSession = {
   domain: string;
   mode: 'metered' | 'pack' | 'emergency' | 'store';
+  colorFilter?: GuardrailColorFilter;
   ratePerMin: number;
   remainingSeconds: number;
   lastTick: number;
@@ -93,13 +95,14 @@ export class PaywallManager extends EventEmitter {
     return session;
   }
 
-  startMetered(domain: string, ratePerMin?: number, meteredMultiplier = 1) {
+  startMetered(domain: string, ratePerMin?: number, meteredMultiplier = 1, colorFilter: GuardrailColorFilter = 'full-color') {
     const rate = this.market.getRate(domain);
     if (!rate) throw new Error(`No market rate configured for ${domain}`);
     const effectiveRate = Number.isFinite(ratePerMin as number) ? Number(ratePerMin) : rate.ratePerMin;
     const session: PaywallSession = {
       domain,
       mode: 'metered',
+      colorFilter,
       ratePerMin: effectiveRate,
       remainingSeconds: Infinity,
       lastTick: Date.now(),
@@ -138,7 +141,7 @@ export class PaywallManager extends EventEmitter {
     return session;
   }
 
-  buyPack(domain: string, minutes: number, price: number) {
+  buyPack(domain: string, minutes: number, price: number, options?: { colorFilter?: GuardrailColorFilter; effectiveRatePerMin?: number }) {
     const rate = this.market.getRate(domain);
     if (!rate) throw new Error(`No market rate configured for ${domain}`);
     const now = Date.now();
@@ -147,11 +150,16 @@ export class PaywallManager extends EventEmitter {
     this.emit('wallet-update', this.wallet.getSnapshot());
     const purchasedSeconds = minutes * 60;
     const existingPack = existing?.mode === 'pack' ? existing : null;
+    const colorFilter = options?.colorFilter ?? existingPack?.colorFilter ?? 'full-color';
+    const effectiveRatePerMin = Number.isFinite(options?.effectiveRatePerMin as number)
+      ? Number(options?.effectiveRatePerMin)
+      : rate.ratePerMin;
     const session: PaywallSession = existingPack
       ? {
         ...existingPack,
         mode: 'pack',
-        ratePerMin: rate.ratePerMin,
+        colorFilter,
+        ratePerMin: effectiveRatePerMin,
         remainingSeconds: Math.max(0, existingPack.remainingSeconds) + purchasedSeconds,
         lastTick: now,
         paused: false,
@@ -163,7 +171,8 @@ export class PaywallManager extends EventEmitter {
       : {
         domain,
         mode: 'pack',
-        ratePerMin: rate.ratePerMin,
+        colorFilter,
+        ratePerMin: effectiveRatePerMin,
         remainingSeconds: purchasedSeconds,
         lastTick: now,
         startedAt: now,

@@ -59,6 +59,7 @@ const api: RendererApi = {
   paywall: {
     startMetered: (domain) => ipcRenderer.invoke('paywall:start-metered', { domain }),
     buyPack: (domain, minutes) => ipcRenderer.invoke('paywall:buy-pack', { domain, minutes }),
+    startChallengePass: (domain, options) => ipcRenderer.invoke('paywall:start-challenge-pass', { domain, ...options }),
     decline: (domain) => ipcRenderer.invoke('paywall:decline', { domain }),
     cancelPack: (domain) => ipcRenderer.invoke('paywall:cancel-pack', { domain }),
     end: (domain, options) => ipcRenderer.invoke('paywall:end', { domain, refundUnused: options?.refundUnused }),
@@ -97,6 +98,10 @@ const api: RendererApi = {
     updateProductivityGoalHours: (value) => ipcRenderer.invoke('settings:update-productivity-goal-hours', value),
     cameraModeEnabled: () => ipcRenderer.invoke('settings:camera-mode'),
     updateCameraModeEnabled: (value) => ipcRenderer.invoke('settings:update-camera-mode', value),
+    guardrailColorFilter: () => ipcRenderer.invoke('settings:guardrail-color-filter'),
+    updateGuardrailColorFilter: (value) => ipcRenderer.invoke('settings:update-guardrail-color-filter', value),
+    alwaysGreyscale: () => ipcRenderer.invoke('settings:always-greyscale'),
+    updateAlwaysGreyscale: (value) => ipcRenderer.invoke('settings:update-always-greyscale', value),
     dailyOnboardingState: () => ipcRenderer.invoke('settings:daily-onboarding'),
     updateDailyOnboardingState: (value) => ipcRenderer.invoke('settings:update-daily-onboarding', value)
   },

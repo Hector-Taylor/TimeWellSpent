@@ -10,3 +10,4 @@ export { createSettingsRoutes, createExtensionSyncRoutes, type SettingsRoutesCon
 export { createActionsRoutes, createUiRoutes, createIntegrationsRoutes, type ActionsRoutesContext } from './actions';
 export { createFriendsRoutes } from './friends';
 export { createTrophyRoutes } from './trophies';
+export { createCameraRoutes } from './camera';

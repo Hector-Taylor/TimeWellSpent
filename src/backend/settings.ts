@@ -2,6 +2,7 @@ import type { Statement } from 'better-sqlite3';
 import type { Database } from './storage';
 import type { CategorisationConfig } from '@shared/types';
 import type { DailyOnboardingState, DailyOnboardingNote, EmergencyPolicyId, PeekConfig } from '@shared/types';
+import type { GuardrailColorFilter } from '@shared/types';
 import { DEFAULT_CATEGORISATION, DEFAULT_IDLE_THRESHOLD_SECONDS } from './defaults';
 import type { FriendEntry, FriendIdentity, FriendFeedSummary } from '@shared/types';
 import type { ZoteroIntegrationConfig } from '@shared/types';
@@ -374,6 +375,27 @@ export class SettingsService {
 
   setCameraModeEnabled(value: boolean) {
     this.setJson('cameraModeEnabled', Boolean(value));
+  }
+
+  getGuardrailColorFilter(): GuardrailColorFilter {
+    const val = this.getJson<GuardrailColorFilter>('guardrailColorFilter');
+    if (val === 'full-color' || val === 'greyscale' || val === 'redscale') return val;
+    return 'full-color';
+  }
+
+  setGuardrailColorFilter(value: GuardrailColorFilter) {
+    if (value !== 'full-color' && value !== 'greyscale' && value !== 'redscale') {
+      throw new Error('Invalid color filter mode');
+    }
+    this.setJson('guardrailColorFilter', value);
+  }
+
+  getAlwaysGreyscale(): boolean {
+    return this.getBoolean('alwaysGreyscale', false);
+  }
+
+  setAlwaysGreyscale(value: boolean) {
+    this.setJson('alwaysGreyscale', Boolean(value));
   }
 
   getDailyOnboardingState(): DailyOnboardingState {

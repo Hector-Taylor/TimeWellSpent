@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
@@ -34,8 +35,22 @@ const execFileAsync = promisify(execFile);
 
 async function isChromeRunning() {
   try {
-    await execFileAsync('pgrep', ['-x', 'Google Chrome']);
-    return true;
+    if (process.platform === 'win32') {
+      const { stdout } = await execFileAsync('tasklist', ['/FI', 'IMAGENAME eq chrome.exe', '/FO', 'CSV', '/NH']);
+      return stdout.toLowerCase().includes('chrome.exe');
+    }
+
+    if (process.platform === 'darwin') {
+      await execFileAsync('pgrep', ['-x', 'Google Chrome']);
+      return true;
+    }
+
+    if (process.platform === 'linux') {
+      await execFileAsync('pgrep', ['-f', '(google-chrome|chrome)']);
+      return true;
+    }
+
+    return false;
   } catch {
     return false;
   }
@@ -86,7 +101,17 @@ async function createWindow() {
     mainWindow.show(); // Force show for debugging
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
-    await mainWindow.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
+    const packagedRendererCandidates = [
+      path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
+      path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/src/renderer/index.html`),
+      path.join(__dirname, '../renderer/index.html')
+    ];
+    const packagedRendererPath = packagedRendererCandidates.find((candidate) => existsSync(candidate));
+    if (!packagedRendererPath) {
+      throw new Error(`Packaged renderer entry not found. Checked: ${packagedRendererCandidates.join(', ')}`);
+    }
+    console.log('Loading packaged renderer from:', packagedRendererPath);
+    await mainWindow.loadFile(packagedRendererPath);
     mainWindow.show();
   }
 
@@ -143,8 +168,11 @@ async function bootstrap() {
 
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
     if (permission === 'media') {
-      const wantsVideo = details?.mediaTypes?.includes('video');
-      callback(Boolean(wantsVideo));
+      const mediaTypes = details && 'mediaTypes' in details && Array.isArray(details.mediaTypes)
+        ? details.mediaTypes
+        : [];
+      const wantsVideo = mediaTypes.length === 0 || mediaTypes.includes('video');
+      callback(wantsVideo);
       return;
     }
     callback(false);
@@ -513,12 +541,16 @@ async function bootstrap() {
 
   backend.economy.on('activity', (payload: { activeCategory: string | null; activeDomain: string | null; activeApp: string | null }) => {
     if (!isMac) return;
-    if (payload.activeCategory !== 'frivolity') return;
     if (!backend.settings.getCameraModeEnabled()) return;
+    const activeSession = payload.activeDomain
+      ? backend.paywall.listSessions().find((session) => !session.paused && session.domain === payload.activeDomain)
+      : null;
+    const activeFrivolity = payload.activeCategory === 'frivolity';
+    if (!activeFrivolity && !activeSession) return;
     const now = Date.now();
     if (now - lastCameraCaptureAt < CAMERA_CAPTURE_INTERVAL_MS) return;
-    const subject = payload.activeDomain ?? payload.activeApp ?? null;
-    const domain = payload.activeDomain ?? null;
+    const subject = payload.activeDomain ?? payload.activeApp ?? activeSession?.domain ?? null;
+    const domain = payload.activeDomain ?? activeSession?.domain ?? null;
     const windows = BrowserWindow.getAllWindows();
     if (!windows.length) return;
     windows.forEach((win) => {

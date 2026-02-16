@@ -5,6 +5,7 @@ import type { SyncService } from './sync';
 import type {
   DailyOnboardingState,
   EmergencyPolicyId,
+  GuardrailColorFilter,
   JournalConfig,
   LibraryPurpose,
   PeekConfig,
@@ -132,12 +133,42 @@ export function createIpc(context: IpcContext) {
   });
 
   ipcMain.handle('paywall:start-metered', (_event, payload: { domain: string }) => {
-    return backend.economy.startPayAsYouGo(payload.domain);
+    const colorFilter = backend.settings.getAlwaysGreyscale() ? 'greyscale' : backend.settings.getGuardrailColorFilter();
+    return backend.economy.startPayAsYouGo(payload.domain, { colorFilter });
   });
 
   ipcMain.handle('paywall:buy-pack', (_event, payload: { domain: string; minutes: number }) => {
-    return backend.economy.buyPack(payload.domain, payload.minutes);
+    const colorFilter = backend.settings.getAlwaysGreyscale() ? 'greyscale' : backend.settings.getGuardrailColorFilter();
+    return backend.economy.buyPack(payload.domain, payload.minutes, { colorFilter });
   });
+  ipcMain.handle(
+    'paywall:start-challenge-pass',
+    (_event, payload: { domain: string; durationSeconds?: number; solvedSquares?: number }) => {
+      const domain = payload?.domain?.trim();
+      if (!domain) {
+        throw new Error('Domain is required');
+      }
+      const durationSeconds = Number.isFinite(payload.durationSeconds)
+        ? Math.max(60, Math.min(3600, Math.round(payload.durationSeconds as number)))
+        : 12 * 60;
+      const solvedSquares = Number.isFinite(payload.solvedSquares)
+        ? Math.max(1, Math.round(payload.solvedSquares as number))
+        : null;
+
+      const session = backend.paywall.startEmergency(domain, 'Sudoku challenge unlock', { durationSeconds });
+      backend.consumption.record({
+        kind: 'emergency-session',
+        title: domain,
+        domain,
+        meta: {
+          source: 'sudoku-challenge',
+          durationSeconds,
+          solvedSquares
+        }
+      });
+      return session;
+    }
+  );
 
   ipcMain.handle('paywall:decline', async (_event, payload: { domain: string }) => {
     await backend.declineDomain(payload.domain);
@@ -186,6 +217,10 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('settings:update-productivity-goal-hours', (_event, value: number) => backend.settings.setProductivityGoalHours(value));
   ipcMain.handle('settings:camera-mode', () => backend.settings.getCameraModeEnabled());
   ipcMain.handle('settings:update-camera-mode', (_event, value: boolean) => backend.settings.setCameraModeEnabled(Boolean(value)));
+  ipcMain.handle('settings:guardrail-color-filter', () => backend.settings.getGuardrailColorFilter());
+  ipcMain.handle('settings:update-guardrail-color-filter', (_event, value: GuardrailColorFilter) => backend.settings.setGuardrailColorFilter(value));
+  ipcMain.handle('settings:always-greyscale', () => backend.settings.getAlwaysGreyscale());
+  ipcMain.handle('settings:update-always-greyscale', (_event, value: boolean) => backend.settings.setAlwaysGreyscale(Boolean(value)));
   ipcMain.handle('settings:daily-onboarding', () => backend.settings.getDailyOnboardingState());
   ipcMain.handle('settings:update-daily-onboarding', (_event, value: Partial<DailyOnboardingState>) => backend.settings.updateDailyOnboardingState(value));
 
