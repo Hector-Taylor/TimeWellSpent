@@ -774,7 +774,20 @@ class ExtensionStorage {
 
     async isFrivolous(domain: string): Promise<boolean> {
         if (!this.state) await this.init();
-        // Map domain variants to their canonical form for consistent matching
+        const normalizeDomainCandidate = (value: string | null | undefined): string | null => {
+            const raw = String(value ?? '').trim().toLowerCase();
+            if (!raw) return null;
+            const withoutPrefix = raw.replace(/^site:/, '').replace(/^\*\./, '');
+            const asUrl = /^https?:\/\//.test(withoutPrefix) ? withoutPrefix : `https://${withoutPrefix}`;
+            try {
+                return new URL(asUrl).hostname.replace(/^www\./, '').replace(/\.$/, '');
+            } catch {
+                const host = (withoutPrefix.split(/[/?#]/)[0] ?? '').replace(/:\d+$/, '').replace(/^www\./, '').replace(/\.$/, '');
+                return host || null;
+            }
+        };
+
+        // Map domain variants to their canonical form for consistent matching.
         const aliasMap: Record<string, string> = {
             'x.com': 'twitter.com',
             'mobile.twitter.com': 'twitter.com',
@@ -784,16 +797,20 @@ class ExtensionStorage {
             'm.facebook.com': 'facebook.com',
             'm.youtube.com': 'youtube.com'
         };
-        const canonical = aliasMap[domain] ?? domain;
-        const aliases = Array.from(new Set([domain, canonical]));
+        const normalizedDomain = normalizeDomainCandidate(domain);
+        if (!normalizedDomain) return false;
+        const canonical = aliasMap[normalizedDomain] ?? normalizedDomain;
+        const aliases = Array.from(new Set([normalizedDomain, canonical]));
 
-        return this.state!.settings.frivolityDomains.some(d => {
-            const dCanonical = aliasMap[d] ?? d;
+        return this.state!.settings.frivolityDomains.some(rawEntry => {
+            const normalizedEntry = normalizeDomainCandidate(rawEntry);
+            if (!normalizedEntry) return false;
+            const dCanonical = aliasMap[normalizedEntry] ?? normalizedEntry;
             // Check for exact match or subdomain match (e.g. "web.whatsapp.com" ends with ".whatsapp.com")
             return aliases.some(alias =>
-                alias === d ||
+                alias === normalizedEntry ||
                 alias === dCanonical ||
-                alias.endsWith('.' + d) ||
+                alias.endsWith('.' + normalizedEntry) ||
                 alias.endsWith('.' + dCanonical)
             );
         });
@@ -1128,10 +1145,17 @@ class ExtensionStorage {
             }
             this.state!.sessions = next;
         }
-        if (desktopState.pomodoro) {
+        if (Object.prototype.hasOwnProperty.call(desktopState, 'pomodoro')) {
+            const rawPomodoro = desktopState.pomodoro as any;
+            const session = rawPomodoro && typeof rawPomodoro === 'object' && 'session' in rawPomodoro
+                ? rawPomodoro.session ?? null
+                : rawPomodoro ?? null;
+            const lastUpdated = rawPomodoro && typeof rawPomodoro === 'object' && typeof rawPomodoro.lastUpdated === 'number'
+                ? rawPomodoro.lastUpdated
+                : (session ? Date.now() : null);
             this.state!.pomodoro = {
-                session: desktopState.pomodoro.session ?? null,
-                lastUpdated: Date.now(),
+                session,
+                lastUpdated,
                 pendingBlocks: this.state!.pomodoro?.pendingBlocks ?? []
             };
         }

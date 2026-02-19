@@ -1,8 +1,11 @@
 import { createRoot } from 'react-dom/client';
 import PaywallOverlay from './paywall/PaywallOverlay';
+import GlanceHud from './paywall/GlanceHud';
 import PomodoroOverlay from './pomodoro/PomodoroOverlay';
+import PomodoroHud from './pomodoro/PomodoroHud';
 import DailyOnboardingOverlay from './onboarding/DailyOnboardingOverlay';
 import styles from './paywall/paywall.css?inline';
+import { isPomodoroSiteAllowed } from '../../src/shared/pomodoroMatcher';
 
 type BlockMessage = {
   type: 'BLOCK_SCREEN';
@@ -22,6 +25,10 @@ type PomodoroBlockMessage = {
     softUnlockMs?: number;
     reason?: string;
   };
+};
+
+type PomodoroUnblockMessage = {
+  type: 'POMODORO_UNBLOCK';
 };
 
 type DailyOnboardingMessage = {
@@ -141,6 +148,12 @@ const ACTIVITY_PULSE_MIN_MS = 3000;
 let lastActivityPulse = 0;
 let pageHideRefCount = 0;
 const COLOR_FILTER_STYLE_ID = 'tws-color-filter-style';
+const HUD_HOST_ID = 'tws-hud-host';
+let hudHost: HTMLDivElement | null = null;
+let hudRoot: ReturnType<typeof createRoot> | null = null;
+let hudKey: string | null = null;
+let hudKind: 'glance' | 'pomodoro' | null = null;
+let pomodoroOverlayCleanup: (() => void) | null = null;
 
 type GuardrailColorFilter = 'full-color' | 'greyscale' | 'redscale';
 type ContentSyncState = {
@@ -157,11 +170,36 @@ type ContentSyncState = {
     paused?: boolean;
     allowedUrl?: string;
   }>;
+  pomodoro?: {
+    session?: {
+      id: string;
+      state: 'active' | 'paused' | 'break' | 'ended';
+      startedAt: string;
+      plannedDurationSec: number;
+      breakDurationSec: number;
+      mode: 'strict' | 'soft';
+      allowlist: Array<{ id: string; kind: 'app' | 'site'; value: string; pathPattern?: string | null }>;
+      temporaryUnlockSec: number;
+      overrides: Array<{ id: string; kind: 'app' | 'site'; target: string; grantedAt: string; expiresAt: string; durationSec: number }>;
+      remainingMs: number;
+      breakRemainingMs?: number | null;
+    } | null;
+  };
 };
 
 function normalizeDomain(domain: string | null | undefined) {
   if (!domain) return null;
-  const value = domain.trim().toLowerCase().replace(/^www\./, '');
+  const raw = domain.trim().toLowerCase();
+  if (!raw) return null;
+  const withoutPrefix = raw.replace(/^site:/, '').replace(/^\*\./, '');
+  const value = (() => {
+    const asUrl = /^https?:\/\//.test(withoutPrefix) ? withoutPrefix : `https://${withoutPrefix}`;
+    try {
+      return new URL(asUrl).hostname.replace(/^www\./, '').replace(/\.$/, '');
+    } catch {
+      return (withoutPrefix.split(/[/?#]/)[0] ?? '').replace(/:\d+$/, '').replace(/^www\./, '').replace(/\.$/, '');
+    }
+  })();
   if (!value) return null;
   const aliasMap: Record<string, string> = {
     'x.com': 'twitter.com',
@@ -225,6 +263,135 @@ function isFrivolousDomain(state: ContentSyncState, domain: string | null) {
   if (!domain) return false;
   const list = state.settings?.frivolityDomains ?? [];
   return list.some((entry) => matchesDomain(entry, domain));
+}
+
+function unmountGlanceHud() {
+  if (hudRoot) {
+    try {
+      hudRoot.unmount();
+    } catch {
+      // ignore
+    }
+  }
+  hudRoot = null;
+  hudKey = null;
+  hudKind = null;
+  if (hudHost) {
+    hudHost.remove();
+    hudHost = null;
+  } else {
+    const existing = document.getElementById(HUD_HOST_ID);
+    existing?.remove();
+  }
+}
+
+function unmountPomodoroOverlay() {
+  const cleanup = pomodoroOverlayCleanup;
+  pomodoroOverlayCleanup = null;
+  if (cleanup) {
+    cleanup();
+    return;
+  }
+  const host = document.getElementById('tws-shadow-host');
+  host?.remove();
+  if (document.body) {
+    document.body.style.overflow = '';
+  }
+  const styleTag = document.getElementById('tws-page-hide');
+  styleTag?.remove();
+  pageHideRefCount = 0;
+}
+
+function ensureHudHost() {
+  if (!document.body) return;
+  if (hudHost && hudRoot) return;
+
+  const host = document.createElement('div');
+  host.id = HUD_HOST_ID;
+  host.style.position = 'fixed';
+  host.style.zIndex = '2147483645';
+  host.style.inset = '0';
+  host.style.width = '100%';
+  host.style.height = '100%';
+  host.style.background = 'transparent';
+  host.style.pointerEvents = 'none';
+  document.body.appendChild(host);
+
+  const shadow = host.attachShadow({ mode: 'open' });
+  const styleSheet = document.createElement('style');
+  styleSheet.textContent = styles;
+  shadow.appendChild(styleSheet);
+
+  const mountPoint = document.createElement('div');
+  mountPoint.id = 'tws-hud-mount-point';
+  shadow.appendChild(mountPoint);
+
+  const root = createRoot(mountPoint);
+  hudHost = host;
+  hudRoot = root;
+}
+
+function mountGlanceHud(domain: string) {
+  ensureHudHost();
+  if (!hudRoot) return;
+  const nextKey = `glance:${domain}`;
+  if (hudKind === 'glance' && hudKey === nextKey) return;
+  hudRoot.render(<GlanceHud domain={domain} />);
+  hudKind = 'glance';
+  hudKey = nextKey;
+}
+
+function mountPomodoroHud(
+  domain: string,
+  session: NonNullable<NonNullable<ContentSyncState['pomodoro']>['session']>
+) {
+  ensureHudHost();
+  if (!hudRoot) return;
+  const nextKey = `pomodoro:${session.id}`;
+  hudRoot.render(<PomodoroHud domain={domain} session={session} />);
+  hudKind = 'pomodoro';
+  hudKey = nextKey;
+}
+
+async function syncHudWithState() {
+  if (contextInvalidated || !isContextValid()) {
+    unmountGlanceHud();
+    return;
+  }
+  if (document.getElementById('tws-shadow-host')) {
+    unmountGlanceHud();
+    return;
+  }
+  try {
+    const result = await chrome.storage.local.get('state');
+    const state = (result?.state ?? {}) as ContentSyncState;
+    const domain = getCurrentDomain();
+    const pomodoroSession = state.pomodoro?.session ?? null;
+    const pomodoroAllowedOnUrl = Boolean(
+      pomodoroSession &&
+      (pomodoroSession.state === 'break' ||
+        (pomodoroSession.state === 'active' &&
+          isPomodoroSiteAllowed(
+            pomodoroSession.allowlist,
+            pomodoroSession.overrides,
+            window.location.href
+          )))
+    );
+    if (pomodoroSession && pomodoroAllowedOnUrl && domain) {
+      mountPomodoroHud(domain, pomodoroSession);
+      return;
+    }
+
+    const session = findActiveSessionForDomain(state, domain);
+    const shouldShow = Boolean(session) && isFrivolousDomain(state, domain);
+    if (!shouldShow || !domain) {
+      unmountGlanceHud();
+      return;
+    }
+    mountGlanceHud(domain);
+  } catch {
+    unmountGlanceHud();
+  }
 }
 
 function applyGuardrailFilter(mode: GuardrailColorFilter) {
@@ -308,39 +475,49 @@ function startHeartbeat() {
 
 startHeartbeat();
 void refreshGuardrailFilter();
+void syncHudWithState();
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     sendHeartbeat();
     void refreshGuardrailFilter();
+    void syncHudWithState();
   }
 });
 window.addEventListener('focus', () => {
   void refreshGuardrailFilter();
+  void syncHudWithState();
 });
 window.addEventListener('hashchange', () => {
   void refreshGuardrailFilter();
+  void syncHudWithState();
 });
 window.addEventListener('popstate', () => {
   void refreshGuardrailFilter();
+  void syncHudWithState();
 });
 
 const originalPushState = history.pushState.bind(history);
 history.pushState = function pushState(...args: Parameters<History['pushState']>) {
   const result = originalPushState(...args);
   void refreshGuardrailFilter();
+  void syncHudWithState();
   return result;
 };
 const originalReplaceState = history.replaceState.bind(history);
 history.replaceState = function replaceState(...args: Parameters<History['replaceState']>) {
   const result = originalReplaceState(...args);
   void refreshGuardrailFilter();
+  void syncHudWithState();
   return result;
 };
 
 try {
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'local') return;
-    if (changes.state) void refreshGuardrailFilter();
+    if (changes.state) {
+      void refreshGuardrailFilter();
+      void syncHudWithState();
+    }
   });
 } catch {
   contextInvalidated = true;
@@ -378,7 +555,7 @@ window.addEventListener('focus', () => sendUserActivity('focus'));
 
 try {
   chrome.runtime.onMessage.addListener((
-    message: BlockMessage | PomodoroBlockMessage | DailyOnboardingMessage | SessionFadeMessage | EncouragementMessage | { type: 'TWS_PING' },
+    message: BlockMessage | PomodoroBlockMessage | PomodoroUnblockMessage | DailyOnboardingMessage | SessionFadeMessage | EncouragementMessage | { type: 'TWS_PING' },
     _sender,
     sendResponse
   ) => {
@@ -388,14 +565,25 @@ try {
       return;
     }
     if (message.type === 'BLOCK_SCREEN') {
+      unmountPomodoroOverlay();
+      unmountGlanceHud();
       mountOverlay(message.payload.domain, message.payload.reason, message.payload.peek);
       void refreshGuardrailFilter();
     }
     if (message.type === 'POMODORO_BLOCK') {
+      unmountPomodoroOverlay();
+      unmountGlanceHud();
       mountPomodoroOverlay(message.payload);
       void refreshGuardrailFilter();
     }
+    if (message.type === 'POMODORO_UNBLOCK') {
+      unmountPomodoroOverlay();
+      void refreshGuardrailFilter();
+      void syncHudWithState();
+    }
     if (message.type === 'DAILY_ONBOARDING') {
+      unmountPomodoroOverlay();
+      unmountGlanceHud();
       mountDailyOnboarding(message.payload.domain, message.payload.forced);
       void refreshGuardrailFilter();
     }
@@ -423,6 +611,8 @@ function isMediaPlaying() {
 }
 
 async function mountOverlay(domain: string, reason?: string, peek?: { allowed: boolean; isNewPage: boolean }) {
+  unmountPomodoroOverlay();
+  unmountGlanceHud();
   const removePageHide = hidePage();
   // Check for existing shadow host
   const existingHost = document.getElementById('tws-shadow-host');
@@ -496,6 +686,7 @@ async function mountOverlay(domain: string, reason?: string, peek?: { allowed: b
     document.body.style.overflow = '';
     removePageHide();
     void refreshGuardrailFilter();
+    void syncHudWithState();
   };
   const renderOverlay = (status: StatusResponse) => {
     if (closed) return;
@@ -526,6 +717,8 @@ async function mountOverlay(domain: string, reason?: string, peek?: { allowed: b
 }
 
 async function mountDailyOnboarding(domain: string, forced?: boolean) {
+  unmountPomodoroOverlay();
+  unmountGlanceHud();
   const removePageHide = hidePage();
   const existingHost = document.getElementById('tws-shadow-host');
   if (existingHost) existingHost.remove();
@@ -605,6 +798,7 @@ async function mountDailyOnboarding(domain: string, forced?: boolean) {
     document.body.style.overflow = '';
     removePageHide();
     void refreshGuardrailFilter();
+    void syncHudWithState();
   };
 
   const renderOverlay = (status: StatusResponse) => {
@@ -636,6 +830,8 @@ async function mountDailyOnboarding(domain: string, forced?: boolean) {
 }
 
 function mountPomodoroOverlay(payload: PomodoroBlockMessage['payload']) {
+  unmountPomodoroOverlay();
+  unmountGlanceHud();
   const removePageHide = hidePage();
   // Remove existing host
   const existingHost = document.getElementById('tws-shadow-host');
@@ -666,16 +862,29 @@ function mountPomodoroOverlay(payload: PomodoroBlockMessage['payload']) {
       softUnlockMs={payload.softUnlockMs}
       reason={payload.reason}
       onRequestOverride={async () => {
-        await chrome.runtime.sendMessage({ type: 'REQUEST_POMODORO_OVERRIDE', payload: { target: payload.domain } });
+        const response = await chrome.runtime.sendMessage({ type: 'REQUEST_POMODORO_OVERRIDE', payload: { target: payload.domain } }) as { success?: boolean; error?: string } | undefined;
+        if (!response?.success) {
+          throw new Error(response?.error ?? 'Failed to request override');
+        }
+      }}
+      onBackToFocus={() => {
+        if (window.history.length > 1) {
+          window.history.back();
+          return;
+        }
+        window.location.replace('about:blank');
       }}
     />
   );
-  return () => {
+  const cleanup = () => {
     host.remove();
     document.body.style.overflow = '';
     removePageHide();
     void refreshGuardrailFilter();
+    void syncHudWithState();
   };
+  pomodoroOverlayCleanup = cleanup;
+  return cleanup;
 }
 
 function hidePage() {

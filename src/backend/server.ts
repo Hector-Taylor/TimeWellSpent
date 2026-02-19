@@ -19,6 +19,10 @@ import { ActivityPipeline, type ActivityOrigin } from './activityPipeline';
 import type { Database } from './storage';
 import type { FriendConnection, FriendProfile, FriendSummary, FriendTimeline, MarketRate, PomodoroAllowlistEntry, PomodoroOverride } from '@shared/types';
 import { logger } from '@shared/logger';
+import {
+  isPomodoroSiteAllowed,
+  normalizePomodoroDomain
+} from '@shared/pomodoroMatcher';
 import { AnalyticsService } from './analytics';
 import { EmergencyService } from './emergency';
 import { LibraryService } from './library';
@@ -181,15 +185,24 @@ export async function createBackend(
   const dailyResetTimer = setInterval(applyDailyWalletReset, 60_000);
 
   const isAllowedByPomodoro = (session: ReturnType<PomodoroService['status']> | null, event: ActivityEvent & { idleSeconds?: number }) => {
-    if (!session || session.state === 'ended') return true;
+    if (!session || session.state !== 'active') return true;
     const now = Date.now();
-    const domain = (event.domain ?? '').toLowerCase().replace(/^www\./, '');
+    const parsedUrl = (() => {
+      try {
+        if (!event.url) return null;
+        return new URL(event.url);
+      } catch {
+        return null;
+      }
+    })();
+    const domain = normalizePomodoroDomain(event.domain ?? parsedUrl?.hostname ?? '');
+    const path = parsedUrl?.pathname ?? null;
     const appName = (event.appName ?? '').toLowerCase();
 
     const matchSite = (entry: PomodoroAllowlistEntry) => {
       if (entry.kind !== 'site' || !domain) return false;
-      const target = entry.value.toLowerCase();
-      return domain === target || domain.endsWith(`.${target}`);
+      const urlString = event.url ?? `https://${domain}${path ?? ''}`;
+      return isPomodoroSiteAllowed([entry], [], urlString, now);
     };
     const matchApp = (entry: PomodoroAllowlistEntry) => {
       if (entry.kind !== 'app' || !appName) return false;
@@ -199,8 +212,9 @@ export async function createBackend(
     const hasOverride = (override: PomodoroOverride) => {
       if (Date.parse(override.expiresAt) <= now) return false;
       if (override.kind === 'site') {
-        const target = override.target.toLowerCase();
-        return domain === target || domain.endsWith(`.${target}`);
+        if (!domain) return false;
+        const urlString = event.url ?? `https://${domain}${path ?? ''}`;
+        return isPomodoroSiteAllowed([], [override], urlString, now);
       }
       if (override.kind === 'app') {
         const target = override.target.toLowerCase();
@@ -360,6 +374,13 @@ export async function createBackend(
       return;
     }
 
+    next();
+  });
+
+  app.use((req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     next();
   });
 

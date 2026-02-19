@@ -1,12 +1,18 @@
-import { storage, type DailyOnboardingState, type LibraryItem, type LibraryPurpose, type PendingActivityEvent, type PomodoroSession, type PomodoroAllowlistEntry, type PaywallSession, type ReflectionSlideshowSettings } from './storage';
+import { storage, type DailyOnboardingState, type LibraryItem, type LibraryPurpose, type PendingActivityEvent, type PomodoroSession, type PaywallSession, type ReflectionSlideshowSettings } from './storage';
 import { DESKTOP_API_URL, DESKTOP_WS_URL } from './constants';
+import {
+    getPomodoroSiteBlockReason,
+    isPomodoroSiteAllowed,
+    normalizePomodoroDomain,
+    parsePomodoroSiteTarget
+} from '../../src/shared/pomodoroMatcher';
 
 type IdleState = 'active' | 'idle' | 'locked';
 type EmergencyPolicyId = 'off' | 'gentle' | 'balanced' | 'strict';
 
 const DEFAULT_UNLOCK_PRICE = 12;
 const NOTIFICATION_ICON = chrome.runtime.getURL('assets/notification.png');
-const POMODORO_STALE_MS = 15000;
+const POMODORO_STALE_MS = 45_000;
 const DAILY_START_HOUR = 4;
 const CONTEXT_MENU_IDS = {
     rootSave: 'tws-save',
@@ -38,38 +44,38 @@ const rotModeStartInFlight = new Set<string>();
 let pendingUsageFlushTimer: number | null = null;
 const lastEncouragement = new Map<string, number>();
 const lastEncouragementMessage = new Map<string, string>();
-const doomscrollNotificationMap = new Map<string, string>();
+const doomscrollNotificationMap = new Map<string, { breakUrl: string; rescue?: { url: string; label: string } }>();
 const ENCOURAGEMENT_MESSAGES = [
-    'Quick check: is {domain} worth it?',
-    'Close the tab; keep the focus.',
-    'You can exit now and still win.',
-    'This click is optional.',
-    'Trade this minute for progress.',
-    'Tiny break, big return.',
+    'Check in: did you mean {domain}?',
+    'This minute can be yours.',
+    'Step out before the spiral.',
+    'Quiet win: close the tab.',
+    'Trade this scroll for progress.',
+    'Small pause, better choice.',
     'Breathe, then decide.',
-    'The scroll will not finish you.',
-    'Choose intention over habit.',
-    'Leave {domain} for later.',
-    'Do the next small thing.',
-    'If it is noise, walk away.',
+    'The feed will keep going.',
+    'Choose intent over habit.',
+    'Save {domain} for a break.',
+    'Start the tiniest real step.',
+    'If it is noise, exit.',
     'Future you is watching.',
-    'Reclaim the wheel.',
-    'Soft nudge: step back.',
-    'Less feed, more you.',
-    'Reset the streak right here.',
+    'Take control back.',
+    'Gentle nudge: zoom out.',
+    'Less feed, more focus.',
+    'Protect the streak now.',
     'Attention is a budget.',
-    'Close it, start the real work.',
+    'Close this and begin.',
     'Is this helping today?',
-    'End the loop.',
-    'Spend your focus wisely.',
+    'End the loop here.',
+    'Spend focus on purpose.',
     'Pause; nothing urgent here.',
     'Aim at what matters.',
-    'One clean choice now.',
-    'Remove {domain} from the path.',
-    'Give tonight a calmer brain.',
-    'Pick the hard task, then breathe.',
-    'You are allowed to stop.',
-    'Leave now; you will thank yourself.'
+    'One clean choice, then go.',
+    'Move {domain} off the path.',
+    'Give tonight a calmer mind.',
+    'Pick the hard task first.',
+    'You can stop now.',
+    'Leave now; thank yourself later.'
 ];
 const NYT_GAME_LINKS = [
     { label: 'NYT Mini', url: 'https://www.nytimes.com/crosswords/game/mini' },
@@ -154,6 +160,7 @@ let behaviorEventFlushTimer: number | null = null;
 let behaviorEventFlushInFlight = false;
 const doomscrollByDomain = new Map<string, DoomscrollWindow>();
 const lastDoomscrollIntervention = new Map<string, number>();
+const pomodoroBlockStateByTab = new Map<number, { domain: string; reason: string }>();
 
 function normalizeGuardrailColorFilter(value: unknown): GuardrailColorFilter {
     return value === 'greyscale' || value === 'redscale' || value === 'full-color'
@@ -407,44 +414,23 @@ function dayKeyFor(date: Date) {
 }
 
 function normalizeDomain(domain: string) {
-    return domain.replace(/^www\./, '').toLowerCase();
-}
-
-function matchesAllowlist(entry: PomodoroAllowlistEntry, url: URL): boolean {
-    if (entry.kind !== 'site') return false;
-    const domain = normalizeDomain(url.hostname);
-    const target = normalizeDomain(entry.value);
-    const hostAllowed = domain === target || domain.endsWith(`.${target}`);
-    if (!hostAllowed) return false;
-    if (!entry.pathPattern) return true;
-    const pattern = entry.pathPattern;
-    try {
-        const re = new RegExp(pattern);
-        return re.test(url.pathname);
-    } catch {
-        return url.pathname.startsWith(pattern);
-    }
+    return normalizePomodoroDomain(domain);
 }
 
 function isPomodoroAllowed(session: PomodoroSession, urlString: string): boolean {
-    try {
-        const url = new URL(urlString);
-        const domain = normalizeDomain(url.hostname);
+    return isPomodoroSiteAllowed(
+        session.allowlist,
+        session.overrides,
+        urlString
+    );
+}
 
-        // Active overrides
-        const now = Date.now();
-        const override = session.overrides.find((o) => {
-            if (o.kind !== 'site') return false;
-            const target = normalizeDomain(o.target);
-            if (!(domain === target || domain.endsWith(`.${target}`))) return false;
-            return Date.parse(o.expiresAt) > now;
-        });
-        if (override) return true;
-
-        return session.allowlist.some((entry) => matchesAllowlist(entry, url));
-    } catch {
-        return false;
-    }
+function getPomodoroBlockReason(
+    session: PomodoroSession,
+    urlString: string,
+    stale: boolean
+): 'not-allowlisted' | 'override-expired' | 'verification-failed' {
+    return getPomodoroSiteBlockReason(session.overrides, urlString, stale);
 }
 
 function createSyncId() {
@@ -519,6 +505,7 @@ storage.init().then(() => {
 chrome.tabs.onRemoved.addListener((tabId) => {
     tabPeekState.delete(tabId);
     tabActivityById.delete(tabId);
+    pomodoroBlockStateByTab.delete(tabId);
     const session = rouletteByTabId.get(tabId);
     if (!session) return;
     rouletteByTabId.delete(tabId);
@@ -528,12 +515,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.notifications?.onButtonClicked?.addListener((notificationId, buttonIndex) => {
-    const doomscrollUrl = doomscrollNotificationMap.get(notificationId);
-    if (doomscrollUrl) {
+    const doomscrollAction = doomscrollNotificationMap.get(notificationId);
+    if (doomscrollAction) {
         doomscrollNotificationMap.delete(notificationId);
-        if (buttonIndex === 0) {
-            chrome.tabs.create({ url: doomscrollUrl, active: true }).catch(() => { });
-        }
+        const targetUrl = buttonIndex === 0
+            ? (doomscrollAction.rescue?.url ?? doomscrollAction.breakUrl)
+            : doomscrollAction.breakUrl;
+        if (targetUrl) chrome.tabs.create({ url: targetUrl, active: true }).catch(() => { });
         return;
     }
 
@@ -680,7 +668,7 @@ function logSessionDrift(
 async function syncFromDesktop() {
     try {
         const before = devLogSessionDrift ? await storage.getAllSessions() : null;
-        const response = await fetch(`${DESKTOP_API_URL}/extension/state`);
+        const response = await fetch(`${DESKTOP_API_URL}/extension/state`, { cache: 'no-store' });
         if (response.ok) {
             const desktopState = await response.json();
             await storage.updateFromDesktop(desktopState);
@@ -787,6 +775,7 @@ function handleDesktopMessage(data: any) {
     } else if (data.type === 'pomodoro-start' && data.payload) {
         const session = data.payload as PomodoroSession;
         storage.setPomodoroSession({ ...session, lastUpdated: Date.now() }).catch(() => { });
+        void reevaluateActivePomodoroTab('pomodoro-start');
     } else if (data.type === 'pomodoro-tick' && data.payload) {
         const session = data.payload as PomodoroSession;
         storage.updatePomodoroSession({
@@ -795,11 +784,22 @@ function handleDesktopMessage(data: any) {
             state: session.state,
             breakRemainingMs: session.breakRemainingMs
         }).catch(() => { });
+    } else if ((data.type === 'pomodoro-pause' || data.type === 'pomodoro-resume' || data.type === 'pomodoro-break') && data.payload) {
+        const session = data.payload as PomodoroSession;
+        storage.updatePomodoroSession({
+            state: session.state,
+            remainingMs: session.remainingMs,
+            breakRemainingMs: session.breakRemainingMs,
+            overrides: session.overrides
+        }).catch(() => { });
+        void reevaluateActivePomodoroTab(data.type);
     } else if (data.type === 'pomodoro-stop') {
         storage.setPomodoroSession(null).catch(() => { });
+        void reevaluateActivePomodoroTab('pomodoro-stop');
     } else if (data.type === 'pomodoro-override' && data.payload?.overrides) {
         const overrides = data.payload.overrides as PomodoroSession['overrides'];
         storage.updatePomodoroSession({ overrides }).catch(() => { });
+        void reevaluateActivePomodoroTab('pomodoro-override');
     } else if (data.type === 'pomodoro-block' && data.payload) {
         const evt = data.payload as { target: string; kind: 'app' | 'site'; reason: string; remainingMs?: number; mode?: 'strict' | 'soft' };
         storage.queuePomodoroBlock({
@@ -903,11 +903,11 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
         // console.log(`🔍 Checking ${domain} (source: ${source})`);
 
         const pomodoroSession = await storage.getPomodoroSession();
-        if (pomodoroSession && pomodoroSession.state !== 'ended') {
+        if (pomodoroSession && pomodoroSession.state === 'active') {
             const stale = pomodoroSession.lastUpdated && Date.now() - pomodoroSession.lastUpdated > POMODORO_STALE_MS;
-            const allowed = !stale && isPomodoroAllowed(pomodoroSession, urlString);
+            const allowed = isPomodoroAllowed(pomodoroSession, urlString);
             if (!allowed) {
-                const reason = stale ? 'verification-failed' : 'not-allowlisted';
+                const reason = getPomodoroBlockReason(pomodoroSession, urlString, Boolean(stale));
                 await emitPomodoroBlock({
                     target: domain,
                     kind: 'site',
@@ -916,17 +916,27 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
                     mode: pomodoroSession.mode
                 });
                 if (tabId != null) {
-                    await showPomodoroBlockScreen(tabId, {
-                        domain,
-                        remainingMs: pomodoroSession.remainingMs,
-                        mode: pomodoroSession.mode,
-                        softUnlockMs: pomodoroSession.temporaryUnlockSec * 1000,
-                        reason
-                    });
-                    await notifyPomodoroBlock(domain, pomodoroSession.mode, reason);
+                    const previous = pomodoroBlockStateByTab.get(tabId);
+                    const changed = !previous || previous.domain !== domain || previous.reason !== reason;
+                    if (changed) {
+                        await showPomodoroBlockScreen(tabId, {
+                            domain,
+                            remainingMs: pomodoroSession.remainingMs,
+                            mode: pomodoroSession.mode,
+                            softUnlockMs: pomodoroSession.temporaryUnlockSec * 1000,
+                            reason
+                        });
+                        await notifyPomodoroBlock(domain, pomodoroSession.mode, reason);
+                    }
+                    pomodoroBlockStateByTab.set(tabId, { domain, reason });
                 }
                 return;
             }
+            if (tabId != null) {
+                await clearPomodoroBlockStateForTab(tabId);
+            }
+        } else if (tabId != null) {
+            await clearPomodoroBlockStateForTab(tabId);
         }
 
         const didOnboard = await maybeShowDailyOnboarding(tabId, urlString, domain, source);
@@ -1453,6 +1463,27 @@ async function showPomodoroBlockScreen(
     }
 }
 
+async function clearPomodoroBlockScreen(tabId: number) {
+    await ensureContentScript(tabId);
+    try {
+        await chrome.tabs.sendMessage(tabId, { type: 'POMODORO_UNBLOCK' });
+    } catch {
+        // Ignore content script timing issues.
+    }
+}
+
+async function clearPomodoroBlockStateForTab(tabId: number) {
+    if (!pomodoroBlockStateByTab.has(tabId)) return;
+    pomodoroBlockStateByTab.delete(tabId);
+    await clearPomodoroBlockScreen(tabId);
+}
+
+async function reevaluateActivePomodoroTab(source: string) {
+    const tab = await getActiveHttpTab();
+    if (!tab?.id || !tab.url) return;
+    await checkAndBlockUrl(tab.id, tab.url, source);
+}
+
 async function maybeSendSessionFade(tabId: number, session: PaywallSession) {
     const fadeSeconds = await storage.getSessionFadeSeconds();
     const remaining = session.remainingSeconds;
@@ -1538,6 +1569,47 @@ async function maybeSendEncouragement(tabId: number, domain: string, session: Pa
     await deliverEncouragement(tabId, domain, message);
 }
 
+function formatFocusRescueTarget(rawValue: string): { label: string; url: string; domain: string } | null {
+    const parsed = parsePomodoroSiteTarget(rawValue);
+    if (!parsed?.domain) return null;
+    const path = parsed.pathPrefix ?? '';
+    return {
+        label: `${parsed.domain}${path}`,
+        url: `https://${parsed.domain}${path}`,
+        domain: parsed.domain
+    };
+}
+
+async function getFocusRescueTarget(currentDomain: string): Promise<{ label: string; url: string } | null> {
+    const current = normalizeDomain(currentDomain);
+    const seen = new Set<string>();
+    const candidates: string[] = [];
+
+    const pomodoroSession = await storage.getPomodoroSession();
+    if (pomodoroSession && pomodoroSession.state === 'active') {
+        for (const entry of pomodoroSession.allowlist) {
+            if (entry.kind !== 'site') continue;
+            candidates.push(entry.value);
+        }
+    }
+
+    const state = await storage.getState();
+    candidates.push(...(state.settings?.productiveDomains ?? []));
+
+    for (const candidate of candidates) {
+        const rescue = formatFocusRescueTarget(candidate);
+        if (!rescue) continue;
+        if (seen.has(rescue.url)) continue;
+        seen.add(rescue.url);
+        if (current && (current === rescue.domain || current.endsWith(`.${rescue.domain}`) || rescue.domain.endsWith(`.${current}`))) {
+            continue;
+        }
+        return { label: rescue.label, url: rescue.url };
+    }
+
+    return null;
+}
+
 async function maybeTriggerDoomscrollIntervention(
     tabId: number,
     domain: string,
@@ -1571,17 +1643,25 @@ async function maybeTriggerDoomscrollIntervention(
     lastDoomscrollIntervention.set(domain, now);
 
     const game = NYT_GAME_LINKS[Math.floor(Math.random() * NYT_GAME_LINKS.length)] ?? NYT_GAME_LINKS[0];
-    const message = `Doomscroll signature on ${domain}: heavy scroll, low intent. Pattern break: ${game.label}.`;
+    const rescue = await getFocusRescueTarget(domain);
+    const message = rescue
+        ? `Doomscroll signature on ${domain}: heavy scroll, low intent. Focus rescue: ${rescue.label}.`
+        : `Doomscroll signature on ${domain}: heavy scroll, low intent. Pattern break: ${game.label}.`;
     await deliverEncouragement(tabId, domain, message, { title: 'Pattern interrupt', notify: false });
     const notificationId = `tws-doomscroll-${domain}-${now}`;
-    doomscrollNotificationMap.set(notificationId, game.url);
+    doomscrollNotificationMap.set(notificationId, {
+        breakUrl: game.url,
+        rescue: rescue ? { url: rescue.url, label: rescue.label } : undefined
+    });
     try {
         await chrome.notifications?.create(notificationId, {
             type: 'basic',
             iconUrl: 'icons/icon128.png',
             title: 'Pattern interrupt',
-            message: `Switch tracks: ${game.label}`,
-            buttons: [{ title: `Open ${game.label}` }]
+            message: rescue ? `Switch tracks now: ${rescue.label}` : `Switch tracks: ${game.label}`,
+            buttons: rescue
+                ? [{ title: 'Open focus rescue' }, { title: `Open ${game.label}` }]
+                : [{ title: `Open ${game.label}` }]
         });
     } catch {
         doomscrollNotificationMap.delete(notificationId);
@@ -1619,7 +1699,15 @@ async function handleUserActivity(payload: UserActivityPayload, sender: chrome.r
 
 async function notifyPomodoroBlock(domain: string, mode: PomodoroSession['mode'], reason?: string) {
     try {
-        const message = `Deep work (${mode}) is active. ${domain} is blocked${reason ? ` (${reason})` : ''}.`;
+        const modeLabel = mode === 'soft' ? 'soft lock' : 'strict lock';
+        const reasonLabel = reason === 'verification-failed'
+            ? 'focus lock verification pending'
+            : reason === 'override-expired'
+                ? 'temporary unlock expired'
+                : reason === 'unknown-session'
+                    ? 'session status unavailable'
+                    : 'not on your focus allowlist';
+        const message = `Hey, you're about to break your focus session. ${domain} is blocked (${modeLabel}; ${reasonLabel}).`;
         if (chrome.notifications) {
             await chrome.notifications.create(`pomodoro-block-${Date.now()}`, {
                 type: 'basic',
@@ -2024,9 +2112,12 @@ async function handleOpenDesktopView(payload: { view?: string }) {
 async function handlePomodoroOverrideRequest(payload: { target?: string }) {
     try {
         const activeTab = await getActiveHttpTab();
-        const url = payload?.target ?? activeTab?.url ?? '';
-        if (!url) return { success: false, error: 'No active URL' };
-        const domain = new URL(url).hostname.replace(/^www\./, '');
+        const rawTarget = typeof payload?.target === 'string' ? payload.target.trim() : '';
+        const fromUrl = parseDomainFromUrl(rawTarget);
+        const fromSiteTarget = rawTarget ? parsePomodoroSiteTarget(rawTarget)?.domain ?? null : null;
+        const fromActiveTab = parseDomainFromUrl(activeTab?.url ?? null);
+        const domain = fromUrl ?? fromSiteTarget ?? fromActiveTab;
+        if (!domain) return { success: false, error: 'No active URL' };
         const message = { type: 'pomodoro:grant-override', payload: { kind: 'site', target: domain } };
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify(message));

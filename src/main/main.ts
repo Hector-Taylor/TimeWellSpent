@@ -306,14 +306,56 @@ async function bootstrap() {
         body: `Time's up for ${payload.domain}!`
       }).show();
 
-      // Reset tray to wallet snapshot
-      updateTray(`💰 ${backend.wallet.getSnapshot().balance}`);
+      // Reset tray to current wallet + rate snapshot
+      updateTray();
       buildTrayMenu();
     }
     backend.trophies.scheduleEvaluation('paywall-ended');
   });
 
-  const updateTray = (label: string) => {
+  const getCurrentRatePerSec = () => {
+    const state = backend.economy.getState();
+    const activeSession = state.activeDomain
+      ? backend.paywall.listSessions().find((session) => !session.paused && session.domain === state.activeDomain)
+      : null;
+
+    if (activeSession) {
+      return -(activeSession.ratePerMin / 60);
+    }
+
+    if (state.activeCategory === 'productive') {
+      let ratePerMin = backend.settings.getProductiveRatePerMin();
+      const identifier = state.activeDomain || state.activeApp;
+      if (identifier) {
+        const marketRate = backend.market.getRate(identifier);
+        if (marketRate) {
+          const hour = new Date().getHours();
+          ratePerMin = marketRate.ratePerMin * (marketRate.hourlyModifiers[hour] ?? 1);
+        }
+      }
+      return ratePerMin / 60;
+    }
+
+    if (state.activeCategory === 'neutral' && state.neutralClockedIn) {
+      return backend.settings.getNeutralRatePerMin() / 60;
+    }
+
+    if (state.activeCategory === 'draining') {
+      return backend.settings.getDrainingRatePerMin() / 60;
+    }
+
+    return 0;
+  };
+
+  const formatRateLabel = () => {
+    const ratePerSec = getCurrentRatePerSec();
+    const sign = ratePerSec > 0 ? '+' : '';
+    return `${sign}${ratePerSec.toFixed(2)}/s`;
+  };
+
+  const updateTray = (statusLabel?: string) => {
+    const baseLabel = `💰 ${backend.wallet.getSnapshot().balance} • ${formatRateLabel()}`;
+    const label = statusLabel ? `${statusLabel} • ${baseLabel}` : baseLabel;
     lastTrayLabel = label;
     if (!tray) return;
     if (isMac) {
@@ -324,14 +366,8 @@ async function bootstrap() {
     }
   };
 
-  // Listen for wallet updates to update tray (if no active session)
-  backend.wallet.on('balance-changed', (balance) => {
-    // Only show balance if we aren't showing a session timer
-    const sessions = backend.paywall.listSessions();
-    const hasActiveSessions = sessions.some(s => !s.paused);
-    if (!backend.focus.getCurrent() && !hasActiveSessions) {
-      updateTray(`💰 ${balance}`);
-    }
+  backend.wallet.on('balance-changed', () => {
+    updateTray();
     buildTrayMenu();
     backend.trophies.scheduleEvaluation('wallet');
   });
@@ -370,7 +406,7 @@ async function bootstrap() {
   }
 
   tray = new Tray(trayIcon);
-  updateTray(lastTrayLabel || 'TimeWellSpent');
+  updateTray();
   console.log('Tray initialized');
 
   const buildTrayMenu = () => {
@@ -392,6 +428,7 @@ async function bootstrap() {
 
     const contextMenu = Menu.buildFromTemplate([
       { label: `Wallet: ${walletBalance} coins`, enabled: false },
+      { label: `Rate: ${formatRateLabel()}`, enabled: false },
       { label: focusLabel, enabled: false },
       ...(sessionItems.length ? [{ type: 'separator' as const }, ...sessionItems] : []),
       { type: 'separator' as const },
@@ -418,8 +455,7 @@ async function bootstrap() {
 
   backend.focus.on('stop', (payload) => {
     emitToRenderers('focus:stop', payload);
-    const balance = backend.wallet.getSnapshot().balance;
-    updateTray(`💰 ${balance}`);
+    updateTray();
     buildTrayMenu();
   });
 
@@ -465,7 +501,7 @@ async function bootstrap() {
       }
     }
 
-    updateTray(`💰 ${backend.wallet.getSnapshot().balance}`);
+    updateTray();
     buildTrayMenu();
   });
   backend.pomodoro.on('override', (payload) => emitToRenderers('pomodoro:override', payload));
@@ -482,15 +518,12 @@ async function bootstrap() {
 
   backend.economy.on('wallet-updated', (payload) => {
     emitToRenderers('wallet:update', payload);
-    // Only show wallet balance if not in focus mode
-    if (!backend.focus.getCurrent()) {
-      updateTray(`💰 ${payload.balance}`);
-    }
+    updateTray();
     buildTrayMenu();
   });
 
   // Initial tray state
-  updateTray(`💰 ${backend.wallet.getSnapshot().balance}`);
+  updateTray();
 
   backend.economy.on('paywall-required', (payload) => emitToRenderers('paywall:required', payload));
   backend.economy.on('paywall-session-started', (payload) => {
@@ -503,40 +536,9 @@ async function bootstrap() {
   backend.economy.on('activity', (payload) => emitToRenderers('economy:activity', payload));
   backend.economy.on('activity', () => backend.trophies.scheduleEvaluation('activity'));
 
-  // Update tray with current rate when economy state changes
-  backend.economy.on('activity', (payload: { category: string; domain?: string; app?: string }) => {
-    // Skip if in focus mode
-    if (backend.focus.getCurrent()) return;
-
-    const state = backend.economy.getState();
-    const sessions = backend.paywall.listSessions();
-    const activeSession = sessions.find(s => !s.paused && s.domain === state.activeDomain);
-
-    if (activeSession) {
-      // Spending - show negative rate
-      const ratePerSec = activeSession.ratePerMin / 60;
-      updateTray(`-${ratePerSec.toFixed(2)}/s`);
-    } else if (state.activeCategory === 'productive') {
-      // Earning from productive work
-      let ratePerMin = 5; // default productive rate
-      const identifier = state.activeDomain || state.activeApp;
-      if (identifier) {
-        const marketRate = backend.market.getRate(identifier);
-        if (marketRate) {
-          const hour = new Date().getHours();
-          ratePerMin = marketRate.ratePerMin * (marketRate.hourlyModifiers[hour] ?? 1);
-        }
-      }
-      const ratePerSec = ratePerMin / 60;
-      updateTray(`+${ratePerSec.toFixed(2)}/s`);
-    } else if (state.activeCategory === 'neutral' && state.neutralClockedIn) {
-      // Earning from neutral work (clocked in)
-      const ratePerSec = 3 / 60;
-      updateTray(`+${ratePerSec.toFixed(2)}/s`);
-    } else {
-      // Idle or not earning - show balance
-      updateTray(`💰 ${backend.wallet.getSnapshot().balance}`);
-    }
+  // Keep tray text in sync with live earn/spend rate changes.
+  backend.economy.on('activity', () => {
+    updateTray();
   });
 
   backend.economy.on('activity', (payload: { activeCategory: string | null; activeDomain: string | null; activeApp: string | null }) => {

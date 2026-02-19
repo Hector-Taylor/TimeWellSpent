@@ -7,6 +7,7 @@ type Props = {
     softUnlockMs?: number;
     reason?: string;
     onRequestOverride?: () => Promise<void>;
+    onBackToFocus?: () => void;
 };
 
 function formatRemaining(ms?: number) {
@@ -17,11 +18,18 @@ function formatRemaining(ms?: number) {
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
 }
 
-export default function PomodoroOverlay({ domain, remainingMs, mode, softUnlockMs, reason, onRequestOverride }: Props) {
+export default function PomodoroOverlay({ domain, remainingMs, mode, softUnlockMs, reason, onRequestOverride, onBackToFocus }: Props) {
     const [status, setStatus] = useState<'idle' | 'pending' | 'done' | 'error'>('idle');
     const [error, setError] = useState<string | null>(null);
     const formatted = useMemo(() => formatRemaining(remainingMs), [remainingMs]);
     const unlockLabel = softUnlockMs ? `Request ${Math.round(softUnlockMs / 60000)}m` : 'Request access';
+    const reasonMessage = reason === 'override-expired'
+        ? 'Your temporary unlock has expired.'
+        : reason === 'verification-failed'
+            ? 'We could not verify sync with desktop, so the focus lock remains active.'
+            : reason === 'unknown-session'
+                ? 'Session status is unclear, so this page stays blocked for now.'
+                : `${domain} is not on your focus allowlist.`;
 
     async function handleRequest() {
         if (!onRequestOverride) return;
@@ -42,21 +50,30 @@ export default function PomodoroOverlay({ domain, remainingMs, mode, softUnlockM
                     <span style={styles.badge}>Pomodoro focus</span>
                     <span style={styles.clock}>{formatted}</span>
                 </div>
-                <h1 style={styles.title}>Not on the allowlist</h1>
+                <h1 style={styles.title}>Hey, you&apos;re gonna break your focus session.</h1>
                 <p style={styles.subtitle}>
                     {mode === 'strict'
                         ? `Stay on your chosen tools until the timer ends.`
-                        : `You can request a short unlock if you really need ${domain}.`}
+                        : `Need ${domain}? Request a short unlock with a clear reason.`}
                 </p>
-                {reason && <p style={styles.reason}>Reason: {reason}</p>}
+                <p style={styles.reason}>{reasonMessage}</p>
                 <div style={styles.actions}>
                     {mode === 'soft' && (
                         <button style={{ ...styles.button, ...styles.primary }} disabled={status === 'pending'} onClick={handleRequest}>
                             {status === 'pending' ? 'Requesting…' : status === 'done' ? 'Requested' : unlockLabel}
                         </button>
                     )}
+                    <button style={{ ...styles.button, ...styles.secondary }} onClick={() => {
+                        if (onBackToFocus) {
+                            onBackToFocus();
+                            return;
+                        }
+                        history.back();
+                    }}>
+                        Back to focus
+                    </button>
                     <div style={styles.meta}>
-                        <span>Allowed list is enforced for this session.</span>
+                        <span>Only allowlisted sites stay open during active focus.</span>
                     </div>
                 </div>
                 {error && <div style={styles.error}>{error}</div>}
@@ -141,6 +158,11 @@ const styles: Record<string, React.CSSProperties> = {
         background: 'linear-gradient(135deg, #6c7bff, #19c7ff)',
         color: '#0b0c0f',
         fontWeight: 700
+    },
+    secondary: {
+        background: 'rgba(255,255,255,0.1)',
+        color: '#f8f9fb',
+        fontWeight: 600
     },
     meta: {
         fontSize: 13,

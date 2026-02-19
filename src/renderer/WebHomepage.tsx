@@ -92,6 +92,7 @@ function safeDate(value: string | undefined) {
 async function fetchJson<T>(apiBase: string, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBase}${path}`, {
     ...init,
+    cache: 'no-store',
     headers: {
       'Content-Type': 'application/json',
       ...(init?.headers ?? {})
@@ -197,6 +198,20 @@ export default function WebHomepage() {
   useEffect(() => {
     const refreshId = window.setInterval(() => loadHomepage(true), 45_000);
     return () => window.clearInterval(refreshId);
+  }, [loadHomepage]);
+
+  useEffect(() => {
+    const refreshOnVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void loadHomepage(true);
+      }
+    };
+    window.addEventListener('focus', refreshOnVisibility);
+    document.addEventListener('visibilitychange', refreshOnVisibility);
+    return () => {
+      window.removeEventListener('focus', refreshOnVisibility);
+      document.removeEventListener('visibilitychange', refreshOnVisibility);
+    };
   }, [loadHomepage]);
 
   useEffect(() => {

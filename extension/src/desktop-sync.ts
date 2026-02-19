@@ -81,7 +81,7 @@ function scheduleReconnect() {
 
 export async function syncFromDesktop(): Promise<boolean> {
     try {
-        const response = await fetch(`${DESKTOP_API_URL}/extension/state`);
+        const response = await fetch(`${DESKTOP_API_URL}/extension/state`, { cache: 'no-store' });
         if (response.ok) {
             const desktopState = await response.json();
             await storage.updateFromDesktop(desktopState);

@@ -57,6 +57,9 @@ export class WebSocketBroadcaster extends EventEmitter {
         const { pomodoro } = this.ctx;
         pomodoro.on('tick', (payload) => this.broadcast({ type: 'pomodoro-tick', payload }));
         pomodoro.on('start', (payload) => this.broadcast({ type: 'pomodoro-start', payload }));
+        pomodoro.on('pause', (payload) => this.broadcast({ type: 'pomodoro-pause', payload }));
+        pomodoro.on('resume', (payload) => this.broadcast({ type: 'pomodoro-resume', payload }));
+        pomodoro.on('break', (payload) => this.broadcast({ type: 'pomodoro-break', payload }));
         pomodoro.on('stop', (payload) => this.broadcast({ type: 'pomodoro-stop', payload }));
         pomodoro.on('override', (payload) => this.broadcast({ type: 'pomodoro-override', payload }));
         pomodoro.on('block', (payload) => this.broadcast({ type: 'pomodoro-block', payload }));

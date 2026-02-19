@@ -7,6 +7,40 @@ type Props = {
 
 type AllowlistEntry = { value: string; kind: 'site' | 'app' };
 
+export function normalizeSiteValue(raw: string): string | null {
+  const trimmed = raw.trim().replace(/^site:/i, '');
+  if (!trimmed || /^app:/i.test(trimmed)) return null;
+  const candidate = trimmed.replace(/^\*\./, '');
+  const asUrl = /^https?:\/\//i.test(candidate) ? candidate : `https://${candidate}`;
+  try {
+    const parsed = new URL(asUrl);
+    const domain = parsed.hostname.replace(/^www\./i, '').replace(/\.$/, '').toLowerCase();
+    if (!domain) return null;
+    const path = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname.replace(/\/+$/, '') : '';
+    return `${domain}${path}`;
+  } catch {
+    const withoutProtocol = candidate.replace(/^https?:\/\//i, '');
+    const host = (withoutProtocol.split(/[/?#]/)[0] ?? '').replace(/:\d+$/, '').replace(/^www\./i, '').replace(/\.$/, '').toLowerCase();
+    if (!host) return null;
+    const slashIndex = withoutProtocol.indexOf('/');
+    if (slashIndex < 0) return host;
+    const rawPath = withoutProtocol.slice(slashIndex).split(/[?#]/)[0]?.trim() ?? '';
+    const path = rawPath && rawPath !== '/' ? rawPath.replace(/\/+$/, '') : '';
+    return `${host}${path}`;
+  }
+}
+
+export function parseAllowlistInput(raw: string): AllowlistEntry | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (/^app:/i.test(trimmed)) {
+    const app = trimmed.replace(/^app:/i, '').trim().toLowerCase();
+    return app ? { kind: 'app', value: app } : null;
+  }
+  const site = normalizeSiteValue(trimmed);
+  return site ? { kind: 'site', value: site } : null;
+}
+
 export default function PomodoroPanel({ api }: Props) {
   const [session, setSession] = useState<PomodoroSession | null>(null);
   const [remainingMs, setRemainingMs] = useState(0);
@@ -56,7 +90,9 @@ export default function PomodoroPanel({ api }: Props) {
   useEffect(() => {
     api.settings.categorisation()
       .then((cfg) => {
-        const productives = (cfg?.productive ?? []).map<AllowlistEntry>((value) => ({ value, kind: 'site' }));
+        const productives = (cfg?.productive ?? [])
+          .map((value) => parseAllowlistInput(value))
+          .filter((entry): entry is AllowlistEntry => entry != null && entry.kind === 'site');
         const defaults: AllowlistEntry[] = [
           { value: 'docs.google.com', kind: 'site' },
           { value: 'notion.so', kind: 'site' },
@@ -125,14 +161,15 @@ export default function PomodoroPanel({ api }: Props) {
   }
 
   function addAllowlist(value: string) {
-    const cleaned = value.trim();
-    if (!cleaned) return;
-    if (allowlist.some((entry) => entry.value.toLowerCase() === cleaned.toLowerCase())) return;
-    setAllowlist((prev) => [...prev, { value: cleaned, kind: 'site' }]);
+    const parsed = parseAllowlistInput(value);
+    if (!parsed) return;
+    const key = `${parsed.kind}:${parsed.value.toLowerCase()}`;
+    if (allowlist.some((entry) => `${entry.kind}:${entry.value.toLowerCase()}` === key)) return;
+    setAllowlist((prev) => [...prev, parsed]);
   }
 
-  function removeAllowlist(value: string) {
-    setAllowlist((prev) => prev.filter((entry) => entry.value !== value));
+  function removeAllowlist(entry: AllowlistEntry) {
+    setAllowlist((prev) => prev.filter((candidate) => !(candidate.kind === entry.kind && candidate.value === entry.value)));
   }
 
   async function stop(reason: 'completed' | 'canceled' | 'expired' = 'canceled') {
@@ -257,7 +294,7 @@ export default function PomodoroPanel({ api }: Props) {
               <div className="allowlist-custom">
                 <input
                   type="text"
-                  placeholder="custom site or app"
+                  placeholder="site.com or app:Slack"
                   value={customAllowlist}
                   onChange={(e) => setCustomAllowlist(e.target.value)}
                 />
@@ -268,9 +305,9 @@ export default function PomodoroPanel({ api }: Props) {
               {allowlist.length > 0 && (
                 <div className="allowlist-tags">
                   {allowlist.map((entry) => (
-                    <span key={entry.value} className="pill">
-                      {entry.value}
-                      <button type="button" className="chip-remove" onClick={() => removeAllowlist(entry.value)} aria-label={`Remove ${entry.value}`}>×</button>
+                    <span key={`${entry.kind}:${entry.value}`} className="pill">
+                      {entry.kind === 'app' ? `app:${entry.value}` : entry.value}
+                      <button type="button" className="chip-remove" onClick={() => removeAllowlist(entry)} aria-label={`Remove ${entry.value}`}>×</button>
                     </span>
                   ))}
                 </div>

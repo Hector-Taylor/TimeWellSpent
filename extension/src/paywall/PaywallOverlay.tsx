@@ -468,7 +468,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const [error, setError] = useState<string | null>(null);
   const [reviewed, setReviewed] = useState(false);
   const [spinKey, setSpinKey] = useState(0);
-  const [proceedOpen, setProceedOpen] = useState(reason === 'insufficient-funds');
+  const [proceedOpen, setProceedOpen] = useState(reason === 'insufficient-funds' || reason === 'paused');
   const [proceedConfirm, setProceedConfirm] = useState<{ kind: 'pack' | 'metered'; minutes?: number } | null>(null);
   const [feedView, setFeedView] = useState<'for-you' | 'feed'>('for-you');
   const [dashScene, setDashScene] = useState<DashboardScene>(() => {
@@ -1271,6 +1271,24 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     }
   };
 
+  const handleResumeSession = async () => {
+    if (isProcessing) return;
+    setIsProcessing(true);
+    setError(null);
+    try {
+      const result = await chrome.runtime.sendMessage({
+        type: 'RESUME_SESSION',
+        payload: { domain }
+      });
+      if (!result?.success) throw new Error(result?.error ? String(result.error) : 'Failed to resume session');
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const handleStartChallengePass = async (payload: { correctSquares: number; requiredSquares: number; elapsedSeconds: number }) => {
     if (isProcessing) return;
     setIsProcessing(true);
@@ -1351,12 +1369,16 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     }
   };
 
+  const hasPausedSession = Boolean(status.session?.paused);
   const heading =
+    reason === 'paused'
+      ? 'Session paused'
+      :
     reason === 'url-locked'
       ? 'This pass is locked to a specific page'
       : reason === 'insufficient-funds'
         ? 'Insufficient f-coins'
-        : status.session?.paused
+        : hasPausedSession
           ? 'Session paused'
           : 'Choose what this tab becomes';
 
@@ -3747,11 +3769,34 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
               <summary>
                 <div className="tws-proceed-summary">
                   <strong>Proceed</strong>
-                  <span className="tws-subtle">Timebox · Metered · Emergency</span>
+                  <span className="tws-subtle">
+                    {hasPausedSession ? 'Resume · Timebox · Metered · Emergency' : 'Timebox · Metered · Emergency'}
+                  </span>
                 </div>
                 <span className="tws-details-toggle" aria-hidden="true">{proceedOpen ? '-' : '+'}</span>
               </summary>
               <div className="tws-details-body">
+                {hasPausedSession && (
+                  <section className="tws-paywall-option" style={{ margin: 0 }}>
+                    <div className="tws-option-header">
+                      <h3>Resume paused session</h3>
+                      <p className="tws-subtle">
+                        Continue without buying a new pack.
+                        {sessionMinutesLeft != null ? ` ${sessionMinutesLeft}m left.` : ''}
+                      </p>
+                    </div>
+                    <div className="tws-option-action">
+                      <div className="tws-price-tag">
+                        <strong>0</strong>
+                        <small>f-coins</small>
+                      </div>
+                      <button className="tws-primary" onClick={handleResumeSession} disabled={isProcessing}>
+                        Resume session
+                      </button>
+                    </div>
+                  </section>
+                )}
+
                 {unlock && (
                   <section className="tws-paywall-option" style={{ margin: 0 }}>
                     <div className="tws-option-header">
