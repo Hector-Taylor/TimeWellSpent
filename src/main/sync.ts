@@ -485,7 +485,7 @@ export class SyncService {
           updatedAt: row.updated_at,
           periodHours: rangeHours,
           totalActiveSeconds: 0,
-          categoryBreakdown: { productive: 0, neutral: 0, frivolity: 0, draining: 0, idle: 0 },
+          categoryBreakdown: { productive: 0, neutral: 0, frivolity: 0, draining: 0, emergency: 0, idle: 0 },
           deepWorkSeconds: 0,
           productivityScore: 0,
           emergencySessions: 0
@@ -549,6 +549,7 @@ export class SyncService {
       neutral: 0,
       frivolity: 0,
       draining: 0,
+      emergency: 0,
       idle: 0
     };
     let deepWorkSeconds = 0;

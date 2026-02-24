@@ -62,7 +62,6 @@ export class EmergencyService {
 
     logger.info('Starting emergency session', { domain, policy: policy.id, allowedUrl });
     const session = this.paywall.startEmergency(domain, justification, {
-      durationSeconds: policy.durationSeconds,
       allowedUrl: allowedUrl ?? undefined
     });
     this.consumption.record({
@@ -72,7 +71,7 @@ export class EmergencyService {
       domain,
       meta: {
         policy: policy.id,
-        durationSeconds: policy.durationSeconds,
+        durationSeconds: null,
         justification
       }
     });

@@ -1,4 +1,4 @@
-import { storage, type DailyOnboardingState, type LibraryItem, type LibraryPurpose, type PendingActivityEvent, type PomodoroSession, type PaywallSession, type ReflectionSlideshowSettings } from './storage';
+import { storage, type DailyOnboardingState, type LibraryItem, type LibraryPurpose, type PendingActivityEvent, type PomodoroSession, type PaywallSession, type ReflectionSlideshowSettings, type WritingHudSession } from './storage';
 import { DESKTOP_API_URL, DESKTOP_WS_URL } from './constants';
 import {
     getPomodoroSiteBlockReason,
@@ -6,9 +6,12 @@ import {
     normalizePomodoroDomain,
     parsePomodoroSiteTarget
 } from '../../src/shared/pomodoroMatcher';
+import { getWritingTargetIdentity, matchesWritingTargetUrl, type WritingTargetKind } from './writing/targetAdapters';
 
 type IdleState = 'active' | 'idle' | 'locked';
 type EmergencyPolicyId = 'off' | 'gentle' | 'balanced' | 'strict';
+type TimeoutHandle = ReturnType<typeof setTimeout>;
+type IntervalHandle = ReturnType<typeof setInterval>;
 
 const DEFAULT_UNLOCK_PRICE = 12;
 const NOTIFICATION_ICON = chrome.runtime.getURL('assets/notification.png');
@@ -28,9 +31,9 @@ const CONTEXT_MENU_IDS = {
 } as const;
 
 let ws: WebSocket | null = null;
-let reconnectTimer: number | null = null;
-let heartbeatTimer: number | null = null;
-let sessionTicker: number | null = null;
+let reconnectTimer: TimeoutHandle | null = null;
+let heartbeatTimer: IntervalHandle | null = null;
+let sessionTicker: IntervalHandle | null = null;
 let devSimulateDesktopDisconnect = false;
 let devLogSessionDrift = false;
 let idleState: IdleState = 'active';
@@ -41,7 +44,7 @@ const ROULETTE_PROMPT_MIN_MS = 20_000;
 const PENDING_ACTIVITY_FLUSH_LIMIT = 400;
 const PENDING_USAGE_FLUSH_LIMIT = 200;
 const rotModeStartInFlight = new Set<string>();
-let pendingUsageFlushTimer: number | null = null;
+let pendingUsageFlushTimer: TimeoutHandle | null = null;
 const lastEncouragement = new Map<string, number>();
 const lastEncouragementMessage = new Map<string, string>();
 const doomscrollNotificationMap = new Map<string, { breakUrl: string; rescue?: { url: string; label: string } }>();
@@ -133,6 +136,56 @@ type UserActivityPayload = {
     title?: string;
 };
 
+type WritingProjectKind = 'journal' | 'paper' | 'substack' | 'fiction' | 'essay' | 'notes' | 'other';
+type WritingSurface = 'extension-newtab';
+
+type OpenWritingTargetPayload = {
+    projectId?: number;
+    projectTitle?: string;
+    projectKind?: WritingProjectKind;
+    targetKind?: WritingTargetKind;
+    targetUrl?: string;
+    targetId?: string | null;
+    currentWordCount?: number | null;
+    sprintMinutes?: number | null;
+    sourceSurface?: WritingSurface;
+    replaceCurrent?: boolean;
+};
+
+type WritingHudProgressPayload = {
+    sessionId?: string;
+    occurredAt?: string;
+    href?: string;
+    pageTitle?: string | null;
+    locationLabel?: string | null;
+    activeSecondsTotal?: number | null;
+    focusedSecondsTotal?: number | null;
+    keystrokesTotal?: number | null;
+    wordsAddedTotal?: number | null;
+    wordsDeletedTotal?: number | null;
+    netWordsTotal?: number | null;
+    currentWordCount?: number | null;
+    bodyTextLength?: number | null;
+    meta?: Record<string, unknown>;
+};
+
+function createWritingSessionId() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    return `writing-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function clampWritingCounter(value: unknown, fallback = 0) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(0, Math.round(n));
+}
+
+function clampWritingCounterSigned(value: unknown, fallback = 0) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.round(n);
+}
+
 type ReflectionPhoto = {
     id: string;
     capturedAt: string;
@@ -156,7 +209,7 @@ type DoomscrollWindow = {
     clickEvents: number;
 };
 const behaviorEventQueue: BehaviorEventPayload[] = [];
-let behaviorEventFlushTimer: number | null = null;
+let behaviorEventFlushTimer: TimeoutHandle | null = null;
 let behaviorEventFlushInFlight = false;
 const doomscrollByDomain = new Map<string, DoomscrollWindow>();
 const lastDoomscrollIntervention = new Map<string, number>();
@@ -199,12 +252,12 @@ function getEmergencyPolicyConfig(id: EmergencyPolicyId): EmergencyPolicyConfig 
         case 'off':
             return { id, durationSeconds: 0, tokensPerDay: 0, cooldownSeconds: 0, urlLocked: true };
         case 'gentle':
-            return { id, durationSeconds: 5 * 60, tokensPerDay: null, cooldownSeconds: 0, urlLocked: true };
+            return { id, durationSeconds: 5 * 60, tokensPerDay: null, cooldownSeconds: 0, urlLocked: false };
         case 'strict':
-            return { id, durationSeconds: 2 * 60, tokensPerDay: 1, cooldownSeconds: 60 * 60, urlLocked: true };
+            return { id, durationSeconds: 2 * 60, tokensPerDay: 1, cooldownSeconds: 60 * 60, urlLocked: false };
         case 'balanced':
         default:
-            return { id: 'balanced', durationSeconds: 3 * 60, tokensPerDay: 2, cooldownSeconds: 30 * 60, urlLocked: true };
+            return { id: 'balanced', durationSeconds: 3 * 60, tokensPerDay: 2, cooldownSeconds: 30 * 60, urlLocked: false };
     }
 }
 
@@ -506,6 +559,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     tabPeekState.delete(tabId);
     tabActivityById.delete(tabId);
     pomodoroBlockStateByTab.delete(tabId);
+    storage.getWritingHudSession().then((writingSession) => {
+        if (!writingSession || writingSession.tabId !== tabId) return;
+        void postWritingHudEndToDesktop(writingSession);
+        void storage.clearWritingHudSession(writingSession.sessionId);
+    }).catch(() => { });
     const session = rouletteByTabId.get(tabId);
     if (!session) return;
     rouletteByTabId.delete(tabId);
@@ -730,7 +788,9 @@ function handleDesktopMessage(data: any) {
                     const tabDomain = new URL(tab.url).hostname.replace(/^www\./, '');
                     if (tabDomain === domain) {
                         console.log(`🚫 Immediately blocking ${domain} due to session end`);
-                        await showBlockScreen(tab.id, domain, reason, 'session-ended');
+                        await showBlockScreen(tab.id, domain, reason, 'session-ended', {
+                            keepPageVisible: reason === 'emergency-expired'
+                        });
                     }
                 }
             });
@@ -770,7 +830,7 @@ function handleDesktopMessage(data: any) {
             type: 'basic',
             iconUrl: 'icons/icon128.png',
             title: 'Emergency access reminder',
-            message: `You are on borrowed time for ${domain}${justification ? ` — Reason: ${justification}` : ''}.`
+            message: `Emergency mode is still active for ${domain}. Is this still an emergency?${justification ? ` Reason: ${justification}.` : ''}`
         });
     } else if (data.type === 'pomodoro-start' && data.payload) {
         const session = data.payload as PomodoroSession;
@@ -833,6 +893,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (changeInfo.status === 'loading' && tab.url && tab.url.startsWith('http')) {
         recordTabNavigation(tabId, tab.url);
+        await maybeEndWritingHudOnTabNavigation(tabId, tab.url);
     }
     if ((changeInfo.status === 'loading' || changeInfo.status === 'complete') && tab.url) {
         await checkAndBlockUrl(tabId, tab.url, `onUpdated:${changeInfo.status}`);
@@ -845,6 +906,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 chrome.webNavigation.onCommitted.addListener(async (details) => {
     if (details.frameId !== 0) return; // Only main frame
     recordTabNavigation(details.tabId, details.url);
+    await maybeEndWritingHudOnTabNavigation(details.tabId, details.url);
     await checkAndBlockUrl(details.tabId, details.url, 'webNavigation:onCommitted');
 });
 
@@ -1080,12 +1142,6 @@ async function tickSessions() {
             }
         }
 
-        if (!Number.isFinite(session.remainingSeconds)) {
-            const policyId = await storage.getEmergencyPolicy();
-            const policy = getEmergencyPolicyConfig(policyId);
-            session.remainingSeconds = policy.durationSeconds;
-        }
-
         const reminderIntervalMs = 300 * 1000; // default 5m for offline mode
         const lastReminder = session.lastReminder ?? session.startedAt;
         if (Date.now() - lastReminder > reminderIntervalMs) {
@@ -1095,23 +1151,27 @@ async function tickSessions() {
                 type: 'basic',
                 iconUrl: 'icons/icon128.png',
                 title: 'Emergency access reminder',
-                message: `You are on borrowed time for ${activeDomain}${session.justification ? ` — Reason: ${session.justification}` : ''}.`
+                message: `Emergency mode is still active for ${activeDomain}. Is this still an emergency?${session.justification ? ` Reason: ${session.justification}.` : ''}`
             });
         }
 
         const elapsedSeconds = getSafeElapsedSeconds(session, now);
-        session.remainingSeconds -= elapsedSeconds;
+        if (Number.isFinite(session.remainingSeconds)) {
+            session.remainingSeconds -= elapsedSeconds;
+        }
         session.lastTick = now;
-        if (session.remainingSeconds <= 0) {
+        if (Number.isFinite(session.remainingSeconds) && session.remainingSeconds <= 0) {
             await storage.recordEmergencyEnded({
                 domain: activeDomain,
                 justification: session.justification,
                 endedAt: now
             });
             await storage.clearSession(activeDomain);
-            if (activeTab.id) {
-                await showBlockScreen(activeTab.id, activeDomain, 'emergency-expired', 'session-expired');
-            }
+                if (activeTab.id) {
+                    await showBlockScreen(activeTab.id, activeDomain, 'emergency-expired', 'session-expired', {
+                        keepPageVisible: true
+                    });
+                }
         } else {
             await storage.setSession(activeDomain, session);
         }
@@ -1419,15 +1479,23 @@ async function getPeekPayload(tabId: number, source?: string) {
     };
 }
 
-async function showBlockScreen(tabId: number, domain: string, reason?: string, source?: string) {
-    await preHidePage(tabId);
+async function showBlockScreen(
+    tabId: number,
+    domain: string,
+    reason?: string,
+    source?: string,
+    options?: { keepPageVisible?: boolean }
+) {
+    if (!options?.keepPageVisible) {
+        await preHidePage(tabId);
+    }
     await ensureContentScript(tabId);
 
     try {
         const peek = await getPeekPayload(tabId, source);
         await chrome.tabs.sendMessage(tabId, {
             type: 'BLOCK_SCREEN',
-            payload: { domain, reason, peek }
+            payload: { domain, reason, peek, keepPageVisible: options?.keepPageVisible ?? false }
         });
         console.log(`🔒 Block screen message sent to tab ${tabId} for ${domain}`);
     } catch (error) {
@@ -1907,8 +1975,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message.type === 'GET_LINK_PREVIEWS') {
         handleGetLinkPreviews(message.payload).then(sendResponse);
         return true;
+    } else if (message.type === 'GET_WRITING_REDIRECTS') {
+        handleGetWritingRedirects(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'OPEN_WRITING_TARGET') {
+        handleOpenWritingTarget(message.payload, _sender).then(sendResponse);
+        return true;
+    } else if (message.type === 'WRITING_HUD_PROGRESS') {
+        handleWritingHudProgress(message.payload, _sender).then(sendResponse);
+        return true;
+    } else if (message.type === 'WRITING_HUD_END') {
+        handleWritingHudEnd(message.payload, _sender).then(sendResponse);
+        return true;
     } else if (message.type === 'OPEN_URL') {
         handleOpenUrl(message.payload, _sender).then(sendResponse);
+        return true;
+    } else if (message.type === 'OPEN_EXTENSION_PAGE') {
+        handleOpenExtensionPage(message.payload, _sender).then(sendResponse);
         return true;
     } else if (message.type === 'OPEN_APP') {
         handleOpenApp(message.payload).then(sendResponse);
@@ -3075,23 +3158,31 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
 function normalizeReflectionRequest(payload: {
     lookbackDays?: number;
     maxPhotos?: number;
-} | null | undefined): { lookbackDays: number; maxPhotos: number } {
+    allTime?: boolean;
+    allPhotos?: boolean;
+} | null | undefined): { lookbackDays: number; maxPhotos: number; allTime: boolean; allPhotos: boolean } {
     const lookbackInput = Number(payload?.lookbackDays);
     const maxPhotosInput = Number(payload?.maxPhotos);
-    const lookbackDays = Number.isFinite(lookbackInput) ? Math.max(1, Math.min(14, Math.round(lookbackInput))) : 1;
-    const maxPhotos = Number.isFinite(maxPhotosInput) ? Math.max(4, Math.min(40, Math.round(maxPhotosInput))) : 18;
-    return { lookbackDays, maxPhotos };
+    const allTime = Boolean(payload?.allTime) || (Number.isFinite(lookbackInput) && lookbackInput <= 0);
+    const allPhotos = Boolean(payload?.allPhotos) || (Number.isFinite(maxPhotosInput) && maxPhotosInput <= 0);
+    const lookbackDays = allTime
+        ? 0
+        : (Number.isFinite(lookbackInput) ? Math.max(1, Math.min(3650, Math.round(lookbackInput))) : 1);
+    const maxPhotos = allPhotos
+        ? 0
+        : (Number.isFinite(maxPhotosInput) ? Math.max(1, Math.min(5000, Math.round(maxPhotosInput))) : 18);
+    return { lookbackDays, maxPhotos, allTime, allPhotos };
 }
 
-async function handleGetReflectionPhotos(payload: { lookbackDays?: number; maxPhotos?: number }) {
+async function handleGetReflectionPhotos(payload: { lookbackDays?: number; maxPhotos?: number; allTime?: boolean; allPhotos?: boolean }) {
     const normalized = normalizeReflectionRequest(payload);
     try {
-        const scope = normalized.lookbackDays <= 1 ? 'day' : 'all';
-        const query = new URLSearchParams({
-            scope,
-            days: String(normalized.lookbackDays),
-            limit: String(normalized.maxPhotos)
-        });
+        const scope = normalized.allTime ? 'all' : (normalized.lookbackDays <= 1 ? 'day' : 'all');
+        const query = new URLSearchParams({ scope });
+        if (!normalized.allTime) {
+            query.set('days', String(normalized.lookbackDays));
+        }
+        query.set('limit', String(normalized.allPhotos ? 5000 : normalized.maxPhotos));
         const response = await fetch(`${DESKTOP_API_URL}/camera/photos?${query.toString()}`, { cache: 'no-store' });
         if (!response.ok) {
             throw new Error(`Desktop camera feed unavailable (${response.status})`);
@@ -3135,6 +3226,26 @@ async function handleGetTrophies() {
         return { success: true, trophies, profile };
     } catch (error) {
         return { success: false, error: (error as Error).message, trophies: [], profile: null };
+    }
+}
+
+async function handleGetWritingRedirects(payload: { domain?: string; limit?: number }) {
+    try {
+        const domain = typeof payload?.domain === 'string' ? payload.domain.trim() : '';
+        const rawLimit = Number(payload?.limit);
+        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(8, Math.round(rawLimit))) : 4;
+        const query = new URLSearchParams({ limit: String(limit) });
+        if (domain) query.set('domain', domain);
+        const response = await fetch(`${DESKTOP_API_URL}/writing/redirect-suggestions?${query.toString()}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error('Desktop unavailable');
+        const data = await response.json();
+        return { success: true, data };
+    } catch (error) {
+        return {
+            success: false,
+            error: (error as Error).message,
+            data: { blockedDomain: null, items: [], prompts: [] }
+        };
     }
 }
 
@@ -3329,6 +3440,274 @@ async function handleOpenUrl(payload: { url: string; roulette?: { title?: string
                 readingId: typeof payload.roulette.readingId === 'string' ? payload.roulette.readingId : undefined
             });
         }
+        return { success: true };
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+}
+
+async function postWritingHudProgressToDesktop(session: WritingHudSession, payload: WritingHudProgressPayload) {
+    try {
+        await fetch(`${DESKTOP_API_URL}/analytics/writing/sessions/${encodeURIComponent(session.sessionId)}/progress`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            body: JSON.stringify({
+                occurredAt: payload.occurredAt ?? new Date().toISOString(),
+                activeSecondsTotal: clampWritingCounter(payload.activeSecondsTotal, session.activeSecondsTotal),
+                focusedSecondsTotal: clampWritingCounter(payload.focusedSecondsTotal, session.focusedSecondsTotal),
+                keystrokesTotal: clampWritingCounter(payload.keystrokesTotal, session.keystrokesTotal),
+                wordsAddedTotal: clampWritingCounter(payload.wordsAddedTotal, session.wordsAddedTotal),
+                wordsDeletedTotal: clampWritingCounter(payload.wordsDeletedTotal, session.wordsDeletedTotal),
+                netWordsTotal: clampWritingCounterSigned(payload.netWordsTotal, session.netWordsTotal),
+                currentWordCount: clampWritingCounter(payload.currentWordCount, session.currentWordCount),
+                bodyTextLength: payload.bodyTextLength == null ? (session.bodyTextLength ?? null) : clampWritingCounter(payload.bodyTextLength, session.bodyTextLength ?? 0),
+                locationLabel: payload.locationLabel ?? session.locationLabel ?? null,
+                meta: {
+                    adapter: session.adapter,
+                    pageTitle: payload.pageTitle ?? session.pageTitle ?? null,
+                    href: payload.href ?? session.targetUrl,
+                    ...(payload.meta ?? {})
+                }
+            })
+        });
+    } catch {
+        // best effort: keep local HUD state even if desktop is temporarily unavailable
+    }
+}
+
+async function postWritingHudEndToDesktop(session: WritingHudSession) {
+    try {
+        await fetch(`${DESKTOP_API_URL}/analytics/writing/sessions/${encodeURIComponent(session.sessionId)}/end`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            body: JSON.stringify({
+                occurredAt: new Date().toISOString(),
+                activeSecondsTotal: session.activeSecondsTotal,
+                focusedSecondsTotal: session.focusedSecondsTotal,
+                keystrokesTotal: session.keystrokesTotal,
+                wordsAddedTotal: session.wordsAddedTotal,
+                wordsDeletedTotal: session.wordsDeletedTotal,
+                netWordsTotal: session.netWordsTotal,
+                currentWordCount: session.currentWordCount,
+                bodyTextLength: session.bodyTextLength ?? null,
+                locationLabel: session.locationLabel ?? null,
+                meta: {
+                    adapter: session.adapter,
+                    pageTitle: session.pageTitle ?? null,
+                    href: session.targetUrl
+                }
+            })
+        });
+    } catch {
+        // best effort
+    }
+}
+
+async function handleOpenWritingTarget(payload: OpenWritingTargetPayload, sender: chrome.runtime.MessageSender) {
+    const projectId = Number(payload?.projectId);
+    if (!Number.isFinite(projectId) || projectId <= 0) {
+        return { success: false, error: 'Missing project id' };
+    }
+    const targetUrl = typeof payload?.targetUrl === 'string' ? payload.targetUrl.trim() : '';
+    if (!targetUrl || !/^https?:/i.test(targetUrl)) {
+        return { success: false, error: 'A valid http(s) target URL is required' };
+    }
+    const targetKind = payload?.targetKind;
+    if (targetKind !== 'google-doc' && targetKind !== 'tana-node' && targetKind !== 'external-link') {
+        return { success: false, error: 'Unsupported writing target kind' };
+    }
+    const projectTitle = typeof payload?.projectTitle === 'string' && payload.projectTitle.trim()
+        ? payload.projectTitle.trim()
+        : 'Writing Project';
+    const projectKind = payload?.projectKind ?? 'other';
+    const sourceSurface: WritingSurface = payload?.sourceSurface === 'extension-newtab' ? 'extension-newtab' : 'extension-newtab';
+    const sprintMinutes = Number.isFinite(payload?.sprintMinutes as number)
+        ? Math.max(1, Math.min(180, Math.round(payload!.sprintMinutes as number)))
+        : null;
+    const currentWordCount = clampWritingCounter(payload?.currentWordCount, 0);
+
+    const identity = getWritingTargetIdentity(targetUrl, targetKind, typeof payload?.targetId === 'string' ? payload.targetId : null);
+    if (!identity) return { success: false, error: 'Unable to parse writing target URL' };
+
+    const existingHudSession = await storage.getWritingHudSession();
+    if (existingHudSession) {
+        await postWritingHudEndToDesktop(existingHudSession);
+        await storage.clearWritingHudSession(existingHudSession.sessionId);
+    }
+
+    const sessionId = createWritingSessionId();
+    const startedAtIso = new Date().toISOString();
+
+    try {
+        const startResponse = await fetch(`${DESKTOP_API_URL}/analytics/writing/sessions/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            body: JSON.stringify({
+                sessionId,
+                projectId: Math.round(projectId),
+                sourceSurface,
+                sprintMinutes,
+                startedAt: startedAtIso,
+                meta: {
+                    launch: 'external-target',
+                    adapter: identity.adapter,
+                    canonicalKey: identity.canonicalKey,
+                    canonicalId: identity.canonicalId ?? null,
+                    targetUrl
+                }
+            })
+        });
+        if (!startResponse.ok) {
+            const body = await startResponse.json().catch(() => null);
+            const message = body?.error ? String(body.error) : 'Failed to start writing session';
+            return { success: false, error: message };
+        }
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+
+    try {
+        let tabId = sender.tab?.id;
+        const replaceCurrent = payload?.replaceCurrent !== false;
+        if (replaceCurrent && typeof tabId === 'number') {
+            await chrome.tabs.update(tabId, { url: targetUrl });
+        } else {
+            const created = await chrome.tabs.create({ url: targetUrl, active: true });
+            tabId = created?.id;
+        }
+
+        const hudSession: WritingHudSession = {
+            sessionId,
+            projectId: Math.round(projectId),
+            projectTitle,
+            projectKind,
+            targetKind,
+            targetUrl,
+            targetId: typeof payload?.targetId === 'string' ? payload.targetId : null,
+            canonicalKey: identity.canonicalKey,
+            canonicalId: identity.canonicalId ?? null,
+            adapter: identity.adapter,
+            sourceSurface,
+            sprintMinutes,
+            tabId: typeof tabId === 'number' ? tabId : null,
+            startedAt: Date.now(),
+            currentWordCount,
+            baselineWordCount: currentWordCount,
+            activeSecondsTotal: 0,
+            focusedSecondsTotal: 0,
+            keystrokesTotal: 0,
+            wordsAddedTotal: 0,
+            wordsDeletedTotal: 0,
+            netWordsTotal: 0,
+            bodyTextLength: null,
+            locationLabel: identity.adapter === 'google-docs' ? 'Google Docs' : identity.adapter === 'tana-web' ? 'Tana Web' : 'Browser Editor',
+            pageTitle: null,
+            lastEventAt: null
+        };
+        await storage.setWritingHudSession(hudSession);
+        return { success: true, sessionId, tabId: hudSession.tabId };
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+}
+
+async function handleWritingHudProgress(payload: WritingHudProgressPayload, sender: chrome.runtime.MessageSender) {
+    const sessionId = typeof payload?.sessionId === 'string' ? payload.sessionId.trim() : '';
+    if (!sessionId) return { success: false, error: 'Missing session id' };
+
+    const session = await storage.getWritingHudSession();
+    if (!session || session.sessionId !== sessionId) return { success: false, error: 'No active writing HUD session' };
+
+    if (session.tabId != null && sender.tab?.id != null && session.tabId !== sender.tab.id) {
+        return { success: false, error: 'Writing HUD session belongs to another tab' };
+    }
+    if (payload.href && !matchesWritingTargetUrl(payload.href, session)) {
+        return { success: false, error: 'URL no longer matches active writing target' };
+    }
+
+    const next: Partial<WritingHudSession> & { sessionId: string } = {
+        sessionId,
+        pageTitle: typeof payload.pageTitle === 'string' ? payload.pageTitle : session.pageTitle ?? null,
+        locationLabel: typeof payload.locationLabel === 'string' ? payload.locationLabel : session.locationLabel ?? null,
+        currentWordCount: clampWritingCounter(payload.currentWordCount, session.currentWordCount),
+        activeSecondsTotal: Math.max(session.activeSecondsTotal, clampWritingCounter(payload.activeSecondsTotal, session.activeSecondsTotal)),
+        focusedSecondsTotal: Math.max(session.focusedSecondsTotal, clampWritingCounter(payload.focusedSecondsTotal, session.focusedSecondsTotal)),
+        keystrokesTotal: Math.max(session.keystrokesTotal, clampWritingCounter(payload.keystrokesTotal, session.keystrokesTotal)),
+        wordsAddedTotal: Math.max(session.wordsAddedTotal, clampWritingCounter(payload.wordsAddedTotal, session.wordsAddedTotal)),
+        wordsDeletedTotal: Math.max(session.wordsDeletedTotal, clampWritingCounter(payload.wordsDeletedTotal, session.wordsDeletedTotal)),
+        netWordsTotal: clampWritingCounterSigned(payload.netWordsTotal, session.netWordsTotal),
+        bodyTextLength: payload.bodyTextLength == null ? session.bodyTextLength ?? null : clampWritingCounter(payload.bodyTextLength, session.bodyTextLength ?? 0),
+        tabId: sender.tab?.id ?? session.tabId ?? null,
+        lastEventAt: Date.now()
+    };
+
+    const updated = await storage.updateWritingHudSession(next);
+    if (updated) {
+        void postWritingHudProgressToDesktop(updated, payload);
+        return { success: true };
+    }
+    return { success: false, error: 'Writing HUD session expired' };
+}
+
+async function handleWritingHudEnd(payload: WritingHudProgressPayload, sender: chrome.runtime.MessageSender) {
+    const sessionId = typeof payload?.sessionId === 'string' ? payload.sessionId.trim() : '';
+    if (!sessionId) return { success: false, error: 'Missing session id' };
+    const current = await storage.getWritingHudSession();
+    if (!current || current.sessionId !== sessionId) return { success: false, error: 'No active writing HUD session' };
+    if (current.tabId != null && sender.tab?.id != null && current.tabId !== sender.tab.id) {
+        return { success: false, error: 'Writing HUD session belongs to another tab' };
+    }
+
+    const merged = await storage.updateWritingHudSession({
+        sessionId,
+        pageTitle: typeof payload.pageTitle === 'string' ? payload.pageTitle : current.pageTitle ?? null,
+        locationLabel: typeof payload.locationLabel === 'string' ? payload.locationLabel : current.locationLabel ?? null,
+        currentWordCount: clampWritingCounter(payload.currentWordCount, current.currentWordCount),
+        activeSecondsTotal: Math.max(current.activeSecondsTotal, clampWritingCounter(payload.activeSecondsTotal, current.activeSecondsTotal)),
+        focusedSecondsTotal: Math.max(current.focusedSecondsTotal, clampWritingCounter(payload.focusedSecondsTotal, current.focusedSecondsTotal)),
+        keystrokesTotal: Math.max(current.keystrokesTotal, clampWritingCounter(payload.keystrokesTotal, current.keystrokesTotal)),
+        wordsAddedTotal: Math.max(current.wordsAddedTotal, clampWritingCounter(payload.wordsAddedTotal, current.wordsAddedTotal)),
+        wordsDeletedTotal: Math.max(current.wordsDeletedTotal, clampWritingCounter(payload.wordsDeletedTotal, current.wordsDeletedTotal)),
+        netWordsTotal: clampWritingCounterSigned(payload.netWordsTotal, current.netWordsTotal),
+        bodyTextLength: payload.bodyTextLength == null ? current.bodyTextLength ?? null : clampWritingCounter(payload.bodyTextLength, current.bodyTextLength ?? 0),
+        lastEventAt: Date.now()
+    });
+    const finalSession = merged ?? current;
+    await postWritingHudEndToDesktop(finalSession);
+    await storage.clearWritingHudSession(sessionId);
+    return { success: true };
+}
+
+async function maybeEndWritingHudOnTabNavigation(tabId: number, url?: string | null) {
+    if (!url || !/^https?:/i.test(url)) return;
+    const session = await storage.getWritingHudSession();
+    if (!session || session.tabId !== tabId) return;
+    if (matchesWritingTargetUrl(url, session)) return;
+    await postWritingHudEndToDesktop(session);
+    await storage.clearWritingHudSession(session.sessionId);
+}
+
+async function handleOpenExtensionPage(payload: { path?: string; replaceCurrent?: boolean }, sender: chrome.runtime.MessageSender) {
+    const rawPath = typeof payload?.path === 'string' ? payload.path.trim() : '';
+    if (!rawPath) return { success: false, error: 'Missing extension path' };
+
+    const normalizedPath = rawPath.replace(/^\/+/, '');
+    if (!normalizedPath.toLowerCase().startsWith('newtab.html')) {
+        return { success: false, error: 'Only the new tab page can be opened' };
+    }
+
+    try {
+        const url = chrome.runtime.getURL(normalizedPath);
+        const replaceCurrent = payload?.replaceCurrent !== false;
+        const tabId = sender.tab?.id;
+        if (replaceCurrent && typeof tabId === 'number') {
+            await chrome.tabs.update(tabId, { url });
+            return { success: true };
+        }
+        await chrome.tabs.create({ url, active: true });
         return { success: true };
     } catch (error) {
         return { success: false, error: (error as Error).message };
@@ -3626,7 +4005,7 @@ async function handleStartEmergency(payload: { domain: string; justification: st
         domain: payload.domain,
         mode: 'emergency' as const,
         ratePerMin: 0,
-        remainingSeconds: policy.durationSeconds,
+        remainingSeconds: Number.POSITIVE_INFINITY,
         startedAt: now,
         lastTick: now,
         paused: false,
@@ -3645,7 +4024,7 @@ async function handleStartEmergency(payload: { domain: string; justification: st
         meta: {
             justification: payload.justification,
             policy: policy.id,
-            durationSeconds: policy.durationSeconds
+            durationSeconds: null
         }
     });
     console.log(`✅ Started emergency session for ${payload.domain} (offline mode)`);

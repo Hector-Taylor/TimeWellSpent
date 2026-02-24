@@ -60,6 +60,8 @@ export class ActivityTracker {
   private recentStmt: Statement;
   private summaryStmt: Statement;
   private journeyStmt: Statement;
+  private readingHourlyRollupsInRangeStmt: Statement;
+  private writingHourlyRollupsInRangeStmt: Statement;
   private current: CurrentActivity | null = null;
 
   constructor(database: Database, private readonly getExcludedKeywords?: () => string[]) {
@@ -90,6 +92,12 @@ export class ActivityTracker {
     );
     this.journeyStmt = this.db.prepare(
       'SELECT started_at as startedAt, ended_at as endedAt, source, app_name as appName, domain, category, seconds_active as secondsActive, idle_seconds as idleSeconds FROM activities WHERE started_at <= ? AND (ended_at IS NULL OR ended_at >= ?) ORDER BY started_at ASC'
+    );
+    this.readingHourlyRollupsInRangeStmt = this.db.prepare(
+      'SELECT hour_start as hourStart, active_seconds as activeSeconds FROM reading_hourly_rollups WHERE hour_start >= ? AND hour_start <= ? ORDER BY hour_start ASC'
+    );
+    this.writingHourlyRollupsInRangeStmt = this.db.prepare(
+      'SELECT hour_start as hourStart, active_seconds as activeSeconds FROM writing_hourly_rollups WHERE hour_start >= ? AND hour_start <= ? ORDER BY hour_start ASC'
     );
   }
 
@@ -254,6 +262,7 @@ export class ActivityTracker {
       neutral: 0,
       frivolity: 0,
       draining: 0,
+      emergency: 0,
       idle: 0,
       uncategorised: 0
     };
@@ -275,6 +284,7 @@ export class ActivityTracker {
       neutral: 0,
       frivolity: 0,
       draining: 0,
+      emergency: 0,
       idle: 0,
       deepWork: 0,
       dominant: 'idle' as ActivityCategory | 'idle',
@@ -371,17 +381,109 @@ export class ActivityTracker {
       }
     }
 
+    const readingHourlyRows = this.readingHourlyRollupsInRangeStmt.all(windowStartIso, windowEndIso) as Array<{
+      hourStart: string;
+      activeSeconds: number;
+    }>;
+    if (readingHourlyRows.length) {
+      const syntheticKey = 'Reading (TimeWellSpent)';
+      let syntheticContext = contextTotals.get(syntheticKey);
+      if (!syntheticContext) {
+        syntheticContext = {
+          label: syntheticKey,
+          category: 'productive',
+          seconds: 0,
+          source: 'app' as ActivitySource,
+          domain: null,
+          appName: 'TimeWellSpent Reader'
+        };
+        contextTotals.set(syntheticKey, syntheticContext);
+      }
+
+      for (const row of readingHourlyRows) {
+        const ts = Date.parse(row.hourStart);
+        if (!Number.isFinite(ts)) continue;
+        const seconds = Math.max(0, Math.round(row.activeSeconds ?? 0));
+        if (seconds <= 0) continue;
+        totalSeconds += seconds;
+        totalsByCategory.productive += seconds;
+        syntheticContext.seconds += seconds;
+
+        const idx = Math.floor((ts - windowStartMs) / HOUR_MS);
+        if (idx < 0 || idx >= timeline.length) continue;
+        timeline[idx].productive += seconds;
+        const ctxMap = timelineContexts[idx];
+        const existing = ctxMap.get(syntheticKey) ?? {
+          label: syntheticKey,
+          category: 'productive' as ActivityCategory,
+          seconds: 0,
+          source: 'app' as ActivitySource,
+          domain: null,
+          appName: 'TimeWellSpent Reader'
+        };
+        existing.seconds += seconds;
+        ctxMap.set(syntheticKey, existing);
+      }
+    }
+
+    const writingHourlyRows = this.writingHourlyRollupsInRangeStmt.all(windowStartIso, windowEndIso) as Array<{
+      hourStart: string;
+      activeSeconds: number;
+    }>;
+    if (writingHourlyRows.length) {
+      const syntheticKey = 'Writing (TimeWellSpent)';
+      let syntheticContext = contextTotals.get(syntheticKey);
+      if (!syntheticContext) {
+        syntheticContext = {
+          label: syntheticKey,
+          category: 'productive',
+          seconds: 0,
+          source: 'app' as ActivitySource,
+          domain: null,
+          appName: 'TimeWellSpent Writing Studio'
+        };
+        contextTotals.set(syntheticKey, syntheticContext);
+      }
+
+      for (const row of writingHourlyRows) {
+        const ts = Date.parse(row.hourStart);
+        if (!Number.isFinite(ts)) continue;
+        const seconds = Math.max(0, Math.round(row.activeSeconds ?? 0));
+        if (seconds <= 0) continue;
+        totalSeconds += seconds;
+        totalsByCategory.productive += seconds;
+        syntheticContext.seconds += seconds;
+
+        const idx = Math.floor((ts - windowStartMs) / HOUR_MS);
+        if (idx < 0 || idx >= timeline.length) continue;
+        timeline[idx].productive += seconds;
+        const ctxMap = timelineContexts[idx];
+        const existing = ctxMap.get(syntheticKey) ?? {
+          label: syntheticKey,
+          category: 'productive' as ActivityCategory,
+          seconds: 0,
+          source: 'app' as ActivitySource,
+          domain: null,
+          appName: 'TimeWellSpent Writing Studio'
+        };
+        existing.seconds += seconds;
+        ctxMap.set(syntheticKey, existing);
+      }
+    }
+
     timeline.forEach((slot, idx) => {
       slot.productive = Math.round(slot.productive);
       slot.neutral = Math.round(slot.neutral);
       slot.frivolity = Math.round(slot.frivolity);
       slot.draining = Math.round(slot.draining);
+      slot.emergency = Math.round(slot.emergency);
       slot.idle = Math.round(slot.idle);
       const counts: Array<{ key: ActivityCategory | 'idle'; value: number }> = [
         { key: 'productive', value: slot.productive },
         { key: 'neutral', value: slot.neutral },
         { key: 'frivolity', value: slot.frivolity },
         { key: 'draining', value: slot.draining },
+        { key: 'emergency', value: slot.emergency },
         { key: 'idle', value: slot.idle }
       ];
       const dominant = counts.reduce((prev, curr) => (curr.value > prev.value ? curr : prev), counts[0]);
@@ -441,6 +543,7 @@ export class ActivityTracker {
         neutral: Math.round(totalsByCategory.neutral),
         frivolity: Math.round(totalsByCategory.frivolity),
         draining: Math.round(totalsByCategory.draining),
+        emergency: Math.round(totalsByCategory.emergency),
         idle: Math.round(totalsByCategory.idle),
         uncategorised: Math.round(totalsByCategory.uncategorised)
       },

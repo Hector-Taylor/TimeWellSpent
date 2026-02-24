@@ -189,6 +189,7 @@ export class ActivityRollupService {
       neutral: 0,
       frivolity: 0,
       draining: 0,
+      emergency: 0,
       idle: 0,
       uncategorised: 0
     };
@@ -202,6 +203,7 @@ export class ActivityRollupService {
       neutral: 0,
       frivolity: 0,
       draining: 0,
+      emergency: 0,
       idle: 0,
       deepWork: 0,
       dominant: 'idle' as ActivityCategory | 'idle',
@@ -254,12 +256,14 @@ export class ActivityRollupService {
       slot.neutral = Math.round(slot.neutral);
       slot.frivolity = Math.round(slot.frivolity);
       slot.draining = Math.round(slot.draining);
+      slot.emergency = Math.round(slot.emergency);
       slot.idle = Math.round(slot.idle);
       const counts: Array<{ key: ActivityCategory | 'idle'; value: number }> = [
         { key: 'productive', value: slot.productive },
         { key: 'neutral', value: slot.neutral },
         { key: 'frivolity', value: slot.frivolity },
         { key: 'draining', value: slot.draining },
+        { key: 'emergency', value: slot.emergency },
         { key: 'idle', value: slot.idle }
       ];
       const dominant = counts.reduce((prev, curr) => (curr.value > prev.value ? curr : prev), counts[0]);
@@ -277,6 +281,7 @@ export class ActivityRollupService {
         neutral: Math.round(totalsByCategory.neutral),
         frivolity: Math.round(totalsByCategory.frivolity),
         draining: Math.round(totalsByCategory.draining),
+        emergency: Math.round(totalsByCategory.emergency),
         idle: Math.round(totalsByCategory.idle),
         uncategorised: Math.round(totalsByCategory.uncategorised)
       },
@@ -299,6 +304,7 @@ export class ActivityRollupService {
       neutral: 0,
       frivolity: 0,
       draining: 0,
+      emergency: 0,
       idle: 0,
       uncategorised: 0
     };
@@ -312,6 +318,7 @@ export class ActivityRollupService {
       neutral: 0,
       frivolity: 0,
       draining: 0,
+      emergency: 0,
       idle: 0,
       deepWork: 0,
       dominant: 'idle' as ActivityCategory | 'idle',
@@ -362,12 +369,14 @@ export class ActivityRollupService {
       slot.neutral = Math.round(slot.neutral);
       slot.frivolity = Math.round(slot.frivolity);
       slot.draining = Math.round(slot.draining);
+      slot.emergency = Math.round(slot.emergency);
       slot.idle = Math.round(slot.idle);
       const counts: Array<{ key: ActivityCategory | 'idle'; value: number }> = [
         { key: 'productive', value: slot.productive },
         { key: 'neutral', value: slot.neutral },
         { key: 'frivolity', value: slot.frivolity },
         { key: 'draining', value: slot.draining },
+        { key: 'emergency', value: slot.emergency },
         { key: 'idle', value: slot.idle }
       ];
       const dominant = counts.reduce((prev, curr) => (curr.value > prev.value ? curr : prev), counts[0]);
@@ -385,6 +394,7 @@ export class ActivityRollupService {
         neutral: Math.round(totalsByCategory.neutral),
         frivolity: Math.round(totalsByCategory.frivolity),
         draining: Math.round(totalsByCategory.draining),
+        emergency: Math.round(totalsByCategory.emergency),
         idle: Math.round(totalsByCategory.idle),
         uncategorised: Math.round(totalsByCategory.uncategorised)
       },

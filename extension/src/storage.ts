@@ -160,6 +160,37 @@ export type ReflectionSlideshowSettings = {
     maxPhotos: number;
 };
 
+export type WritingHudAdapter = 'google-docs' | 'tana-web' | 'generic-web';
+
+export type WritingHudSession = {
+    sessionId: string;
+    projectId: number;
+    projectTitle: string;
+    projectKind: 'journal' | 'paper' | 'substack' | 'fiction' | 'essay' | 'notes' | 'other';
+    targetKind: 'google-doc' | 'tana-node' | 'external-link';
+    targetUrl: string;
+    targetId?: string | null;
+    canonicalKey: string;
+    canonicalId?: string | null;
+    adapter: WritingHudAdapter;
+    sourceSurface: 'extension-newtab';
+    sprintMinutes?: number | null;
+    tabId?: number | null;
+    startedAt: number;
+    currentWordCount: number;
+    baselineWordCount: number;
+    activeSecondsTotal: number;
+    focusedSecondsTotal: number;
+    keystrokesTotal: number;
+    wordsAddedTotal: number;
+    wordsDeletedTotal: number;
+    netWordsTotal: number;
+    bodyTextLength?: number | null;
+    locationLabel?: string | null;
+    pageTitle?: string | null;
+    lastEventAt?: number | null;
+};
+
 export interface ExtensionState {
     wallet: {
         balance: number;
@@ -240,6 +271,10 @@ export interface ExtensionState {
         lastUpdated: number | null;
         pendingBlocks: PomodoroBlockEvent[];
     };
+    writingHud?: {
+        session: WritingHudSession | null;
+        lastUpdated: number | null;
+    };
 }
 
 const DEFAULT_STATE: ExtensionState = {
@@ -313,9 +348,9 @@ const DEFAULT_STATE: ExtensionState = {
         guardrailColorFilter: 'full-color',
         alwaysGreyscale: false,
         reflectionSlideshowEnabled: true,
-        reflectionSlideshowLookbackDays: 1,
-        reflectionSlideshowIntervalMs: 900,
-        reflectionSlideshowMaxPhotos: 18
+        reflectionSlideshowLookbackDays: 0,
+        reflectionSlideshowIntervalMs: 200,
+        reflectionSlideshowMaxPhotos: 0
     },
     dailyOnboarding: {
         completedDay: null,
@@ -357,15 +392,19 @@ const DEFAULT_STATE: ExtensionState = {
         session: null,
         lastUpdated: null,
         pendingBlocks: []
+    },
+    writingHud: {
+        session: null,
+        lastUpdated: null
     }
 };
 
 const MAX_PENDING_WALLET_TRANSACTIONS = 1000;
 const MAX_PENDING_CONSUMPTION_EVENTS = 1000;
 const MAX_PENDING_ACTIVITY_EVENTS = 2400;
-const REFLECTION_LOOKBACK_DAYS_RANGE = { min: 1, max: 14 };
-const REFLECTION_INTERVAL_MS_RANGE = { min: 450, max: 10000 };
-const REFLECTION_MAX_PHOTOS_RANGE = { min: 4, max: 40 };
+const REFLECTION_LOOKBACK_DAYS_RANGE = { min: 0, max: 3650 };
+const REFLECTION_INTERVAL_MS_RANGE = { min: 80, max: 10000 };
+const REFLECTION_MAX_PHOTOS_RANGE = { min: 0, max: 5000 };
 
 function normalizePaywallSession(
     session: Partial<PaywallSession>,
@@ -414,13 +453,13 @@ function normalizeReflectionSlideshowSettings(raw: Partial<ReflectionSlideshowSe
     const maxPhotosInput = Number(raw?.maxPhotos);
     const lookbackDays = Number.isFinite(lookbackInput)
         ? Math.max(REFLECTION_LOOKBACK_DAYS_RANGE.min, Math.min(REFLECTION_LOOKBACK_DAYS_RANGE.max, Math.round(lookbackInput)))
-        : (DEFAULT_STATE.settings.reflectionSlideshowLookbackDays ?? 1);
+        : (DEFAULT_STATE.settings.reflectionSlideshowLookbackDays ?? 0);
     const intervalMs = Number.isFinite(intervalInput)
         ? Math.max(REFLECTION_INTERVAL_MS_RANGE.min, Math.min(REFLECTION_INTERVAL_MS_RANGE.max, Math.round(intervalInput)))
-        : (DEFAULT_STATE.settings.reflectionSlideshowIntervalMs ?? 900);
+        : (DEFAULT_STATE.settings.reflectionSlideshowIntervalMs ?? 200);
     const maxPhotos = Number.isFinite(maxPhotosInput)
         ? Math.max(REFLECTION_MAX_PHOTOS_RANGE.min, Math.min(REFLECTION_MAX_PHOTOS_RANGE.max, Math.round(maxPhotosInput)))
-        : (DEFAULT_STATE.settings.reflectionSlideshowMaxPhotos ?? 18);
+        : (DEFAULT_STATE.settings.reflectionSlideshowMaxPhotos ?? 0);
     return { enabled, lookbackDays, intervalMs, maxPhotos };
 }
 
@@ -705,6 +744,15 @@ class ExtensionStorage {
                 session: (this.state.pomodoro as any).session ?? null,
                 lastUpdated: typeof (this.state.pomodoro as any).lastUpdated === 'number' ? (this.state.pomodoro as any).lastUpdated : null,
                 pendingBlocks
+            };
+        }
+        if (!this.state.writingHud || typeof this.state.writingHud !== 'object') {
+            this.state.writingHud = { session: null, lastUpdated: null };
+        } else {
+            const rawWritingHud = this.state.writingHud as any;
+            this.state.writingHud = {
+                session: rawWritingHud.session ?? null,
+                lastUpdated: typeof rawWritingHud.lastUpdated === 'number' ? rawWritingHud.lastUpdated : null
             };
         }
     }
@@ -1032,18 +1080,47 @@ class ExtensionStorage {
 
     async getSession(domain: string): Promise<PaywallSession | null> {
         if (!this.state) await this.init();
-        return this.state!.sessions[domain] || null;
+        const canonical = this.normalizeSessionDomain(domain);
+        if (!canonical) return null;
+        const exact = this.state!.sessions[canonical];
+        if (exact) return exact;
+
+        // Backward compatibility for older alias keys like x.com.
+        for (const [key, session] of Object.entries(this.state!.sessions)) {
+            if (key === canonical) continue;
+            if (this.normalizeSessionDomain(key) === canonical) return session;
+        }
+        return null;
     }
 
     async setSession(domain: string, session: PaywallSession): Promise<void> {
         if (!this.state) await this.init();
-        this.state!.sessions[domain] = session;
+        const canonical = this.normalizeSessionDomain(domain);
+        if (!canonical) return;
+
+        // Collapse alias variants (x.com/twitter.com) onto one session key.
+        for (const key of Object.keys(this.state!.sessions)) {
+            if (key !== canonical && this.normalizeSessionDomain(key) === canonical) {
+                delete this.state!.sessions[key];
+            }
+        }
+
+        this.state!.sessions[canonical] = {
+            ...session,
+            domain: this.normalizeSessionDomain(session.domain || canonical) || canonical
+        };
         await this.save();
     }
 
     async clearSession(domain: string): Promise<void> {
         if (!this.state) await this.init();
-        delete this.state!.sessions[domain];
+        const canonical = this.normalizeSessionDomain(domain);
+        if (!canonical) return;
+        for (const key of Object.keys(this.state!.sessions)) {
+            if (this.normalizeSessionDomain(key) === canonical) {
+                delete this.state!.sessions[key];
+            }
+        }
         await this.save();
     }
 
@@ -1064,6 +1141,33 @@ class ExtensionStorage {
         } catch {
             return url;
         }
+    }
+
+    private normalizeSessionDomain(domain: string | null | undefined): string {
+        const raw = String(domain ?? '').trim().toLowerCase();
+        if (!raw) return '';
+        const withoutPrefix = raw.replace(/^site:/, '').replace(/^\*\./, '');
+        const asUrl = /^https?:\/\//.test(withoutPrefix) ? withoutPrefix : `https://${withoutPrefix}`;
+        let host = '';
+        try {
+            host = new URL(asUrl).hostname.replace(/^www\./, '').replace(/\.$/, '');
+        } catch {
+            host = (withoutPrefix.split(/[/?#]/)[0] ?? '')
+                .replace(/:\d+$/, '')
+                .replace(/^www\./, '')
+                .replace(/\.$/, '');
+        }
+        if (!host) return '';
+        const aliasMap: Record<string, string> = {
+            'x.com': 'twitter.com',
+            'mobile.twitter.com': 'twitter.com',
+            'm.youtube.com': 'youtube.com',
+            'web.whatsapp.com': 'whatsapp.com',
+            'wa.me': 'whatsapp.com',
+            'web.telegram.org': 'telegram.org',
+            'm.facebook.com': 'facebook.com'
+        };
+        return aliasMap[host] ?? host;
     }
 
     private mergeLibraryItemsWithPending(libraryItems: LibraryItem[]) {
@@ -1141,7 +1245,13 @@ class ExtensionStorage {
             const existingSessions = this.state!.sessions ?? {};
             const next: Record<string, PaywallSession> = {};
             for (const [domain, session] of Object.entries(incoming)) {
-                next[domain] = normalizePaywallSession(session, existingSessions[domain], domain);
+                const canonical = this.normalizeSessionDomain(domain) || domain;
+                const existing = next[canonical] ?? existingSessions[canonical] ?? existingSessions[domain];
+                const normalized = normalizePaywallSession(session, existing, canonical);
+                next[canonical] = {
+                    ...normalized,
+                    domain: this.normalizeSessionDomain(normalized.domain || canonical) || canonical
+                };
             }
             this.state!.sessions = next;
         }
@@ -1399,6 +1509,59 @@ class ExtensionStorage {
         this.state.pomodoro.lastUpdated = Date.now();
         await this.save();
         return this.state.pomodoro.session;
+    }
+
+    async setWritingHudSession(session: WritingHudSession | null): Promise<void> {
+        if (!this.state) await this.init();
+        if (!this.state) throw new Error('Storage state not initialized');
+        if (!this.state.writingHud) {
+            this.state.writingHud = { session: null, lastUpdated: null };
+        }
+        this.state.writingHud.session = session;
+        this.state.writingHud.lastUpdated = session ? Date.now() : null;
+        await this.save();
+    }
+
+    async getWritingHudSession(): Promise<WritingHudSession | null> {
+        if (!this.state) await this.init();
+        if (!this.state) throw new Error('Storage state not initialized');
+        return this.state.writingHud?.session ?? null;
+    }
+
+    async updateWritingHudSession(
+        patch: Partial<WritingHudSession> & { sessionId: string }
+    ): Promise<WritingHudSession | null> {
+        if (!this.state) await this.init();
+        if (!this.state) throw new Error('Storage state not initialized');
+        const current = this.state.writingHud?.session ?? null;
+        if (!current || current.sessionId !== patch.sessionId) return null;
+        const next: WritingHudSession = {
+            ...current,
+            ...patch,
+            sessionId: current.sessionId
+        };
+        if (!this.state.writingHud) {
+            this.state.writingHud = { session: next, lastUpdated: Date.now() };
+        } else {
+            this.state.writingHud.session = next;
+            this.state.writingHud.lastUpdated = Date.now();
+        }
+        await this.save();
+        return next;
+    }
+
+    async clearWritingHudSession(sessionId?: string): Promise<void> {
+        if (!this.state) await this.init();
+        if (!this.state) throw new Error('Storage state not initialized');
+        const current = this.state.writingHud?.session ?? null;
+        if (sessionId && current && current.sessionId !== sessionId) return;
+        if (!this.state.writingHud) {
+            this.state.writingHud = { session: null, lastUpdated: null };
+        } else {
+            this.state.writingHud.session = null;
+            this.state.writingHud.lastUpdated = null;
+        }
+        await this.save();
     }
 
     async queuePomodoroBlock(event: PomodoroBlockEvent): Promise<void> {

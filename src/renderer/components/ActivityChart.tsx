@@ -12,6 +12,7 @@ export default function ActivityChart({ activities, summary }: ActivityChartProp
     neutral: 'var(--cat-neutral)',
     frivolity: 'var(--cat-frivolity)',
     draining: 'var(--cat-draining)',
+    emergency: 'var(--cat-emergency)',
     idle: 'var(--cat-idle)'
   };
   type CategoryKey = keyof typeof colors;
@@ -21,7 +22,7 @@ export default function ActivityChart({ activities, summary }: ActivityChartProp
   const cutoff = Date.now() - 24 * 60 * 60 * 1000; // rolling 24h window
 
   const stats = useMemo(() => {
-    const initialTotals: CategoryTotals = { productive: 0, neutral: 0, frivolity: 0, draining: 0, idle: 0 };
+    const initialTotals: CategoryTotals = { productive: 0, neutral: 0, frivolity: 0, draining: 0, emergency: 0, idle: 0 };
 
     if (summary) {
       const totals = summary.totalsByCategory;
@@ -29,14 +30,16 @@ export default function ActivityChart({ activities, summary }: ActivityChartProp
       const neutral = (totals.neutral ?? 0) + (totals.uncategorised ?? 0);
       const frivolity = totals.frivolity ?? 0;
       const draining = (totals as any).draining ?? 0;
+      const emergency = (totals as any).emergency ?? 0;
       const idle = totals.idle ?? 0;
-      const totalSeconds = productive + neutral + frivolity + draining + idle;
+      const totalSeconds = productive + neutral + frivolity + draining + emergency + idle;
       const byCategory: CategoryTotals = {
         ...initialTotals,
         productive,
         neutral,
         frivolity,
         draining,
+        emergency,
         idle
       };
       return {
@@ -66,6 +69,7 @@ export default function ActivityChart({ activities, summary }: ActivityChartProp
       neutral: [],
       frivolity: [],
       draining: [],
+      emergency: [],
       idle: []
     };
 

@@ -1,8 +1,7 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import Dashboard from './components/Dashboard';
 import Settings from './components/Settings';
 import Analytics from './components/Analytics';
-import PaywallOverlay from './components/PaywallOverlay';
 import Library from './components/Library';
 import Friends from './components/Friends';
 import Profile from './components/Profile';
@@ -52,12 +51,6 @@ export default function App() {
     }
   });
   const [extensionStatus, setExtensionStatus] = useState<{ connected: boolean; lastSeen: number | null }>({ connected: true, lastSeen: null });
-  const [paywallBlock, setPaywallBlock] = useState<{
-    domain: string;
-    appName: string;
-    mode?: 'metered' | 'pack';
-    reason?: string;
-  } | null>(null);
   const [dailyOnboardingState, setDailyOnboardingState] = useState<DailyOnboardingState | null>(null);
   const [dailyOnboardingOpen, setDailyOnboardingOpen] = useState(false);
   const [dailyOnboardingSaving, setDailyOnboardingSaving] = useState(false);
@@ -154,11 +147,6 @@ export default function App() {
     };
   }, []);
 
-  const extensionStatusRef = useRef(extensionStatus);
-  useEffect(() => {
-    extensionStatusRef.current = extensionStatus;
-  }, [extensionStatus]);
-
   useEffect(() => {
     const unsubWallet = api.events.on<WalletSnapshot>('wallet:update', setWallet);
     const unsubEconomy = api.events.on<EconomyState>('economy:activity', setEconomyState);
@@ -166,39 +154,14 @@ export default function App() {
       api.market.list().then(setMarketRates);
     });
 
-    const unsubPaywallReq = api.events.on<{ domain: string; appName: string }>('paywall:required', (payload) => {
-      // If extension is connected, ignore paywall requests for browsers
-      // (The extension handles its own blocking/paywall UI)
-      if (extensionStatusRef.current.connected) {
-        const browsers = ['Google Chrome', 'Chrome', 'Brave Browser', 'Brave', 'Microsoft Edge', 'Edge', 'Arc', 'Firefox', 'Safari'];
-        if (browsers.some(b => payload.appName.includes(b))) {
-          console.log('Ignoring desktop paywall for browser activity (extension active):', payload);
-          return;
-        }
-      }
-      setPaywallBlock({ ...payload, reason: 'blocked' });
-    });
-
-    const unsubPaywallStart = api.events.on('paywall:session-started', () => {
-      setPaywallBlock(null);
-    });
     const unsubExtStatus = api.events.on<{ connected: boolean; lastSeen: number | null }>('extension:status', (payload) => {
       setExtensionStatus(payload);
-    });
-
-    const unsubPaywallEnd = api.events.on<{ domain: string; reason: string }>('paywall:session-ended', (payload) => {
-      if (payload.reason === 'insufficient-funds') {
-        setPaywallBlock({ domain: payload.domain, appName: '', reason: payload.reason });
-      }
     });
 
     return () => {
       unsubWallet();
       unsubEconomy();
       unsubMarket();
-      unsubPaywallReq();
-      unsubPaywallStart();
-      unsubPaywallEnd();
       unsubExtStatus();
     };
   }, []);
@@ -425,22 +388,6 @@ export default function App() {
         note={dailyOnboardingState?.note?.message ?? ''}
         onClose={handleDailyNoteClose}
       />
-
-      {paywallBlock && (
-        <PaywallOverlay
-          open={!!paywallBlock}
-          state={{
-            domain: paywallBlock.domain || paywallBlock.appName,
-            mode: paywallBlock.mode ?? 'pack',
-            reason: paywallBlock.reason
-          }}
-          wallet={wallet}
-          api={api}
-          marketRates={marketRates}
-          onWallet={setWallet}
-          onClose={() => setPaywallBlock(null)}
-        />
-      )}
     </div>
   );
 }

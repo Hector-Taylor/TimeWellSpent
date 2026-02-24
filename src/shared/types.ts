@@ -1,5 +1,5 @@
 export type ActivitySource = 'app' | 'url';
-export type ActivityCategory = 'productive' | 'neutral' | 'frivolity' | 'draining';
+export type ActivityCategory = 'productive' | 'neutral' | 'frivolity' | 'draining' | 'emergency';
 
 export type ActivityRecord = {
   id: number;
@@ -38,6 +38,7 @@ export type ActivitySummary = {
     neutral: number;
     frivolity: number;
     draining: number;
+    emergency: number;
     idle: number;
     deepWork: number;
     dominant: ActivityCategory | 'idle';
@@ -693,6 +694,7 @@ export type TimeOfDayStats = {
   neutral: number;
   frivolity: number;
   draining: number;
+  emergency: number;
   idle: number;
   avgEngagement: number;
   dominantCategory: ActivityCategory | 'idle';
@@ -747,6 +749,7 @@ export type TrendPoint = {
   productive: number;
   neutral: number;
   frivolity: number;
+  emergency: number;
   idle: number;
   deepWork: number;
   engagement: number;
@@ -766,6 +769,314 @@ export type SessionAnalytics = {
   fixationSeconds: number;
   qualityScore: number;
   engagementLevel: EngagementLevel;
+};
+
+export type LiteraryDocumentFormat = 'pdf' | 'epub' | 'unknown';
+
+export type LiteraryReaderSurface = 'extension-newtab' | 'web-homepage' | 'desktop-renderer';
+
+export type LiterarySessionStartRequest = {
+  sessionId: string;
+  docKey: string;
+  title: string;
+  fileName?: string;
+  format: LiteraryDocumentFormat;
+  sourceSurface: LiteraryReaderSurface;
+  totalPages?: number | null;
+  estimatedTotalWords?: number | null;
+  startedAt?: string;
+  meta?: Record<string, unknown>;
+};
+
+export type LiterarySessionProgressRequest = {
+  occurredAt?: string;
+  currentPage?: number | null;
+  totalPages?: number | null;
+  progress?: number | null;
+  activeSecondsTotal?: number | null;
+  focusedSecondsTotal?: number | null;
+  pagesReadTotal?: number | null;
+  wordsReadTotal?: number | null;
+  estimatedTotalWords?: number | null;
+  locationLabel?: string | null;
+  meta?: Record<string, unknown>;
+};
+
+export type LiterarySessionRecord = {
+  sessionId: string;
+  docKey: string;
+  title: string;
+  fileName?: string | null;
+  format: LiteraryDocumentFormat;
+  sourceSurface: LiteraryReaderSurface;
+  startedAt: string;
+  endedAt?: string | null;
+  lastEventAt?: string | null;
+  currentPage?: number | null;
+  totalPages?: number | null;
+  progress?: number | null;
+  activeSecondsTotal: number;
+  focusedSecondsTotal: number;
+  pagesReadTotal: number;
+  wordsReadTotal: number;
+  estimatedTotalWords?: number | null;
+  locationLabel?: string | null;
+};
+
+export type LiteraryAnnotationKind = 'highlight' | 'note';
+
+export type LiteraryAnnotationRecord = {
+  id: number;
+  docKey: string;
+  title: string;
+  kind: LiteraryAnnotationKind;
+  sessionId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  currentPage?: number | null;
+  totalPages?: number | null;
+  progress?: number | null;
+  locationLabel?: string | null;
+  selectedText?: string | null;
+  noteText?: string | null;
+};
+
+export type LiteraryAnnotationCreateRequest = {
+  docKey: string;
+  title: string;
+  kind: LiteraryAnnotationKind;
+  sessionId?: string | null;
+  currentPage?: number | null;
+  totalPages?: number | null;
+  progress?: number | null;
+  locationLabel?: string | null;
+  selectedText?: string | null;
+  noteText?: string | null;
+};
+
+export type LiteraryDailyPoint = {
+  day: string;
+  activeSeconds: number;
+  focusedSeconds: number;
+  pagesRead: number;
+  wordsRead: number;
+  sessions: number;
+  documents: number;
+};
+
+export type LiteraryAnalyticsOverview = {
+  periodDays: number;
+  totals: {
+    activeSeconds: number;
+    focusedSeconds: number;
+    pagesRead: number;
+    wordsRead: number;
+    sessions: number;
+    documents: number;
+  };
+  annotations: {
+    total: number;
+    highlights: number;
+    notes: number;
+    todayTotal: number;
+    todayHighlights: number;
+    todayNotes: number;
+  };
+  today: {
+    activeSeconds: number;
+    focusedSeconds: number;
+    pagesRead: number;
+    wordsRead: number;
+    sessions: number;
+    documents: number;
+  };
+  pace: {
+    pagesPerHour: number;
+    wordsPerMinute: number;
+  };
+  currentBook?: {
+    title: string;
+    progress?: number | null;
+    currentPage?: number | null;
+    totalPages?: number | null;
+    lastReadAt: string;
+  } | null;
+  daily: LiteraryDailyPoint[];
+  insights: string[];
+};
+
+export type WritingProjectKind = 'journal' | 'paper' | 'substack' | 'fiction' | 'essay' | 'notes' | 'other';
+
+export type WritingTargetKind = 'tws-doc' | 'google-doc' | 'tana-node' | 'external-link';
+
+export type WritingProjectStatus = 'active' | 'paused' | 'done' | 'archived';
+
+export type WritingSurface = 'extension-newtab' | 'web-homepage' | 'desktop-renderer';
+
+export type WritingProjectRecord = {
+  id: number;
+  projectKey: string;
+  title: string;
+  kind: WritingProjectKind;
+  targetKind: WritingTargetKind;
+  status: WritingProjectStatus;
+  targetUrl?: string | null;
+  targetId?: string | null;
+  wordTarget?: number | null;
+  currentWordCount: number;
+  totalKeystrokes: number;
+  totalWordsAdded: number;
+  totalWordsDeleted: number;
+  totalNetWords: number;
+  sessionCount: number;
+  bodyText?: string | null;
+  reentryNote?: string | null;
+  promptText?: string | null;
+  lastTouchedAt?: string | null;
+  lastSessionStartedAt?: string | null;
+  lastSessionEndedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WritingProjectCreateRequest = {
+  title: string;
+  kind: WritingProjectKind;
+  targetKind: WritingTargetKind;
+  targetUrl?: string | null;
+  targetId?: string | null;
+  wordTarget?: number | null;
+  bodyText?: string | null;
+  reentryNote?: string | null;
+  promptText?: string | null;
+  status?: WritingProjectStatus;
+};
+
+export type WritingProjectUpdateRequest = Partial<
+  Pick<
+    WritingProjectRecord,
+    'title' | 'kind' | 'targetKind' | 'status' | 'targetUrl' | 'targetId' | 'wordTarget' | 'bodyText' | 'reentryNote' | 'promptText'
+  >
+> & {
+  currentWordCount?: number | null;
+  lastTouchedAt?: string | null;
+};
+
+export type WritingSessionStartRequest = {
+  sessionId: string;
+  projectId: number;
+  sourceSurface: WritingSurface;
+  sprintMinutes?: number | null;
+  startedAt?: string;
+  meta?: Record<string, unknown>;
+};
+
+export type WritingSessionProgressRequest = {
+  occurredAt?: string;
+  activeSecondsTotal?: number | null;
+  focusedSecondsTotal?: number | null;
+  keystrokesTotal?: number | null;
+  wordsAddedTotal?: number | null;
+  wordsDeletedTotal?: number | null;
+  netWordsTotal?: number | null;
+  currentWordCount?: number | null;
+  bodyTextLength?: number | null;
+  locationLabel?: string | null;
+  meta?: Record<string, unknown>;
+};
+
+export type WritingSessionRecord = {
+  sessionId: string;
+  projectId: number;
+  projectKey: string;
+  title: string;
+  kind: WritingProjectKind;
+  targetKind: WritingTargetKind;
+  sourceSurface: WritingSurface;
+  sprintMinutes?: number | null;
+  startedAt: string;
+  endedAt?: string | null;
+  lastEventAt?: string | null;
+  activeSecondsTotal: number;
+  focusedSecondsTotal: number;
+  keystrokesTotal: number;
+  wordsAddedTotal: number;
+  wordsDeletedTotal: number;
+  netWordsTotal: number;
+  currentWordCount: number;
+  bodyTextLength?: number | null;
+  locationLabel?: string | null;
+};
+
+export type WritingPrompt = {
+  id: string;
+  kind: WritingProjectKind | 'any';
+  text: string;
+};
+
+export type WritingSuggestion = {
+  project: WritingProjectRecord;
+  reason: string;
+  smallNextStep: string;
+  score: number;
+};
+
+export type WritingDailyPoint = {
+  day: string;
+  activeSeconds: number;
+  focusedSeconds: number;
+  keystrokes: number;
+  wordsAdded: number;
+  wordsDeleted: number;
+  netWords: number;
+  sessions: number;
+  projects: number;
+};
+
+export type WritingAnalyticsOverview = {
+  periodDays: number;
+  totals: {
+    activeSeconds: number;
+    focusedSeconds: number;
+    keystrokes: number;
+    wordsAdded: number;
+    wordsDeleted: number;
+    netWords: number;
+    sessions: number;
+    projects: number;
+  };
+  today: {
+    activeSeconds: number;
+    focusedSeconds: number;
+    keystrokes: number;
+    wordsAdded: number;
+    wordsDeleted: number;
+    netWords: number;
+    sessions: number;
+    projects: number;
+  };
+  pace: {
+    wordsPerMinute: number;
+    keystrokesPerMinute: number;
+  };
+  currentProject?: {
+    id: number;
+    title: string;
+    kind: WritingProjectKind;
+    targetKind: WritingTargetKind;
+    lastTouchedAt: string;
+    currentWordCount: number;
+    reentryNote?: string | null;
+  } | null;
+  daily: WritingDailyPoint[];
+  insights: string[];
+};
+
+export type WritingDashboard = {
+  overview: WritingAnalyticsOverview;
+  projects: WritingProjectRecord[];
+  suggestions: WritingSuggestion[];
+  prompts: WritingPrompt[];
 };
 
 declare global {

@@ -12,6 +12,7 @@ const categoryLabels: Record<string, string> = {
   neutral: 'Neutral',
   frivolity: 'Frivolity',
   draining: 'Draining',
+  emergency: 'Emergency',
   idle: 'Idle'
 };
 
@@ -74,7 +75,7 @@ export default function DayJourney({ journey, loading, isRemote }: Props) {
             })}
           </div>
           <div className="journey-legend">
-            {(['productive', 'neutral', 'draining', 'frivolity', 'idle'] as const).map((key) => (
+            {(['productive', 'neutral', 'draining', 'frivolity', 'emergency', 'idle'] as const).map((key) => (
               <span key={key} className="legend-chip">
                 <span className={`dot ${key}`} />
                 {categoryLabels[key]}

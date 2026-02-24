@@ -24,6 +24,8 @@ import {
   normalizePomodoroDomain
 } from '@shared/pomodoroMatcher';
 import { AnalyticsService } from './analytics';
+import { LiteraryAnalyticsService } from './literaryAnalytics';
+import { WritingAnalyticsService } from './writingAnalytics';
 import { EmergencyService } from './emergency';
 import { LibraryService } from './library';
 import { ConsumptionLogService } from './consumption';
@@ -42,6 +44,9 @@ import {
   createBudgetsRoutes,
   createLibraryRoutes,
   createAnalyticsRoutes,
+  createLiteraryAnalyticsRoutes,
+  createWritingAnalyticsRoutes,
+  createWritingRoutes,
   createSettingsRoutes,
   createExtensionSyncRoutes,
   createFriendsRoutes,
@@ -65,6 +70,8 @@ export type BackendServices = {
   focus: FocusService;
   pomodoro: PomodoroService;
   analytics: AnalyticsService;
+  literaryAnalytics: LiteraryAnalyticsService;
+  writingAnalytics: WritingAnalyticsService;
   intentions: IntentionService;
   budgets: BudgetService;
   library: LibraryService;
@@ -128,6 +135,8 @@ export async function createBackend(
   const consumption = new ConsumptionLogService(database);
   const camera = new CameraService(database);
   const emergency = new EmergencyService(settings, wallet, paywall, consumption);
+  const literaryAnalytics = new LiteraryAnalyticsService(database);
+  const writingAnalytics = new WritingAnalyticsService(database);
   const productiveOverrides = { urls: new Set<string>(), apps: new Set<string>() };
 
   // Helpers for productive overrides
@@ -237,6 +246,12 @@ export async function createBackend(
       const config = settings.getCategorisation();
       const domain = event.domain?.toLowerCase() ?? null;
       const appName = (event.appName ?? '').toLowerCase();
+      if (domain) {
+        const session = paywall.getSession(domain);
+        if (session?.mode === 'emergency' && paywall.hasValidPass(domain, event.url ?? undefined)) {
+          return 'emergency';
+        }
+      }
       if (classifier.matchesCategory(domain, appName, config, 'draining') || classifier.matchesCategory(domain, appName, config, 'frivolity')) {
         return null;
       }
@@ -434,6 +449,9 @@ export async function createBackend(
   app.use('/budgets', createBudgetsRoutes(budgets));
   app.use('/library', createLibraryRoutes(library));
   app.use('/analytics', createAnalyticsRoutes(analytics));
+  app.use('/analytics/literary', createLiteraryAnalyticsRoutes(literaryAnalytics));
+  app.use('/analytics/writing', createWritingAnalyticsRoutes(writingAnalytics));
+  app.use('/writing', createWritingRoutes(writingAnalytics));
   app.use('/settings', createSettingsRoutes({ settings }));
   app.use('/extension', createExtensionSyncRoutes({ settings, market, wallet, paywall, library, consumption, pomodoro }));
   app.use('/trophies', createTrophyRoutes({ trophies, profile: options?.friendsProvider?.profile }));
@@ -503,6 +521,8 @@ export async function createBackend(
     consumption,
     trophies,
     analytics,
+    literaryAnalytics,
+    writingAnalytics,
     reading,
     friends,
     camera,

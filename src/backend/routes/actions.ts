@@ -126,7 +126,7 @@ export function createUiRoutes(uiEvents: EventEmitter): Router {
     router.post('/navigate', (req, res) => {
         try {
             const view = String((req.body as { view?: string })?.view ?? '').trim();
-            const allowed = new Set(['dashboard', 'library', 'settings', 'analytics', 'friends', 'profile']);
+            const allowed = new Set(['dashboard', 'library', 'games', 'settings', 'analytics', 'friends', 'profile']);
             if (!allowed.has(view)) throw new Error('Invalid view');
             uiEvents.emit('navigate', { view });
             res.json({ ok: true });

@@ -2,8 +2,10 @@
 import { storage } from './storage';
 import { DESKTOP_API_URL, DESKTOP_WS_URL } from './constants';
 
+type TimeoutHandle = ReturnType<typeof setTimeout>;
+
 let ws: WebSocket | null = null;
-let reconnectTimer: number | null = null;
+let reconnectTimer: TimeoutHandle | null = null;
 
 export type DesktopSyncHandler = (data: any) => void;
 

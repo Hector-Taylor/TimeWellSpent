@@ -23,7 +23,7 @@ function normalizeScope(value: unknown): CameraScope {
 function normalizeLimit(value: unknown, fallback = 16) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
-  return Math.max(1, Math.min(40, Math.round(n)));
+  return Math.max(1, Math.min(5000, Math.round(n)));
 }
 
 function normalizeDays(value: unknown, fallback = 1) {
@@ -72,7 +72,7 @@ export function createCameraRoutes(camera: CameraService): Router {
       const cutoffMs = cutoffMsFor(scope, req.query.days);
       const domainQuery = typeof req.query.domain === 'string' ? req.query.domain.trim().toLowerCase() : '';
       const filterDomain = domainQuery.replace(/^www\./, '');
-      const fetchLimit = Math.min(200, Math.max(limit * 5, limit));
+      const fetchLimit = Math.min(5000, Math.max(limit * 5, limit));
       const photos = await camera.listPhotos(fetchLimit);
       const filtered = photos.filter((photo) => {
         const capturedMs = Date.parse(photo.capturedAt);

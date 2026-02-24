@@ -61,7 +61,7 @@ export default function Analytics({ api }: AnalyticsProps) {
     };
 
     const maxHourValue = useMemo(() => {
-        return Math.max(...timeOfDay.map(h => h.productive + h.neutral + h.frivolity + h.draining + h.idle), 1);
+        return Math.max(...timeOfDay.map(h => h.productive + h.neutral + h.frivolity + h.draining + h.emergency + h.idle), 1);
     }, [timeOfDay]);
 
     // Find patterns leading to frivolity
@@ -183,12 +183,13 @@ export default function Analytics({ api }: AnalyticsProps) {
                         </div>
                         <div className="time-heatmap">
                             {timeOfDay.map((hour) => {
-                                const total = hour.productive + hour.neutral + hour.frivolity + hour.draining + hour.idle;
+                                const total = hour.productive + hour.neutral + hour.frivolity + hour.draining + hour.emergency + hour.idle;
                                 const height = total > 0 ? Math.max(8, Math.round((total / maxHourValue) * 100)) : 4;
                                 const prodPct = total > 0 ? (hour.productive / total) * 100 : 0;
                                 const neutPct = total > 0 ? (hour.neutral / total) * 100 : 0;
                                 const frivPct = total > 0 ? (hour.frivolity / total) * 100 : 0;
                                 const drainPct = total > 0 ? (hour.draining / total) * 100 : 0;
+                                const emergencyPct = total > 0 ? (hour.emergency / total) * 100 : 0;
                                 const dominantClass = hour.dominantCategory;
 
                                 return (
@@ -202,6 +203,7 @@ export default function Analytics({ api }: AnalyticsProps) {
                                             <span className="bar-segment neutral" style={{ height: `${neutPct}%` }} />
                                             <span className="bar-segment frivolity" style={{ height: `${frivPct}%` }} />
                                             <span className="bar-segment draining" style={{ height: `${drainPct}%` }} />
+                                            <span className="bar-segment emergency" style={{ height: `${emergencyPct}%` }} />
                                         </div>
                                         <span className="heatmap-label">
                                             {shiftHourToDayStart(hour.hour, DAY_START_HOUR) % 6 === 0 ? formatHour(hour.hour) : ''}
@@ -215,6 +217,7 @@ export default function Analytics({ api }: AnalyticsProps) {
                             <span><span className="dot neutral" /> Neutral</span>
                             <span><span className="dot frivolity" /> Frivolity</span>
                             <span><span className="dot draining" /> Draining</span>
+                            <span><span className="dot emergency" /> Emergency</span>
                             <span><span className="dot deepwork" /> Deep work</span>
                         </div>
                     </div>
@@ -223,7 +226,7 @@ export default function Analytics({ api }: AnalyticsProps) {
                     <div className="card breakdown-card">
                         <h2>Category Breakdown</h2>
                         <div className="breakdown-bars">
-                            {overview && (['productive', 'deepWork', 'neutral', 'frivolity', 'draining', 'idle'] as const).map((cat) => {
+                            {overview && (['productive', 'deepWork', 'neutral', 'frivolity', 'draining', 'emergency', 'idle'] as const).map((cat) => {
                                 const baseTotal = Object.values(overview.categoryBreakdown).reduce((a, b) => a + b, 0);
                                 const value = cat === 'deepWork'
                                     ? overview.deepWorkSeconds
@@ -257,16 +260,18 @@ export default function Analytics({ api }: AnalyticsProps) {
                         <div className="trends-chart">
                             {trends.map((point, idx) => {
                                 const draining = (point as any).draining ?? 0;
-                                const total = point.productive + point.neutral + point.frivolity + draining;
-                                const maxTotal = Math.max(...trends.map(t => t.productive + t.neutral + t.frivolity + ((t as any).draining ?? 0)), 1);
+                                const total = point.productive + point.neutral + point.frivolity + point.emergency + draining;
+                                const maxTotal = Math.max(...trends.map(t => t.productive + t.neutral + t.frivolity + t.emergency + ((t as any).draining ?? 0)), 1);
                                 const height = Math.max(4, Math.round((total / maxTotal) * 100));
                                 const deepPct = total > 0 ? (point.deepWork / total) * 100 : 0;
+                                const emergencyPct = total > 0 ? (point.emergency / total) * 100 : 0;
                                 const drainPct = total > 0 ? (draining / total) * 100 : 0;
                                 const frivPct = total > 0 ? (point.frivolity / total) * 100 : 0;
                                 const neutralPct = total > 0 ? (point.neutral / total) * 100 : 0;
-                                const drainStop = drainPct;
-                                const frivStop = drainPct + frivPct;
-                                const neutralStop = drainPct + frivPct + neutralPct;
+                                const emergencyStop = emergencyPct;
+                                const drainStop = emergencyStop + drainPct;
+                                const frivStop = drainStop + frivPct;
+                                const neutralStop = drainStop + frivPct + neutralPct;
 
                                 return (
                                     <div
@@ -279,6 +284,7 @@ export default function Analytics({ api }: AnalyticsProps) {
                                             style={{
                                                 height: `${height}%`,
                                                 background: `linear-gradient(to top, 
+                          var(--cat-emergency) ${emergencyStop || 0}%,
                           var(--cat-draining) ${drainStop || 0}%, 
                           var(--cat-frivolity) ${frivStop || 0}%, 
                           var(--cat-neutral) ${neutralStop || 50}%, 

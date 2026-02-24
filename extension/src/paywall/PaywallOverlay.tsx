@@ -23,6 +23,36 @@ type ReadingItem = {
   iconDataUrl?: string;
 };
 
+type WritingProjectKind = 'journal' | 'paper' | 'substack' | 'fiction' | 'essay' | 'notes' | 'other';
+type WritingTargetKind = 'tws-doc' | 'google-doc' | 'tana-node' | 'external-link';
+
+type WritingRedirectProject = {
+  project: {
+    id: number;
+    title: string;
+    kind: WritingProjectKind;
+    targetKind: WritingTargetKind;
+    targetUrl?: string | null;
+    reentryNote?: string | null;
+    promptText?: string | null;
+  };
+  reason: string;
+  smallNextStep: string;
+  score: number;
+};
+
+type WritingRedirectPrompt = {
+  id: string;
+  kind: WritingProjectKind | 'any';
+  text: string;
+};
+
+type WritingRedirectData = {
+  blockedDomain: string | null;
+  items: WritingRedirectProject[];
+  prompts: WritingRedirectPrompt[];
+};
+
 type LibraryItem = {
   id: number;
   kind: 'url' | 'app';
@@ -267,7 +297,6 @@ function getColorFilterPriceMultiplier(filter: GuardrailColorFilter) {
 type EmergencyPolicyConfig = {
   id: 'off' | 'gentle' | 'balanced' | 'strict';
   label: string;
-  minutes: number;
   tokensPerDay: number | null;
   cooldownMinutes: number;
   urlLocked: boolean;
@@ -276,11 +305,27 @@ type EmergencyPolicyConfig = {
 const METERED_PREMIUM_MULTIPLIER = 3.5;
 const SUDOKU_REQUIRED_SQUARES = 12;
 const SUDOKU_PASS_MINUTES = 12;
+const EMERGENCY_REFLECTION_GATE_MS = 10_000;
 
 type Suggestion =
   | { type: 'url'; id: string; title: string; subtitle?: string; url: string; libraryId?: number }
   | { type: 'app'; id: string; title: string; subtitle?: string; app: string; requiresDesktop: boolean }
   | { type: 'ritual'; id: string; ritual: 'meditation' | 'journal'; title: string; subtitle?: string; minutes: number; url?: string }
+  | {
+      type: 'writing';
+      id: string;
+      title: string;
+      subtitle?: string;
+      projectKind: WritingProjectKind;
+      targetKind?: WritingTargetKind;
+      mode: 'resume' | 'create';
+      projectId?: number;
+      promptText?: string;
+      sprintMinutes: number;
+      reason?: string;
+      nextStep?: string;
+      requiresDesktop: boolean;
+    }
   | {
       type: 'desktop';
       id: string;
@@ -351,6 +396,60 @@ function formatPurpose(purpose?: LibraryItem['purpose']) {
     default:
       return 'saved';
   }
+}
+
+function formatWritingKind(kind: WritingProjectKind) {
+  switch (kind) {
+    case 'journal':
+      return 'Journal';
+    case 'paper':
+      return 'Paper';
+    case 'substack':
+      return 'Substack';
+    case 'fiction':
+      return 'Fiction';
+    case 'essay':
+      return 'Essay';
+    case 'notes':
+      return 'Notes';
+    default:
+      return 'Writing';
+  }
+}
+
+function formatWritingTarget(kind?: WritingTargetKind) {
+  switch (kind) {
+    case 'tws-doc':
+      return 'TWS Draft';
+    case 'google-doc':
+      return 'Google Docs';
+    case 'tana-node':
+      return 'Tana';
+    case 'external-link':
+      return 'External';
+    default:
+      return 'Writing';
+  }
+}
+
+function writingCardGradient(kind: WritingProjectKind, seed: string) {
+  const baseHues: Record<WritingProjectKind, number> = {
+    journal: 178,
+    paper: 214,
+    substack: 28,
+    fiction: 332,
+    essay: 280,
+    notes: 118,
+    other: 258
+  };
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) | 0;
+  }
+  const jitter = Math.abs(hash) % 22;
+  const h1 = (baseHues[kind] + jitter) % 360;
+  const h2 = (h1 + 46) % 360;
+  return `linear-gradient(155deg, hsl(${h1} 78% 58% / 0.95), hsl(${h2} 84% 42% / 0.9))`;
 }
 
 function formatClock(seconds: number) {
@@ -517,15 +616,17 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     status.settings?.reflectionSlideshowEnabled ?? true
   );
   const [reflectionLookbackDays, setReflectionLookbackDays] = useState(
-    status.settings?.reflectionSlideshowLookbackDays ?? 1
+    status.settings?.reflectionSlideshowLookbackDays ?? 0
   );
   const [reflectionIntervalMs, setReflectionIntervalMs] = useState(
-    status.settings?.reflectionSlideshowIntervalMs ?? 900
+    status.settings?.reflectionSlideshowIntervalMs ?? 200
   );
   const [reflectionMaxPhotos, setReflectionMaxPhotos] = useState(
-    status.settings?.reflectionSlideshowMaxPhotos ?? 18
+    status.settings?.reflectionSlideshowMaxPhotos ?? 0
   );
   const [reflectionBusy, setReflectionBusy] = useState(false);
+  const [emergencyReflectionGateUnlocked, setEmergencyReflectionGateUnlocked] = useState(!cameraModeEnabled);
+  const [emergencyReflectionGateKey, setEmergencyReflectionGateKey] = useState(0);
   const [theme, setTheme] = useState<'lavender' | 'olive'>(() => {
     try {
       const saved = localStorage.getItem('tws-theme');
@@ -551,6 +652,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const [friendPublicItems, setFriendPublicItems] = useState<FriendLibraryItem[]>([]);
   const [trophies, setTrophies] = useState<TrophyStatus[]>([]);
   const [trophyProfile, setTrophyProfile] = useState<TrophyProfileSummary | null>(null);
+  const [writingRedirects, setWritingRedirects] = useState<WritingRedirectData | null>(null);
 
   const sessionMeteredMultiplier = status.session?.meteredMultiplier ?? METERED_PREMIUM_MULTIPLIER;
   const baseRatePerMin = status.rate?.ratePerMin
@@ -578,6 +680,19 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   }, [showEmergencyForm, ritual]);
 
   useEffect(() => {
+    if (!showEmergencyForm) {
+      setEmergencyReflectionGateUnlocked(false);
+      return;
+    }
+    if (!cameraModeEnabled) {
+      setEmergencyReflectionGateUnlocked(true);
+      return;
+    }
+    setEmergencyReflectionGateUnlocked(false);
+    setEmergencyReflectionGateKey((value) => value + 1);
+  }, [cameraModeEnabled, showEmergencyForm]);
+
+  useEffect(() => {
     try {
       localStorage.setItem('tws-dash-scene', dashScene);
     } catch {
@@ -588,14 +703,14 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const emergencyPolicyConfig = useMemo<EmergencyPolicyConfig>(() => {
     switch (emergencyPolicy) {
       case 'off':
-        return { id: 'off', label: 'Off', minutes: 0, tokensPerDay: 0, cooldownMinutes: 0, urlLocked: true, debtCoins: 0 };
+        return { id: 'off', label: 'Off', tokensPerDay: 0, cooldownMinutes: 0, urlLocked: false, debtCoins: 0 };
       case 'gentle':
-        return { id: 'gentle', label: 'Gentle', minutes: 5, tokensPerDay: null, cooldownMinutes: 0, urlLocked: true, debtCoins: 0 };
+        return { id: 'gentle', label: 'Gentle', tokensPerDay: null, cooldownMinutes: 0, urlLocked: false, debtCoins: 0 };
       case 'strict':
-        return { id: 'strict', label: 'Strict', minutes: 2, tokensPerDay: 1, cooldownMinutes: 60, urlLocked: true, debtCoins: 15 };
+        return { id: 'strict', label: 'Strict', tokensPerDay: 1, cooldownMinutes: 60, urlLocked: false, debtCoins: 15 };
       case 'balanced':
       default:
-        return { id: 'balanced', label: 'Balanced', minutes: 3, tokensPerDay: 2, cooldownMinutes: 30, urlLocked: true, debtCoins: 8 };
+        return { id: 'balanced', label: 'Balanced', tokensPerDay: 2, cooldownMinutes: 30, urlLocked: false, debtCoins: 8 };
     }
   }, [emergencyPolicy]);
 
@@ -686,13 +801,13 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     setReflectionSlideshowEnabled(status.settings?.reflectionSlideshowEnabled ?? true);
   }, [status.settings?.reflectionSlideshowEnabled]);
   useEffect(() => {
-    setReflectionLookbackDays(status.settings?.reflectionSlideshowLookbackDays ?? 1);
+    setReflectionLookbackDays(status.settings?.reflectionSlideshowLookbackDays ?? 0);
   }, [status.settings?.reflectionSlideshowLookbackDays]);
   useEffect(() => {
-    setReflectionIntervalMs(status.settings?.reflectionSlideshowIntervalMs ?? 900);
+    setReflectionIntervalMs(status.settings?.reflectionSlideshowIntervalMs ?? 200);
   }, [status.settings?.reflectionSlideshowIntervalMs]);
   useEffect(() => {
-    setReflectionMaxPhotos(status.settings?.reflectionSlideshowMaxPhotos ?? 18);
+    setReflectionMaxPhotos(status.settings?.reflectionSlideshowMaxPhotos ?? 0);
   }, [status.settings?.reflectionSlideshowMaxPhotos]);
 
   const showDiscouragement = discouragementEnabled && isFrivolousDomain;
@@ -813,6 +928,42 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     const id = window.setInterval(refreshTrophies, 30000);
     return () => window.clearInterval(id);
   }, [status.desktopConnected]);
+
+  useEffect(() => {
+    if (!status.desktopConnected) {
+      setWritingRedirects(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const refreshWritingRedirects = async () => {
+      try {
+        const response = await chrome.runtime.sendMessage({
+          type: 'GET_WRITING_REDIRECTS',
+          payload: { domain, limit: 4 }
+        }) as {
+          success: boolean;
+          data?: WritingRedirectData;
+        };
+        if (cancelled) return;
+        if (response?.success && response.data) {
+          setWritingRedirects(response.data);
+          return;
+        }
+        setWritingRedirects(null);
+      } catch {
+        if (!cancelled) setWritingRedirects(null);
+      }
+    };
+
+    void refreshWritingRedirects();
+    const intervalId = window.setInterval(refreshWritingRedirects, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [domain, status.desktopConnected]);
 
   useEffect(() => {
     if (!peekAllowed && peekActive) {
@@ -1033,6 +1184,50 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       });
     }
 
+    const writingItems = writingRedirects?.items ?? [];
+    for (const item of writingItems) {
+      const project = item?.project;
+      if (!project || typeof project.id !== 'number') continue;
+      candidates.push({
+        type: 'writing',
+        id: `writing:resume:${project.id}`,
+        title: project.title || `${formatWritingKind(project.kind)} Draft`,
+        subtitle: item.smallNextStep || item.reason,
+        projectKind: project.kind,
+        targetKind: project.targetKind,
+        mode: 'resume',
+        projectId: project.id,
+        promptText: project.promptText ?? undefined,
+        sprintMinutes: project.kind === 'journal' ? 7 : 12,
+        reason: item.reason,
+        nextStep: item.smallNextStep,
+        requiresDesktop: true
+      });
+    }
+
+    const writingPrompts = (writingRedirects?.prompts ?? []).slice(0, 2);
+    for (const prompt of writingPrompts) {
+      if (!prompt?.id || !prompt.text) continue;
+      const projectKind: WritingProjectKind = prompt.kind === 'any' ? 'journal' : prompt.kind;
+      const sprintMinutes =
+        projectKind === 'journal' ? 7 :
+        projectKind === 'notes' ? 10 :
+        12;
+      candidates.push({
+        type: 'writing',
+        id: `writing:create:${prompt.id}:${projectKind}`,
+        title: projectKind === 'journal' ? 'Journal Sprint' : `${formatWritingKind(projectKind)} Sprint`,
+        subtitle: prompt.text,
+        projectKind,
+        mode: 'create',
+        promptText: prompt.text,
+        sprintMinutes,
+        reason: 'Low-friction writing redirect.',
+        nextStep: prompt.text,
+        requiresDesktop: true
+      });
+    }
+
     const productive = status.library?.productiveDomains ?? [];
     for (const entry of productive) {
       const trimmed = (entry ?? '').trim();
@@ -1092,9 +1287,66 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       if (dismissedIds[c.id]) return false;
       return true;
     });
-  }, [dismissedIds, domain, status.library?.productiveDomains, status.library?.productiveItems, status.library?.replaceItems, status.library?.readingItems]);
+  }, [
+    dismissedIds,
+    domain,
+    status.library?.productiveDomains,
+    status.library?.productiveItems,
+    status.library?.replaceItems,
+    status.library?.readingItems,
+    writingRedirects
+  ]);
 
-  const picks = useMemo(() => pickRandom(suggestionCandidates, 3, spinKey), [suggestionCandidates, spinKey]);
+  const picks = useMemo(() => {
+    const base = pickRandom(suggestionCandidates, 3, spinKey);
+    const writingCandidates = suggestionCandidates.filter(
+      (candidate): candidate is Extract<Suggestion, { type: 'writing' }> => candidate.type === 'writing'
+    );
+    const readingCandidates = suggestionCandidates.filter(
+      (candidate): candidate is Extract<Suggestion, { type: 'desktop' }> => candidate.type === 'desktop'
+    );
+
+    const required: Suggestion[] = [];
+    const seen = new Set<string>();
+
+    const pushRequired = (candidate: Suggestion | undefined) => {
+      if (!candidate || seen.has(candidate.id)) return;
+      required.push(candidate);
+      seen.add(candidate.id);
+    };
+
+    const baseWriting = base.find((candidate) => candidate.type === 'writing');
+    const baseReading = base.find((candidate) => candidate.type === 'desktop');
+
+    if (writingCandidates.length) {
+      pushRequired(
+        baseWriting ??
+          pickRandom(writingCandidates, 1, spinKey + 17)[0]
+      );
+    }
+    if (readingCandidates.length) {
+      pushRequired(
+        baseReading ??
+          pickRandom(readingCandidates, 1, spinKey + 23)[0]
+      );
+    }
+
+    if (!required.length) return base;
+
+    for (const candidate of base) {
+      pushRequired(candidate);
+      if (required.length >= 3) break;
+    }
+    if (required.length >= 3) return required.slice(0, 3);
+
+    const fillers = pickRandom(
+      suggestionCandidates.filter((candidate) => !seen.has(candidate.id)),
+      3 - required.length,
+      spinKey + 31
+    );
+    for (const candidate of fillers) pushRequired(candidate);
+    return required.slice(0, 3);
+  }, [suggestionCandidates, spinKey]);
 
   useEffect(() => {
     const urls = picks
@@ -1138,6 +1390,32 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
           onClose();
           return;
         }
+        return;
+      }
+
+      if (item.type === 'writing') {
+        if (item.requiresDesktop && !status.desktopConnected) {
+          throw new Error('Desktop app required for writing redirects');
+        }
+        const params = new URLSearchParams();
+        params.set('tws_write_source', 'paywall');
+        params.set('tws_write_sprint', String(Math.max(1, item.sprintMinutes || 10)));
+        params.set('tws_write_from_domain', domain);
+        if (item.mode === 'resume' && typeof item.projectId === 'number') {
+          params.set('tws_write_action', 'resume');
+          params.set('tws_write_project_id', String(item.projectId));
+        } else {
+          params.set('tws_write_action', 'create');
+          params.set('tws_write_kind', item.projectKind);
+          params.set('tws_write_title', item.title);
+          if (item.promptText) params.set('tws_write_prompt', item.promptText);
+        }
+        const result = await chrome.runtime.sendMessage({
+          type: 'OPEN_EXTENSION_PAGE',
+          payload: { path: `newtab.html?${params.toString()}`, replaceCurrent: true }
+        });
+        if (!result?.success) throw new Error(result?.error ? String(result.error) : 'Failed to open Writing Studio');
+        onClose();
         return;
       }
 
@@ -1334,7 +1612,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   };
 
   const handleStartEmergency = async () => {
-    if (isProcessing || !justification.trim()) return;
+    if (isProcessing || !justification.trim() || !emergencyReflectionGateUnlocked) return;
     setIsProcessing(true);
     setError(null);
     try {
@@ -1512,13 +1790,45 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                 {emergencyPolicyConfig.id !== 'off' && (
                   <>
                     {' '}
-                    • {emergencyPolicyConfig.minutes}m window
+                    • no auto-expiry
                     {typeof emergencyPolicyConfig.tokensPerDay === 'number' ? ` • ${emergencyPolicyConfig.tokensPerDay}/day` : ' • unlimited/day'}
                     {emergencyPolicyConfig.cooldownMinutes > 0 ? ` • ${emergencyPolicyConfig.cooldownMinutes}m cooldown` : ''}
                     {emergencyPolicyConfig.debtCoins > 0 ? ` • ${emergencyPolicyConfig.debtCoins} coin debt` : ''}
                   </>
                 )}
               </p>
+              {cameraModeEnabled && (
+                <div className="tws-emergency-reflection-gate">
+                  <div className="tws-emergency-reflection-gate-copy">
+                    <strong>{emergencyReflectionGateUnlocked ? 'Reflection complete' : 'Hold for 10 seconds'}</strong>
+                    <span>
+                      {emergencyReflectionGateUnlocked
+                        ? 'You can start the emergency session now.'
+                        : 'A compressed reel from all captured periods is playing before emergency unlocks.'}
+                    </span>
+                  </div>
+                  <ReflectionSlideshow
+                    key={`emergency-gate-${emergencyReflectionGateKey}`}
+                    domain={domain}
+                    enabled={showEmergencyForm}
+                    cameraModeEnabled={cameraModeEnabled}
+                    lookbackDays={0}
+                    intervalMs={200}
+                    maxPhotos={0}
+                    fixedDurationMs={EMERGENCY_REFLECTION_GATE_MS}
+                    onFixedDurationComplete={() => setEmergencyReflectionGateUnlocked(true)}
+                    onError={(message) => {
+                      setError(message);
+                      setEmergencyReflectionGateUnlocked(true);
+                    }}
+                  />
+                </div>
+              )}
+              {!cameraModeEnabled && (
+                <p className="tws-subtle tws-emergency-reflection-gate-note">
+                  Camera mode is off, so emergency starts immediately after you write the reason.
+                </p>
+              )}
               <textarea
                 className="tws-emergency-input"
                 placeholder="I need to…"
@@ -1530,8 +1840,13 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                 <button type="button" className="tws-secondary" onClick={() => setShowEmergencyForm(false)} disabled={isProcessing}>
                   Back
                 </button>
-                <button type="button" className="tws-primary" onClick={handleStartEmergency} disabled={!justification.trim() || isProcessing}>
-                  Start emergency ({emergencyPolicyConfig.minutes}m)
+                <button
+                  type="button"
+                  className="tws-primary"
+                  onClick={handleStartEmergency}
+                  disabled={!justification.trim() || isProcessing || !emergencyReflectionGateUnlocked}
+                >
+                  {cameraModeEnabled && !emergencyReflectionGateUnlocked ? 'Watch reflection reel' : 'Start emergency'}
                 </button>
               </div>
             </div>
@@ -1559,19 +1874,47 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const activeMinutes = mySummary ? Math.round(mySummary.totalActiveSeconds / 60) : null;
   const productivityScore = mySummary ? mySummary.productivityScore : null;
   const emergencyCount = mySummary?.emergencySessions ?? status.emergency?.reviewStats.total ?? null;
-  const sessionMinutesLeft = status.session ? Math.max(0, Math.ceil(status.session.remainingSeconds / 60)) : null;
+  const sessionMinutesLeft =
+    status.session && Number.isFinite(status.session.remainingSeconds)
+      ? Math.max(0, Math.ceil(status.session.remainingSeconds / 60))
+      : null;
+  const sessionRemainingLabel = !status.session
+    ? '--'
+    : sessionMinutesLeft != null
+      ? `${sessionMinutesLeft}m`
+      : status.session.mode === 'emergency'
+        ? 'ongoing'
+        : '—';
   const lastSyncAgo = status.lastSync ? formatDuration(Date.now() - status.lastSync) : null;
-  const categoryBreakdown = mySummary?.categoryBreakdown ?? { productive: 0, neutral: 0, frivolity: 0, idle: 0 };
+  const rawCategoryBreakdown = mySummary?.categoryBreakdown;
+  const categoryBreakdown = {
+    productive: rawCategoryBreakdown?.productive ?? 0,
+    neutral: rawCategoryBreakdown?.neutral ?? 0,
+    frivolity: rawCategoryBreakdown?.frivolity ?? 0,
+    draining:
+      rawCategoryBreakdown && 'draining' in rawCategoryBreakdown && typeof rawCategoryBreakdown.draining === 'number'
+        ? rawCategoryBreakdown.draining
+        : 0,
+    emergency:
+      rawCategoryBreakdown && 'emergency' in rawCategoryBreakdown && typeof rawCategoryBreakdown.emergency === 'number'
+        ? rawCategoryBreakdown.emergency
+        : 0,
+    idle: rawCategoryBreakdown?.idle ?? 0
+  };
   const periodHours = mySummary?.periodHours ?? 24;
   const categoryTotal =
     categoryBreakdown.productive +
     categoryBreakdown.neutral +
     categoryBreakdown.frivolity +
+    categoryBreakdown.draining +
+    categoryBreakdown.emergency +
     categoryBreakdown.idle;
   const categoryRows = [
     { id: 'productive', label: 'Productive', value: categoryBreakdown.productive, color: 'var(--cat-productive)' },
     { id: 'neutral', label: 'Neutral', value: categoryBreakdown.neutral, color: 'var(--cat-neutral)' },
     { id: 'frivolity', label: 'Frivolity', value: categoryBreakdown.frivolity, color: 'var(--cat-frivolity)' },
+    { id: 'draining', label: 'Draining', value: categoryBreakdown.draining, color: 'var(--cat-draining)' },
+    { id: 'emergency', label: 'Emergency', value: categoryBreakdown.emergency, color: 'var(--cat-emergency)' },
     { id: 'idle', label: 'Idle', value: categoryBreakdown.idle, color: 'var(--cat-idle)' }
   ];
   const goalHours = status.settings?.productivityGoalHours ?? null;
@@ -2228,6 +2571,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                 lookbackDays={reflectionLookbackDays}
                 intervalMs={reflectionIntervalMs}
                 maxPhotos={reflectionMaxPhotos}
+                variant="corner"
                 onError={(message) => setError(message)}
               />
             )}
@@ -2279,6 +2623,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                             const cardDisabled =
                               isProcessing ||
                               (item.type === 'desktop' && item.requiresDesktop && !status.desktopConnected) ||
+                              (item.type === 'writing' && item.requiresDesktop && !status.desktopConnected) ||
                               (item.type === 'app' && item.requiresDesktop && !status.desktopConnected);
 
                             if (item.type === 'url') {
@@ -2360,7 +2705,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                               return (
                                 <div
                                   key={item.id}
-                                  className="tws-attractor-card"
+                                  className={`tws-attractor-card tws-attractor-card--reading ${item.source === 'zotero' ? 'is-zotero' : 'is-books'}`}
                                   onClick={() => {
                                     if (cardDisabled) return;
                                     handleOpenSuggestion(item);
@@ -2421,7 +2766,52 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                                   <div className="tws-attractor-meta">
                                     <strong>{item.title}</strong>
                                     <span>{item.subtitle ?? 'reading suggestion'}</span>
-                                    <small>desktop</small>
+                                    <small>{item.source === 'zotero' ? 'Reading redirect · Zotero' : 'Reading redirect · Books'}</small>
+                                  </div>
+                                </div>
+                              );
+                            }
+
+                            if (item.type === 'writing') {
+                              const thumbStyle: CSSProperties = {
+                                background: writingCardGradient(item.projectKind, `${item.title}:${item.id}`)
+                              };
+                              const modeLabel = item.mode === 'resume' ? 'Resume' : 'New Sprint';
+                              const metaLabel =
+                                item.mode === 'resume'
+                                  ? `${formatWritingKind(item.projectKind)} · ${formatWritingTarget(item.targetKind)}`
+                                  : `${formatWritingKind(item.projectKind)} · Prompt`;
+                              return (
+                                <div
+                                  key={item.id}
+                                  className={`tws-attractor-card tws-attractor-card--writing ${item.mode === 'resume' ? 'is-resume' : 'is-prompt'}`}
+                                  onClick={() => {
+                                    if (cardDisabled) return;
+                                    handleOpenSuggestion(item);
+                                  }}
+                                  title={item.requiresDesktop && !status.desktopConnected ? 'Requires desktop app' : undefined}
+                                  role="button"
+                                  tabIndex={cardDisabled ? -1 : 0}
+                                  aria-disabled={cardDisabled}
+                                  onKeyDown={(e) => {
+                                    if (cardDisabled) return;
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                      e.preventDefault();
+                                      handleOpenSuggestion(item);
+                                    }
+                                  }}
+                                >
+                                  <div className="tws-attractor-thumb tws-attractor-thumb-app" style={thumbStyle}>
+                                    <img className="tws-attractor-thumb-img" src={DOC_ICON} alt="" loading="lazy" />
+                                    <div className="tws-attractor-app-badge">Write</div>
+                                    <div aria-hidden="true" className="tws-attractor-action-pill">
+                                      {modeLabel} · {item.sprintMinutes}m
+                                    </div>
+                                  </div>
+                                  <div className="tws-attractor-meta tws-attractor-meta--creative">
+                                    <strong>{item.title}</strong>
+                                    <span>{item.nextStep ?? item.reason ?? item.subtitle ?? 'Start a short writing sprint'}</span>
+                                    <small>{metaLabel}</small>
                                   </div>
                                 </div>
                               );
@@ -2524,7 +2914,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                         </div>
                         <div className="tws-dashboard-metric">
                           <span>Remaining</span>
-                          <strong>{sessionMinutesLeft != null ? `${sessionMinutesLeft}m` : '--'}</strong>
+                          <strong>{sessionRemainingLabel}</strong>
                           <small>{status.session ? 'this session' : 'no session'}</small>
                         </div>
                         <div className="tws-dashboard-metric">
@@ -3404,6 +3794,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                         onChange={(e) => handleReflectionLookbackChange(Number(e.target.value))}
                         disabled={reflectionBusy || isProcessing}
                       >
+                        <option value={0}>All time</option>
                         <option value={1}>Today</option>
                         <option value={3}>Last 3 days</option>
                         <option value={7}>This week</option>
@@ -3421,6 +3812,8 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                         onChange={(e) => handleReflectionIntervalChange(Number(e.target.value))}
                         disabled={reflectionBusy || isProcessing}
                       >
+                        <option value={120}>Frenzy</option>
+                        <option value={200}>Flash (5/s)</option>
                         <option value={700}>Mirror</option>
                         <option value={900}>Fast</option>
                         <option value={1500}>Balanced</option>
@@ -3438,11 +3831,14 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                         onChange={(e) => handleReflectionMaxPhotosChange(Number(e.target.value))}
                         disabled={reflectionBusy || isProcessing}
                       >
+                        <option value={0}>All</option>
                         <option value={8}>8</option>
                         <option value={12}>12</option>
                         <option value={18}>18</option>
                         <option value={24}>24</option>
                         <option value={32}>32</option>
+                        <option value={64}>64</option>
+                        <option value={128}>128</option>
                       </select>
                     </div>
                     <div className="tws-toggle-row">
@@ -3782,7 +4178,11 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                       <h3>Resume paused session</h3>
                       <p className="tws-subtle">
                         Continue without buying a new pack.
-                        {sessionMinutesLeft != null ? ` ${sessionMinutesLeft}m left.` : ''}
+                        {sessionMinutesLeft != null
+                          ? ` ${sessionMinutesLeft}m left.`
+                          : status.session?.mode === 'emergency'
+                            ? ' Ongoing.'
+                            : ''}
                       </p>
                     </div>
                     <div className="tws-option-action">

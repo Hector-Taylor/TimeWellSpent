@@ -791,6 +791,7 @@ export default function Dashboard({ api, wallet, economy, productivityGoalHoursO
                   {renderCategoryBar('Neutral', 'neutral', overview)}
                   {renderCategoryBar('Frivolity', 'frivolity', overview)}
                   {renderCategoryBar('Draining', 'draining', overview)}
+                  {renderCategoryBar('Emergency', 'emergency', overview)}
                   {renderCategoryBar('Idle', 'idle', overview)}
                 </div>
               </div>
@@ -1073,6 +1074,7 @@ function activityToFriendSummary(activity: ActivitySummary): FriendSummary {
       neutral: activity.totalsByCategory.neutral ?? 0,
       frivolity: activity.totalsByCategory.frivolity ?? 0,
       draining: (activity.totalsByCategory as any).draining ?? 0,
+      emergency: (activity.totalsByCategory as any).emergency ?? 0,
       idle: activity.totalsByCategory.idle ?? 0
     },
     productivityScore: activity.totalSeconds > 0
@@ -1089,9 +1091,9 @@ function headToHeadPercentFromSummary(me: FriendSummary | null, friend: FriendSu
   return Math.round((myProductive / total) * 100);
 }
 
-function renderCategoryBar(label: string, key: 'productive' | 'neutral' | 'frivolity' | 'draining' | 'idle', overview: AnalyticsOverview | null) {
-  const totals = overview?.categoryBreakdown ?? { productive: 0, neutral: 0, frivolity: 0, draining: 0, idle: 0 };
-  const total = totals.productive + totals.neutral + totals.frivolity + (totals as any).draining + totals.idle;
+function renderCategoryBar(label: string, key: 'productive' | 'neutral' | 'frivolity' | 'draining' | 'emergency' | 'idle', overview: AnalyticsOverview | null) {
+  const totals = overview?.categoryBreakdown ?? { productive: 0, neutral: 0, frivolity: 0, draining: 0, emergency: 0, idle: 0 };
+  const total = totals.productive + totals.neutral + totals.frivolity + (totals as any).draining + (totals as any).emergency + totals.idle;
   const value = totals[key] ?? 0;
   const pct = total > 0 ? Math.round((value / total) * 100) : 0;
   return (

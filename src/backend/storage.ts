@@ -249,6 +249,217 @@ export class Database {
       CREATE INDEX IF NOT EXISTS idx_session_analytics_date ON session_analytics(date);
       CREATE INDEX IF NOT EXISTS idx_session_analytics_domain ON session_analytics(domain);
       CREATE INDEX IF NOT EXISTS idx_behavioral_patterns_computed ON behavioral_patterns(computed_at);
+
+      -- Literary analytics (reading sessions / progress / rollups)
+      CREATE TABLE IF NOT EXISTS reading_sessions (
+        session_id TEXT PRIMARY KEY,
+        doc_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        file_name TEXT,
+        format TEXT NOT NULL,
+        source_surface TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        last_event_at TEXT,
+        current_page INTEGER,
+        total_pages INTEGER,
+        progress REAL,
+        active_seconds_total INTEGER NOT NULL DEFAULT 0,
+        focused_seconds_total INTEGER NOT NULL DEFAULT 0,
+        pages_read_total INTEGER NOT NULL DEFAULT 0,
+        words_read_total INTEGER NOT NULL DEFAULT 0,
+        estimated_total_words INTEGER,
+        location_label TEXT,
+        meta TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS reading_progress_events (
+        id INTEGER PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        doc_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        format TEXT NOT NULL,
+        source_surface TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        current_page INTEGER,
+        total_pages INTEGER,
+        progress REAL,
+        active_seconds_total INTEGER NOT NULL DEFAULT 0,
+        focused_seconds_total INTEGER NOT NULL DEFAULT 0,
+        pages_read_total INTEGER NOT NULL DEFAULT 0,
+        words_read_total INTEGER NOT NULL DEFAULT 0,
+        estimated_total_words INTEGER,
+        location_label TEXT,
+        meta TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS reading_daily_rollups (
+        day TEXT PRIMARY KEY,
+        active_seconds INTEGER NOT NULL DEFAULT 0,
+        focused_seconds INTEGER NOT NULL DEFAULT 0,
+        pages_read INTEGER NOT NULL DEFAULT 0,
+        words_read INTEGER NOT NULL DEFAULT 0,
+        sessions INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS reading_hourly_rollups (
+        hour_start TEXT PRIMARY KEY,
+        active_seconds INTEGER NOT NULL DEFAULT 0,
+        focused_seconds INTEGER NOT NULL DEFAULT 0,
+        pages_read INTEGER NOT NULL DEFAULT 0,
+        words_read INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS reading_daily_doc_touches (
+        day TEXT NOT NULL,
+        doc_key TEXT NOT NULL,
+        first_seen_at TEXT NOT NULL,
+        PRIMARY KEY (day, doc_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS reading_annotations (
+        id INTEGER PRIMARY KEY,
+        doc_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        kind TEXT CHECK(kind IN ('highlight','note')) NOT NULL,
+        session_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        current_page INTEGER,
+        total_pages INTEGER,
+        progress REAL,
+        location_label TEXT,
+        selected_text TEXT,
+        note_text TEXT,
+        meta TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_reading_sessions_started_at ON reading_sessions(started_at);
+      CREATE INDEX IF NOT EXISTS idx_reading_sessions_doc_key ON reading_sessions(doc_key);
+      CREATE INDEX IF NOT EXISTS idx_reading_sessions_last_event_at ON reading_sessions(last_event_at);
+      CREATE INDEX IF NOT EXISTS idx_reading_progress_events_occurred_at ON reading_progress_events(occurred_at);
+      CREATE INDEX IF NOT EXISTS idx_reading_progress_events_session_id ON reading_progress_events(session_id);
+      CREATE INDEX IF NOT EXISTS idx_reading_progress_events_doc_key ON reading_progress_events(doc_key);
+      CREATE INDEX IF NOT EXISTS idx_reading_daily_doc_touches_day ON reading_daily_doc_touches(day);
+      CREATE INDEX IF NOT EXISTS idx_reading_annotations_doc_key ON reading_annotations(doc_key);
+      CREATE INDEX IF NOT EXISTS idx_reading_annotations_created_at ON reading_annotations(created_at);
+      CREATE INDEX IF NOT EXISTS idx_reading_annotations_kind ON reading_annotations(kind);
+
+      -- Writing studio analytics (projects / sessions / rollups)
+      CREATE TABLE IF NOT EXISTS writing_projects (
+        id INTEGER PRIMARY KEY,
+        project_key TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        target_kind TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        target_url TEXT,
+        target_id TEXT,
+        word_target INTEGER,
+        current_word_count INTEGER NOT NULL DEFAULT 0,
+        total_keystrokes INTEGER NOT NULL DEFAULT 0,
+        total_words_added INTEGER NOT NULL DEFAULT 0,
+        total_words_deleted INTEGER NOT NULL DEFAULT 0,
+        total_net_words INTEGER NOT NULL DEFAULT 0,
+        session_count INTEGER NOT NULL DEFAULT 0,
+        body_text TEXT,
+        reentry_note TEXT,
+        prompt_text TEXT,
+        last_touched_at TEXT,
+        last_session_started_at TEXT,
+        last_session_ended_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        meta TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS writing_sessions (
+        session_id TEXT PRIMARY KEY,
+        project_id INTEGER NOT NULL,
+        project_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        target_kind TEXT NOT NULL,
+        source_surface TEXT NOT NULL,
+        sprint_minutes INTEGER,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        last_event_at TEXT,
+        active_seconds_total INTEGER NOT NULL DEFAULT 0,
+        focused_seconds_total INTEGER NOT NULL DEFAULT 0,
+        keystrokes_total INTEGER NOT NULL DEFAULT 0,
+        words_added_total INTEGER NOT NULL DEFAULT 0,
+        words_deleted_total INTEGER NOT NULL DEFAULT 0,
+        net_words_total INTEGER NOT NULL DEFAULT 0,
+        current_word_count INTEGER NOT NULL DEFAULT 0,
+        body_text_length INTEGER,
+        location_label TEXT,
+        meta TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS writing_progress_events (
+        id INTEGER PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        project_id INTEGER NOT NULL,
+        project_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        target_kind TEXT NOT NULL,
+        source_surface TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        active_seconds_total INTEGER NOT NULL DEFAULT 0,
+        focused_seconds_total INTEGER NOT NULL DEFAULT 0,
+        keystrokes_total INTEGER NOT NULL DEFAULT 0,
+        words_added_total INTEGER NOT NULL DEFAULT 0,
+        words_deleted_total INTEGER NOT NULL DEFAULT 0,
+        net_words_total INTEGER NOT NULL DEFAULT 0,
+        current_word_count INTEGER NOT NULL DEFAULT 0,
+        body_text_length INTEGER,
+        location_label TEXT,
+        meta TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS writing_daily_rollups (
+        day TEXT PRIMARY KEY,
+        active_seconds INTEGER NOT NULL DEFAULT 0,
+        focused_seconds INTEGER NOT NULL DEFAULT 0,
+        keystrokes INTEGER NOT NULL DEFAULT 0,
+        words_added INTEGER NOT NULL DEFAULT 0,
+        words_deleted INTEGER NOT NULL DEFAULT 0,
+        net_words INTEGER NOT NULL DEFAULT 0,
+        sessions INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS writing_hourly_rollups (
+        hour_start TEXT PRIMARY KEY,
+        active_seconds INTEGER NOT NULL DEFAULT 0,
+        focused_seconds INTEGER NOT NULL DEFAULT 0,
+        keystrokes INTEGER NOT NULL DEFAULT 0,
+        words_added INTEGER NOT NULL DEFAULT 0,
+        words_deleted INTEGER NOT NULL DEFAULT 0,
+        net_words INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS writing_daily_project_touches (
+        day TEXT NOT NULL,
+        project_id INTEGER NOT NULL,
+        first_seen_at TEXT NOT NULL,
+        PRIMARY KEY (day, project_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_writing_projects_kind ON writing_projects(kind);
+      CREATE INDEX IF NOT EXISTS idx_writing_projects_status ON writing_projects(status);
+      CREATE INDEX IF NOT EXISTS idx_writing_projects_last_touched ON writing_projects(last_touched_at);
+      CREATE INDEX IF NOT EXISTS idx_writing_sessions_started_at ON writing_sessions(started_at);
+      CREATE INDEX IF NOT EXISTS idx_writing_sessions_project_id ON writing_sessions(project_id);
+      CREATE INDEX IF NOT EXISTS idx_writing_sessions_last_event_at ON writing_sessions(last_event_at);
+      CREATE INDEX IF NOT EXISTS idx_writing_progress_events_occurred_at ON writing_progress_events(occurred_at);
+      CREATE INDEX IF NOT EXISTS idx_writing_progress_events_session_id ON writing_progress_events(session_id);
+      CREATE INDEX IF NOT EXISTS idx_writing_daily_project_touches_day ON writing_daily_project_touches(day);
     `;
 
     this.driver.exec(ddl);
@@ -374,6 +585,8 @@ export class Database {
 
     // Migration: Add analytics tables for existing databases
     this.migrateAnalyticsTables();
+    this.migrateLiteraryAnalyticsTables();
+    this.migrateWritingAnalyticsTables();
   }
 
   private migrateAnalyticsTables() {
@@ -383,6 +596,26 @@ export class Database {
 
     if (tables.length < 3) {
       logger.info('Analytics tables created/verified');
+    }
+  }
+
+  private migrateLiteraryAnalyticsTables() {
+    const tables = this.driver.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('reading_sessions', 'reading_progress_events', 'reading_daily_rollups', 'reading_hourly_rollups', 'reading_daily_doc_touches', 'reading_annotations')"
+    ).all() as Array<{ name: string }>;
+
+    if (tables.length < 6) {
+      logger.info('Literary analytics tables created/verified');
+    }
+  }
+
+  private migrateWritingAnalyticsTables() {
+    const tables = this.driver.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('writing_projects', 'writing_sessions', 'writing_progress_events', 'writing_daily_rollups', 'writing_hourly_rollups', 'writing_daily_project_touches')"
+    ).all() as Array<{ name: string }>;
+
+    if (tables.length < 6) {
+      logger.info('Writing analytics tables created/verified');
     }
   }
 

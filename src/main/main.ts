@@ -26,12 +26,82 @@ let pendingAuthUrl: string | null = null;
 let pomodoroSessionState: { sessionId: string; startBalance: number; plannedMinutes: number } | null = null;
 const CAMERA_CAPTURE_INTERVAL_MS = 60 * 1000;
 let lastCameraCaptureAt = 0;
-const MONITOR_HEALTH_CHECK_INTERVAL_MS = 20_000;
-const EXTENSION_STALE_AFTER_MS = 70_000;
-const MISSING_EXTENSION_ALERT_INTERVAL_MS = 45_000;
+const MONITOR_HEALTH_CHECK_INTERVAL_MS = 5_000;
+const EXTENSION_STALE_AFTER_MS = 35_000;
 let monitorHealthInterval: NodeJS.Timeout | null = null;
-let lastMissingExtensionAlertAt = 0;
+let nextMissingExtensionNagAt = 0;
+let lastMissingExtensionNagMessage: string | null = null;
+const missingExtensionBeepTimeouts = new Set<NodeJS.Timeout>();
 const execFileAsync = promisify(execFile);
+
+const MISSING_EXTENSION_NAG_MESSAGES = [
+  'Wear your digital condom!!! Chrome is running without the extension.',
+  'Digital condom check: Chrome is open and unprotected. Turn the extension back on.',
+  'Raw-dogging the internet again? Chrome is running without TimeWellSpent protection.',
+  'Condom up. Chrome is active and the extension is missing or asleep.',
+  'Serious face: Chrome is open without the extension. You are one autoplay away from regret.',
+  'Protection reminder: your browser is running without guardrails. Re-enable the extension.'
+] as const;
+
+function randomInt(min: number, max: number) {
+  const lo = Math.ceil(Math.min(min, max));
+  const hi = Math.floor(Math.max(min, max));
+  return Math.floor(Math.random() * (hi - lo + 1)) + lo;
+}
+
+function pickMissingExtensionNagMessage() {
+  if (MISSING_EXTENSION_NAG_MESSAGES.length <= 1) return MISSING_EXTENSION_NAG_MESSAGES[0];
+  let next = MISSING_EXTENSION_NAG_MESSAGES[randomInt(0, MISSING_EXTENSION_NAG_MESSAGES.length - 1)];
+  if (next === lastMissingExtensionNagMessage) {
+    const offset = randomInt(1, MISSING_EXTENSION_NAG_MESSAGES.length - 1);
+    next = MISSING_EXTENSION_NAG_MESSAGES[(MISSING_EXTENSION_NAG_MESSAGES.indexOf(next) + offset) % MISSING_EXTENSION_NAG_MESSAGES.length];
+  }
+  lastMissingExtensionNagMessage = next;
+  return next;
+}
+
+function clearMissingExtensionBeepTimeouts() {
+  for (const timeout of missingExtensionBeepTimeouts) {
+    clearTimeout(timeout);
+  }
+  missingExtensionBeepTimeouts.clear();
+}
+
+function queueMissingExtensionBeeps() {
+  const patterns: number[][] = [
+    [0],
+    [0, randomInt(180, 650)],
+    [0, randomInt(120, 360), randomInt(450, 1100)],
+    [0, randomInt(900, 2400)],
+    [0, randomInt(140, 320), randomInt(320, 650), randomInt(1800, 3200)]
+  ];
+  const pattern = patterns[randomInt(0, patterns.length - 1)] ?? [0];
+  for (const delay of pattern) {
+    const timeout = setTimeout(() => {
+      missingExtensionBeepTimeouts.delete(timeout);
+      try {
+        shell.beep();
+      } catch {
+        // ignore platform beep failures
+      }
+    }, Math.max(0, delay));
+    missingExtensionBeepTimeouts.add(timeout);
+  }
+}
+
+function nextMissingExtensionNagDelayMs(initial = false) {
+  if (initial) return randomInt(2_000, 8_000);
+  const roll = Math.random();
+  if (roll < 0.18) return randomInt(900, 2_800);      // back-to-back annoyance
+  if (roll < 0.58) return randomInt(4_000, 14_000);    // frequent nudges
+  if (roll < 0.82) return randomInt(18_000, 40_000);   // moderate wait
+  return randomInt(45_000, 90_000);                    // long simmer, then surprise
+}
+
+function resetMissingExtensionNagState() {
+  nextMissingExtensionNagAt = 0;
+  clearMissingExtensionBeepTimeouts();
+}
 
 async function isChromeRunning() {
   try {
@@ -218,6 +288,7 @@ async function bootstrap() {
             neutral: summary.totalsByCategory.neutral ?? 0,
             frivolity: summary.totalsByCategory.frivolity ?? 0,
             draining: (summary.totalsByCategory as any).draining ?? 0,
+            emergency: (summary.totalsByCategory as any).emergency ?? 0,
             idle: summary.totalsByCategory.idle ?? 0
           },
           productivityScore: summary.totalSeconds > 0
@@ -590,23 +661,34 @@ async function bootstrap() {
 
   monitorHealthInterval = setInterval(async () => {
     const chromeRunning = await isChromeRunning();
-    if (!chromeRunning) return;
+    if (!chromeRunning) {
+      resetMissingExtensionNagState();
+      return;
+    }
 
     const extensionStatus = backend.extension.status();
     const now = Date.now();
     const stale = !extensionStatus.lastSeen || (now - extensionStatus.lastSeen > EXTENSION_STALE_AFTER_MS);
-    if (!stale) return;
-    if (now - lastMissingExtensionAlertAt < MISSING_EXTENSION_ALERT_INTERVAL_MS) return;
+    if (!stale) {
+      resetMissingExtensionNagState();
+      return;
+    }
+    if (!nextMissingExtensionNagAt) {
+      nextMissingExtensionNagAt = now + nextMissingExtensionNagDelayMs(true);
+      return;
+    }
+    if (now < nextMissingExtensionNagAt) return;
 
-    lastMissingExtensionAlertAt = now;
+    nextMissingExtensionNagAt = now + nextMissingExtensionNagDelayMs(false);
     try {
       new Notification({
         title: 'TimeWellSpent',
-        body: 'Wear your digital condom!!! Chrome is running without the extension.'
+        body: pickMissingExtensionNagMessage()
       }).show();
     } catch {
       // ignore notification errors
     }
+    queueMissingExtensionBeeps();
   }, MONITOR_HEALTH_CHECK_INTERVAL_MS);
 
   await createWindow();
@@ -637,6 +719,7 @@ app.on('before-quit', async () => {
     clearInterval(monitorHealthInterval);
     monitorHealthInterval = null;
   }
+  clearMissingExtensionBeepTimeouts();
   stopWatcher?.();
   if (stopBackend) {
     await stopBackend();

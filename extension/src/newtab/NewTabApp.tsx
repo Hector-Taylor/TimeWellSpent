@@ -1,5 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DESKTOP_API_URL } from '../constants';
+import {
+  addLocalReaderBooks,
+  deleteLocalReaderBook,
+  isReaderFileSupported,
+  listLocalReaderBooks,
+  openLocalReaderBook,
+  type LocalReaderBook,
+} from './localReaderShelf';
+import { EmbeddedDocumentReader, type EmbeddedReaderSnapshot } from './EmbeddedDocumentReader';
+import { WritingStudioPanel } from './WritingStudioPanel';
 
 type LibraryPurpose = 'replace' | 'allow' | 'temptation' | 'productive';
 type StatsView = 'focus' | 'attention' | 'social';
@@ -134,6 +144,78 @@ type TrophiesPayload = {
   error?: string;
 };
 
+type ReaderSession = {
+  book: LocalReaderBook;
+  objectUrl: string;
+};
+
+type LiteraryAnnotationKind = 'highlight' | 'note';
+
+type LiteraryAnnotationRecord = {
+  id: number;
+  docKey: string;
+  title: string;
+  kind: LiteraryAnnotationKind;
+  sessionId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  currentPage?: number | null;
+  totalPages?: number | null;
+  progress?: number | null;
+  locationLabel?: string | null;
+  selectedText?: string | null;
+  noteText?: string | null;
+};
+
+type LiteraryAnalyticsOverview = {
+  periodDays: number;
+  totals: {
+    activeSeconds: number;
+    focusedSeconds: number;
+    pagesRead: number;
+    wordsRead: number;
+    sessions: number;
+    documents: number;
+  };
+  annotations: {
+    total: number;
+    highlights: number;
+    notes: number;
+    todayTotal: number;
+    todayHighlights: number;
+    todayNotes: number;
+  };
+  today: {
+    activeSeconds: number;
+    focusedSeconds: number;
+    pagesRead: number;
+    wordsRead: number;
+    sessions: number;
+    documents: number;
+  };
+  pace: {
+    pagesPerHour: number;
+    wordsPerMinute: number;
+  };
+  currentBook?: {
+    title: string;
+    progress?: number | null;
+    currentPage?: number | null;
+    totalPages?: number | null;
+    lastReadAt: string;
+  } | null;
+  daily: Array<{
+    day: string;
+    activeSeconds: number;
+    focusedSeconds: number;
+    pagesRead: number;
+    wordsRead: number;
+    sessions: number;
+    documents: number;
+  }>;
+  insights: string[];
+};
+
 const REFRESH_MS = 45_000;
 const DAILY_START_HOUR = 4;
 const HOME_PREFS_KEY = 'tws-newtab-prefs-v1';
@@ -195,6 +277,19 @@ function formatPercent(value: number) {
   return `${Math.max(0, Math.min(100, Math.round(value)))}%`;
 }
 
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let amount = value;
+  let unitIndex = 0;
+  while (amount >= 1024 && unitIndex < units.length - 1) {
+    amount /= 1024;
+    unitIndex += 1;
+  }
+  const precision = amount >= 100 || unitIndex === 0 ? 0 : 1;
+  return `${amount.toFixed(precision)} ${units[unitIndex]}`;
+}
+
 function normalizeUrl(raw: string) {
   const trimmed = raw.trim();
   if (!trimmed) return null;
@@ -241,6 +336,31 @@ function greetingFor(hour: number) {
   return 'Good evening';
 }
 
+function formatBookType(book: LocalReaderBook) {
+  if (book.format === 'pdf') return 'PDF';
+  if (book.format === 'epub') return 'EPUB';
+  return 'Document';
+}
+
+function coverGradientFor(title: string) {
+  let hash = 0;
+  for (let index = 0; index < title.length; index += 1) {
+    hash = (hash * 31 + title.charCodeAt(index)) | 0;
+  }
+  const hue = Math.abs(hash) % 360;
+  const hue2 = (hue + 46) % 360;
+  return `linear-gradient(160deg, hsl(${hue} 76% 58% / 0.95), hsl(${hue2} 82% 47% / 0.85))`;
+}
+
+function createReaderSessionId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return `reader-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function localBookDocKey(book: LocalReaderBook) {
+  return `local:${book.format}:${book.fileName}:${book.sizeBytes}`;
+}
+
 function loadHomePrefs(): HomePrefs {
   try {
     const raw = window.localStorage.getItem(HOME_PREFS_KEY);
@@ -282,9 +402,24 @@ export function NewTabApp() {
   const [wallet, setWallet] = useState<WalletSnapshot>({ balance: 0 });
   const [summary24h, setSummary24h] = useState<ActivitySummary | null>(null);
   const [overview7d, setOverview7d] = useState<AnalyticsOverview | null>(null);
+  const [literaryOverview, setLiteraryOverview] = useState<LiteraryAnalyticsOverview | null>(null);
   const [timeOfDay, setTimeOfDay] = useState<TimeOfDayStats[]>([]);
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
   const [readingItems, setReadingItems] = useState<ReadingAttractor[]>([]);
+  const [localReaderBooks, setLocalReaderBooks] = useState<LocalReaderBook[]>([]);
+  const [loadingLocalReaderBooks, setLoadingLocalReaderBooks] = useState(true);
+  const [uploadingReaderBooks, setUploadingReaderBooks] = useState(false);
+  const [readerUploadError, setReaderUploadError] = useState<string | null>(null);
+  const [readerDragActive, setReaderDragActive] = useState(false);
+  const [readerStorageUsage, setReaderStorageUsage] = useState<{ quota?: number; usage?: number } | null>(null);
+  const [readerSession, setReaderSession] = useState<ReaderSession | null>(null);
+  const [readerAnnotations, setReaderAnnotations] = useState<LiteraryAnnotationRecord[]>([]);
+  const [loadingReaderAnnotations, setLoadingReaderAnnotations] = useState(false);
+  const [annotationDraft, setAnnotationDraft] = useState('');
+  const [annotationBusy, setAnnotationBusy] = useState(false);
+  const readerFileInputRef = useRef<HTMLInputElement | null>(null);
+  const readerMetricsRef = useRef<EmbeddedReaderSnapshot | null>(null);
+  const readerTrackingRef = useRef<{ sessionId: string; docKey: string } | null>(null);
   const [friendsPayload, setFriendsPayload] = useState<FriendsPayload>({
     success: false,
     friends: [],
@@ -306,10 +441,11 @@ export function NewTabApp() {
     setNotice(null);
     try {
       await fetchJson<{ status: string }>('/health');
-      const [walletData, summaryData, overviewData, timeData, libraryData, readingData, friendsData, trophiesData, onboardingData] = await Promise.all([
+      const [walletData, summaryData, overviewData, literaryData, timeData, libraryData, readingData, friendsData, trophiesData, onboardingData] = await Promise.all([
         fetchJson<WalletSnapshot>('/wallet'),
         fetchJson<ActivitySummary>('/activities/summary?windowHours=24'),
         fetchJson<AnalyticsOverview>('/analytics/overview?days=7'),
+        fetchJson<LiteraryAnalyticsOverview>('/analytics/literary/overview?days=14'),
         fetchJson<TimeOfDayStats[]>('/analytics/time-of-day?days=7'),
         fetchJson<LibraryItem[]>('/library'),
         fetchJson<{ items: ReadingAttractor[] }>('/integrations/reading?limit=12'),
@@ -321,6 +457,7 @@ export function NewTabApp() {
       setWallet(walletData);
       setSummary24h(summaryData);
       setOverview7d(overviewData);
+      setLiteraryOverview(literaryData);
       setTimeOfDay(Array.isArray(timeData) ? timeData : []);
       setLibraryItems(Array.isArray(libraryData) ? libraryData : []);
       setReadingItems(Array.isArray(readingData.items) ? readingData.items : []);
@@ -352,9 +489,228 @@ export function NewTabApp() {
     }
   }, []);
 
+  const refreshReaderStorageEstimate = useCallback(async () => {
+    try {
+      if (!navigator.storage?.estimate) return;
+      const estimate = await navigator.storage.estimate();
+      setReaderStorageUsage({
+        quota: estimate.quota,
+        usage: estimate.usage,
+      });
+    } catch {
+      // best-effort only
+    }
+  }, []);
+
+  const refreshLocalReaderBooks = useCallback(async (showLoader = false) => {
+    if (showLoader) setLoadingLocalReaderBooks(true);
+    try {
+      const books = await listLocalReaderBooks();
+      setLocalReaderBooks(books);
+    } catch (readerError) {
+      setReaderUploadError((readerError as Error).message ?? 'Unable to load local reader shelf.');
+    } finally {
+      if (showLoader) setLoadingLocalReaderBooks(false);
+    }
+  }, []);
+
+  const closeReader = useCallback(() => {
+    setReaderSession((previous) => {
+      if (previous) {
+        URL.revokeObjectURL(previous.objectUrl);
+      }
+      return null;
+    });
+  }, []);
+
+  const openUploadedBook = useCallback(async (book: LocalReaderBook) => {
+    setReaderUploadError(null);
+    try {
+      const opened = await openLocalReaderBook(book.id);
+      if (!opened) {
+        setReaderUploadError('That file is no longer available in local storage.');
+        await refreshLocalReaderBooks();
+        return;
+      }
+      const objectUrl = URL.createObjectURL(opened.blob);
+      setReaderSession((previous) => {
+        if (previous) {
+          URL.revokeObjectURL(previous.objectUrl);
+        }
+        return { book: opened.book, objectUrl };
+      });
+      await refreshLocalReaderBooks();
+      setNotice(`Opened “${opened.book.title}” in the browser reader.`);
+    } catch (readerError) {
+      setReaderUploadError((readerError as Error).message ?? 'Unable to open file.');
+    }
+  }, [refreshLocalReaderBooks]);
+
+  const handleReaderFiles = useCallback(async (files: File[]) => {
+    const validFiles = files.filter((file) => isReaderFileSupported(file));
+    const rejectedCount = files.length - validFiles.length;
+    if (!validFiles.length) {
+      setReaderUploadError('Upload a PDF or EPUB file.');
+      return;
+    }
+
+    setUploadingReaderBooks(true);
+    setReaderUploadError(null);
+    try {
+      const inserted = await addLocalReaderBooks(validFiles);
+      await Promise.all([refreshLocalReaderBooks(), refreshReaderStorageEstimate()]);
+      if (inserted.length > 0) {
+        setNotice(
+          rejectedCount > 0
+            ? `Saved ${inserted.length} book${inserted.length === 1 ? '' : 's'} (${rejectedCount} skipped).`
+            : `Saved ${inserted.length} book${inserted.length === 1 ? '' : 's'} to your local reader shelf.`,
+        );
+        if (inserted.length === 1) {
+          await openUploadedBook(inserted[0]);
+        }
+      }
+    } catch (readerError) {
+      setReaderUploadError((readerError as Error).message ?? 'Unable to save uploaded books.');
+    } finally {
+      setUploadingReaderBooks(false);
+    }
+  }, [openUploadedBook, refreshLocalReaderBooks, refreshReaderStorageEstimate]);
+
+  const removeUploadedBook = useCallback(async (book: LocalReaderBook) => {
+    const confirmed = window.confirm(`Remove "${book.title}" from your local browser shelf?`);
+    if (!confirmed) return;
+
+    try {
+      await deleteLocalReaderBook(book.id);
+      setReaderSession((previous) => {
+        if (previous?.book.id === book.id) {
+          URL.revokeObjectURL(previous.objectUrl);
+          return null;
+        }
+        return previous;
+      });
+      await Promise.all([refreshLocalReaderBooks(), refreshReaderStorageEstimate()]);
+      setNotice(`Removed “${book.title}” from your local reader shelf.`);
+    } catch (readerError) {
+      setReaderUploadError((readerError as Error).message ?? 'Unable to remove book.');
+    }
+  }, [refreshLocalReaderBooks, refreshReaderStorageEstimate]);
+
+  const openRandomUploadedBook = useCallback(async () => {
+    if (!localReaderBooks.length) {
+      setNotice('Upload a PDF or EPUB to start your local reader shelf.');
+      return;
+    }
+    const choice = localReaderBooks[Math.floor(Math.random() * localReaderBooks.length)];
+    await openUploadedBook(choice);
+  }, [localReaderBooks, openUploadedBook]);
+
+  const postLiterarySessionProgress = useCallback(async (kind: 'progress' | 'end') => {
+    if (!readerSession || !readerTrackingRef.current) return;
+    const snapshot = readerMetricsRef.current;
+    if (!snapshot) return;
+    try {
+      await fetchJson(`/analytics/literary/sessions/${readerTrackingRef.current.sessionId}/${kind}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          occurredAt: new Date().toISOString(),
+          currentPage: snapshot.currentPage,
+          totalPages: snapshot.totalPages,
+          progress: snapshot.progress,
+          activeSecondsTotal: snapshot.activeSecondsTotal,
+          focusedSecondsTotal: snapshot.focusedSecondsTotal,
+          pagesReadTotal: snapshot.pagesReadTotal,
+          wordsReadTotal: snapshot.wordsReadTotal,
+          estimatedTotalWords: snapshot.estimatedTotalWords,
+          locationLabel: snapshot.locationLabel,
+        }),
+      });
+    } catch {
+      // non-blocking
+    }
+  }, [readerSession]);
+
+  const handleEmbeddedReaderSnapshot = useCallback((snapshot: EmbeddedReaderSnapshot) => {
+    readerMetricsRef.current = snapshot;
+  }, []);
+
+  const loadReaderAnnotations = useCallback(async (docKey: string) => {
+    setLoadingReaderAnnotations(true);
+    try {
+      const payload = await fetchJson<{ items: LiteraryAnnotationRecord[] }>(
+        `/analytics/literary/annotations?docKey=${encodeURIComponent(docKey)}&limit=200`,
+      );
+      setReaderAnnotations(Array.isArray(payload.items) ? payload.items : []);
+    } catch {
+      setReaderAnnotations([]);
+    } finally {
+      setLoadingReaderAnnotations(false);
+    }
+  }, []);
+
+  const createReaderAnnotation = useCallback(async (kind: LiteraryAnnotationKind) => {
+    if (!readerSession) return;
+    const snapshot = readerMetricsRef.current;
+    if (!snapshot) {
+      setNotice('Open or navigate the reader before adding annotations.');
+      return;
+    }
+    const docKey = localBookDocKey(readerSession.book);
+    const noteText = annotationDraft.trim();
+    if (kind === 'note' && !noteText) {
+      setNotice('Write a note first.');
+      return;
+    }
+
+    setAnnotationBusy(true);
+    try {
+      await fetchJson('/analytics/literary/annotations', {
+        method: 'POST',
+        body: JSON.stringify({
+          docKey,
+          title: readerSession.book.title,
+          kind,
+          sessionId: readerTrackingRef.current?.sessionId ?? null,
+          currentPage: snapshot.currentPage,
+          totalPages: snapshot.totalPages,
+          progress: snapshot.progress,
+          locationLabel: snapshot.locationLabel,
+          selectedText: null,
+          noteText: kind === 'note' ? noteText : null,
+        }),
+      });
+      if (kind === 'note') setAnnotationDraft('');
+      await Promise.all([loadReaderAnnotations(docKey), loadData(true)]);
+      setNotice(kind === 'note' ? 'Note saved.' : 'Highlight saved.');
+    } catch (annotationError) {
+      setNotice((annotationError as Error).message ?? 'Unable to save annotation.');
+    } finally {
+      setAnnotationBusy(false);
+    }
+  }, [annotationDraft, loadData, loadReaderAnnotations, readerSession]);
+
+  const deleteReaderAnnotation = useCallback(async (id: number) => {
+    if (!readerSession) return;
+    setAnnotationBusy(true);
+    try {
+      await fetchJson(`/analytics/literary/annotations/${id}`, { method: 'DELETE' });
+      await Promise.all([loadReaderAnnotations(localBookDocKey(readerSession.book)), loadData(true)]);
+      setNotice('Annotation removed.');
+    } catch (annotationError) {
+      setNotice((annotationError as Error).message ?? 'Unable to delete annotation.');
+    } finally {
+      setAnnotationBusy(false);
+    }
+  }, [loadData, loadReaderAnnotations, readerSession]);
+
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    void refreshLocalReaderBooks(true);
+    void refreshReaderStorageEstimate();
+  }, [refreshLocalReaderBooks, refreshReaderStorageEstimate]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -375,6 +731,67 @@ export function NewTabApp() {
       // ignore persistence errors
     }
   }, [homePrefs]);
+
+  useEffect(() => {
+    if (!readerSession) return undefined;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeReader();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [closeReader, readerSession]);
+
+  useEffect(() => {
+    return () => {
+      if (readerSession) {
+        URL.revokeObjectURL(readerSession.objectUrl);
+      }
+    };
+  }, [readerSession]);
+
+  useEffect(() => {
+    if (!readerSession) {
+      readerTrackingRef.current = null;
+      readerMetricsRef.current = null;
+      setReaderAnnotations([]);
+      setAnnotationDraft('');
+      return undefined;
+    }
+
+    const sessionId = createReaderSessionId();
+    const docKey = localBookDocKey(readerSession.book);
+    readerTrackingRef.current = { sessionId, docKey };
+    readerMetricsRef.current = null;
+    setAnnotationDraft('');
+    void loadReaderAnnotations(docKey);
+
+    void fetchJson('/analytics/literary/sessions/start', {
+      method: 'POST',
+      body: JSON.stringify({
+        sessionId,
+        docKey,
+        title: readerSession.book.title,
+        fileName: readerSession.book.fileName,
+        format: readerSession.book.format,
+        sourceSurface: 'extension-newtab',
+      }),
+    }).catch(() => undefined);
+
+    const timer = window.setInterval(() => {
+      void postLiterarySessionProgress('progress');
+    }, 5000);
+
+    return () => {
+      window.clearInterval(timer);
+      void postLiterarySessionProgress('end');
+      void loadData(true);
+      readerTrackingRef.current = null;
+    };
+  }, [loadData, loadReaderAnnotations, postLiterarySessionProgress, readerSession]);
 
   const unconsumedLibrary = useMemo(() => {
     return libraryItems.filter((item) => !item.consumedAt);
@@ -412,6 +829,29 @@ export function NewTabApp() {
 
   const featuredLibrary = useMemo(() => filteredLibrary.slice(0, 8), [filteredLibrary]);
   const featuredReading = useMemo(() => readingItems.slice(0, 6), [readingItems]);
+  const featuredUploadedBook = useMemo(() => localReaderBooks[0] ?? null, [localReaderBooks]);
+  const shelfPreviewBooks = useMemo(() => localReaderBooks.slice(0, 8), [localReaderBooks]);
+  const readerAnnotationCounts = useMemo(() => {
+    return readerAnnotations.reduce(
+      (acc, annotation) => {
+        if (annotation.kind === 'highlight') acc.highlights += 1;
+        if (annotation.kind === 'note') acc.notes += 1;
+        return acc;
+      },
+      { highlights: 0, notes: 0 },
+    );
+  }, [readerAnnotations]);
+  const uploadedBookCounts = useMemo(() => {
+    return localReaderBooks.reduce(
+      (acc, book) => {
+        if (book.format === 'pdf') acc.pdf += 1;
+        if (book.format === 'epub') acc.epub += 1;
+        if (book.lastOpenedAt) acc.opened += 1;
+        return acc;
+      },
+      { pdf: 0, epub: 0, opened: 0 },
+    );
+  }, [localReaderBooks]);
 
   const friendCards = useMemo(() => {
     const cards = friendsPayload.friends.map((friend) => {
@@ -502,6 +942,9 @@ export function NewTabApp() {
   const todayLabel = new Date(now).toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
   const timeLabel = new Date(now).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   const profileName = friendsPayload.profile?.displayName ?? friendsPayload.profile?.handle ?? 'friend';
+  const readerStorageLabel = readerStorageUsage?.usage
+    ? `${formatBytes(readerStorageUsage.usage)} used${readerStorageUsage.quota ? ` · ${formatBytes(readerStorageUsage.quota)} quota` : ''}`
+    : 'Stored locally in this browser profile';
 
   const togglePref = useCallback((key: keyof HomePrefs) => {
     setHomePrefs((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -697,6 +1140,168 @@ export function NewTabApp() {
           </div>
         ) : null}
         {notice ? <div className="newtab-notice">{notice}</div> : null}
+        <section
+          className={`reader-stage ${readerDragActive ? 'drag-active' : ''}`}
+          onDragEnter={(event) => {
+            event.preventDefault();
+            setReaderDragActive(true);
+          }}
+          onDragOver={(event) => {
+            event.preventDefault();
+            if (!readerDragActive) setReaderDragActive(true);
+          }}
+          onDragLeave={(event) => {
+            event.preventDefault();
+            if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+            setReaderDragActive(false);
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            setReaderDragActive(false);
+            void handleReaderFiles(Array.from(event.dataTransfer.files ?? []));
+          }}
+        >
+          <div className="reader-stage__intro">
+            <p className="newtab-eyebrow">Reading Room</p>
+            <h2>Upload a PDF or EPUB and read it right here</h2>
+            <p className="reader-stage__copy">
+              Local-first shelf for your browser workflow. Files stay on this machine for now, so opening Chrome is enough to get back into your books.
+            </p>
+            <div className="reader-stage__stats">
+              <span>{localReaderBooks.length} books</span>
+              <span>{uploadedBookCounts.pdf} PDFs</span>
+              <span>{uploadedBookCounts.epub} EPUBs</span>
+              <span>{uploadedBookCounts.opened} opened</span>
+            </div>
+            <div className="reader-stage__actions">
+              <button
+                type="button"
+                className="reader-cta primary"
+                onClick={() => readerFileInputRef.current?.click()}
+                disabled={uploadingReaderBooks}
+              >
+                {uploadingReaderBooks ? 'Uploading...' : 'Upload books'}
+              </button>
+              <button type="button" className="reader-cta" onClick={() => void openRandomUploadedBook()}>
+                Open random local book
+              </button>
+            </div>
+            <p className="reader-stage__footnote">{readerStorageLabel}</p>
+            {literaryOverview ? (
+              <div className="reader-stage__literary">
+                <div>
+                  <span>Today</span>
+                  <strong>{literaryOverview.today.pagesRead}p · {literaryOverview.today.wordsRead.toLocaleString()}w</strong>
+                </div>
+                <div>
+                  <span>Reading time</span>
+                  <strong>{formatDuration(literaryOverview.today.activeSeconds)}</strong>
+                </div>
+                <div>
+                  <span>Pace</span>
+                  <strong>{literaryOverview.pace.pagesPerHour.toFixed(1)} p/h</strong>
+                </div>
+                <div>
+                  <span>Sessions</span>
+                  <strong>{literaryOverview.today.sessions}</strong>
+                </div>
+                <div>
+                  <span>Annotations today</span>
+                  <strong>{literaryOverview.annotations.todayTotal}</strong>
+                </div>
+              </div>
+            ) : null}
+            <input
+              ref={readerFileInputRef}
+              type="file"
+              accept=".pdf,.epub,application/pdf,application/epub+zip"
+              multiple
+              hidden
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? []);
+                event.target.value = '';
+                void handleReaderFiles(files);
+              }}
+            />
+            {readerUploadError ? <p className="error-text">{readerUploadError}</p> : null}
+          </div>
+
+          <div className="reader-stage__spotlight">
+            {loadingLocalReaderBooks ? (
+              <div className="reader-empty">
+                <strong>Loading your shelf...</strong>
+              </div>
+            ) : featuredUploadedBook ? (
+              <>
+                <button
+                  type="button"
+                  className="reader-spotlight-book"
+                  onClick={() => void openUploadedBook(featuredUploadedBook)}
+                  aria-label={`Open ${featuredUploadedBook.title}`}
+                >
+                  <span className="reader-spotlight-glow" />
+                  <span
+                    className="reader-cover-art"
+                    style={{ background: coverGradientFor(featuredUploadedBook.title) }}
+                    aria-hidden="true"
+                  >
+                    <span className="reader-cover-badge">{formatBookType(featuredUploadedBook)}</span>
+                    <span className="reader-cover-title">{featuredUploadedBook.title}</span>
+                    <span className="reader-cover-meta">{formatBytes(featuredUploadedBook.sizeBytes)}</span>
+                  </span>
+                </button>
+                <div className="reader-spotlight-copy">
+                  <p className="reader-spotlight-label">Featured on shelf</p>
+                  <h3>{featuredUploadedBook.title}</h3>
+                  <p>{featuredUploadedBook.fileName}</p>
+                  <div className="row-actions">
+                    <button type="button" onClick={() => void openUploadedBook(featuredUploadedBook)}>Read now</button>
+                    <button type="button" onClick={() => void removeUploadedBook(featuredUploadedBook)}>Remove</button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="reader-empty">
+                <strong>Drop files here to build your shelf</strong>
+                <p>PDF and EPUB files will be stored locally in the browser and surfaced as clickable covers.</p>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {shelfPreviewBooks.length ? (
+          <section className="reader-shelf-grid">
+            {shelfPreviewBooks.map((book) => (
+              <article className={`reader-shelf-card ${readerSession?.book.id === book.id ? 'active' : ''}`} key={book.id}>
+                <button type="button" className="reader-shelf-card__open" onClick={() => void openUploadedBook(book)}>
+                  <span
+                    className="reader-shelf-card__cover"
+                    style={{ background: coverGradientFor(book.title) }}
+                    aria-hidden="true"
+                  >
+                    <span className="reader-shelf-card__format">{formatBookType(book)}</span>
+                    <span className="reader-shelf-card__title">{book.title}</span>
+                  </span>
+                </button>
+                <div className="reader-shelf-card__body">
+                  <div>
+                    <strong>{book.title}</strong>
+                    <p>{book.fileName}</p>
+                    <small>{formatBytes(book.sizeBytes)} · {formatBookType(book)}</small>
+                  </div>
+                  <div className="row-actions">
+                    <button type="button" onClick={() => void openUploadedBook(book)}>Open</button>
+                    <button type="button" onClick={() => void removeUploadedBook(book)}>Delete</button>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </section>
+        ) : null}
+
+        <section className="newtab-row">
+          <WritingStudioPanel apiBase={DESKTOP_API_URL} surface="extension-newtab" variant="extension" />
+        </section>
 
         <section className="newtab-row">
           <article className="newtab-card tall">
@@ -820,6 +1425,7 @@ export function NewTabApp() {
         <section className="library-head">
           <h2>Library Landing</h2>
           <div className="library-actions">
+            <button type="button" onClick={() => void openRandomUploadedBook()}>Random Local Book</button>
             <button type="button" onClick={() => void openRandomLibrary()}>Random from Library</button>
             <button type="button" onClick={() => void openRandomReading()}>Random Reading Pull</button>
           </div>
@@ -880,7 +1486,7 @@ export function NewTabApp() {
 
           {homePrefs.showReading ? (
             <article className="newtab-card tall">
-              <h2>Reading attractors</h2>
+              <h2>Desktop reading attractors</h2>
               {featuredReading.length ? (
                 <ul>
                   {featuredReading.map((item) => (
@@ -1002,6 +1608,128 @@ export function NewTabApp() {
               </article>
             ) : null}
           </section>
+        ) : null}
+
+        {readerSession ? (
+          <div
+            className="reader-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Reading ${readerSession.book.title}`}
+            onClick={closeReader}
+          >
+            <div className="reader-overlay__panel" onClick={(event) => event.stopPropagation()}>
+              <header className="reader-overlay__header">
+                <div>
+                  <p className="newtab-eyebrow">Browser Reader</p>
+                  <h2>{readerSession.book.title}</h2>
+                  <p>{readerSession.book.fileName} · {formatBookType(readerSession.book)} · {formatBytes(readerSession.book.sizeBytes)}</p>
+                </div>
+                <div className="row-actions">
+                  <button type="button" onClick={() => window.open(readerSession.objectUrl, '_blank', 'noopener,noreferrer')}>
+                    Open in tab
+                  </button>
+                  <a className="reader-link-button" href={readerSession.objectUrl} download={readerSession.book.fileName}>
+                    Download
+                  </a>
+                  <button type="button" onClick={closeReader}>Close</button>
+                </div>
+              </header>
+              <div className="reader-overlay__frameWrap">
+                <div className="reader-overlay__readingGrid">
+                  <div className="reader-overlay__readerPane">
+                    <EmbeddedDocumentReader
+                      src={readerSession.objectUrl}
+                      format={readerSession.book.format}
+                      title={readerSession.book.title}
+                      onSnapshotChange={handleEmbeddedReaderSnapshot}
+                    />
+                  </div>
+                  <aside className="reader-annotations" aria-label="Reader annotations">
+                    <div className="reader-annotations__header">
+                      <div>
+                        <p className="newtab-eyebrow">Annotations</p>
+                        <h3>Highlights & Notes</h3>
+                      </div>
+                      <div className="pill-group">
+                        <span className="pill">{readerAnnotations.length} total</span>
+                        <span className="pill">{readerAnnotationCounts.highlights} highlights</span>
+                        <span className="pill">{readerAnnotationCounts.notes} notes</span>
+                      </div>
+                    </div>
+
+                    <div className="reader-annotations__composer">
+                      <label htmlFor="reader-note-draft">Quick note at current location</label>
+                      <textarea
+                        id="reader-note-draft"
+                        rows={4}
+                        value={annotationDraft}
+                        onChange={(event) => setAnnotationDraft(event.target.value)}
+                        placeholder="Capture what matters here..."
+                        disabled={annotationBusy}
+                      />
+                      <div className="row-actions">
+                        <button type="button" onClick={() => void createReaderAnnotation('highlight')} disabled={annotationBusy}>
+                          {annotationBusy ? 'Saving...' : 'Highlight spot'}
+                        </button>
+                        <button type="button" onClick={() => void createReaderAnnotation('note')} disabled={annotationBusy}>
+                          {annotationBusy ? 'Saving...' : 'Save note'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="reader-annotations__listWrap">
+                      {loadingReaderAnnotations ? (
+                        <p className="empty">Loading annotations...</p>
+                      ) : readerAnnotations.length ? (
+                        <ul className="reader-annotations__list">
+                          {readerAnnotations.map((annotation) => (
+                            <li key={annotation.id} className={`reader-annotation-card kind-${annotation.kind}`}>
+                              <div className="reader-annotation-card__header">
+                                <span className="pill">{annotation.kind === 'note' ? 'Note' : 'Highlight'}</span>
+                                <small>
+                                  {new Date(annotation.createdAt).toLocaleString([], {
+                                    dateStyle: 'short',
+                                    timeStyle: 'short',
+                                  })}
+                                </small>
+                              </div>
+                              <div className="reader-annotation-card__meta">
+                                <strong>{annotation.locationLabel ?? 'Current location'}</strong>
+                                {annotation.currentPage != null ? (
+                                  <small>
+                                    {annotation.totalPages
+                                      ? `Page ${annotation.currentPage}/${annotation.totalPages}`
+                                      : `Page ${annotation.currentPage}`}
+                                  </small>
+                                ) : null}
+                              </div>
+                              {annotation.selectedText ? <blockquote>{annotation.selectedText}</blockquote> : null}
+                              {annotation.noteText ? <p>{annotation.noteText}</p> : null}
+                              <div className="row-actions">
+                                <button type="button" onClick={() => void deleteReaderAnnotation(annotation.id)} disabled={annotationBusy}>
+                                  Delete
+                                </button>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="empty">
+                          Save highlights or notes while you read. Literary analytics will count them and keep reading productive.
+                        </p>
+                      )}
+                    </div>
+                  </aside>
+                </div>
+              </div>
+              {readerSession.book.format === 'epub' ? (
+                <p className="reader-overlay__hint">
+                  EPUB progress and reading metrics are tracked inside TimeWellSpent. Use “Open in tab” if a specific file renders better in Chrome’s native viewer.
+                </p>
+              ) : null}
+            </div>
+          </div>
         ) : null}
       </section>
     </main>

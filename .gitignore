@@ -1,6 +1,7 @@
 node_modules/
 .dmg/
 .cache/
+.vite/
 .DS_Store
 *.log
 *.db
@@ -12,6 +13,7 @@ sqlite.db
 coverage/
 web-ext-artifacts/
 out/
+src/renderer/dist/
 extension/dist/
 .env
 .env.*

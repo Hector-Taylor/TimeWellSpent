@@ -24,6 +24,7 @@ type StatusResponse = {
 type RiskActivityKind = 'scroll' | 'wheel' | 'key-down' | 'mouse-down' | 'touch-start';
 type RiskLevel = 'low' | 'medium' | 'high';
 type TimerTier = 'safe' | 'warn' | 'danger';
+type ShortFormSurface = 'youtube-shorts' | 'instagram-reels';
 
 const HUD_REFRESH_MS = 3000;
 const HUD_TICK_MS = 1000;
@@ -36,6 +37,46 @@ const DOOMSCROLL_MIN_SCROLL_EVENTS = 12;
 const DOOMSCROLL_MAX_KEY_EVENTS = 1;
 const DOOMSCROLL_MAX_CLICK_EVENTS = 3;
 const DOOMSCROLL_MIN_SCROLL_RATIO = 0.8;
+const SHORT_FORM_UNLOCK_WINDOW_MS = 10_000;
+const SHORT_FORM_GESTURE_BURST_MS = 900;
+const SHORT_FORM_STATS_WINDOW_MS = 60_000;
+
+function detectShortFormSurface(rawUrl: string | null | undefined): ShortFormSurface | null {
+  if (!rawUrl) return null;
+  try {
+    const url = new URL(rawUrl);
+    const host = url.hostname.replace(/^www\./, '').toLowerCase();
+    const path = url.pathname.toLowerCase();
+    if (host === 'youtube.com' && path.startsWith('/shorts/')) return 'youtube-shorts';
+    if (host === 'instagram.com' && (path.startsWith('/reels/') || path.startsWith('/reel/'))) return 'instagram-reels';
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function shortFormSurfaceLabel(surface: ShortFormSurface) {
+  return surface === 'youtube-shorts' ? 'YouTube Shorts' : 'Instagram Reels';
+}
+
+function isEditableTarget(value: EventTarget | null): boolean {
+  if (!(value instanceof HTMLElement)) return false;
+  if (value instanceof HTMLInputElement || value instanceof HTMLTextAreaElement) return true;
+  return value.isContentEditable;
+}
+
+function isHudEvent(event: Event): boolean {
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+  return path.some((node) => node instanceof HTMLElement && (node.id === 'tws-hud-host' || node.closest?.('#tws-hud-host')));
+}
+
+function stopShortFormNavEvent(event: Event) {
+  event.preventDefault();
+  event.stopPropagation();
+  if ('stopImmediatePropagation' in event && typeof (event as any).stopImmediatePropagation === 'function') {
+    (event as any).stopImmediatePropagation();
+  }
+}
 
 function formatCoins(value: number) {
   if (!Number.isFinite(value)) return '0';
@@ -66,6 +107,12 @@ export default function GlanceHud({ domain }: Props) {
   const [ending, setEnding] = useState(false);
   const [pauseBusy, setPauseBusy] = useState(false);
   const [holdProgress, setHoldProgress] = useState(0);
+  const [shortFormPasses, setShortFormPasses] = useState(0);
+  const [shortFormUnlockExpiresAt, setShortFormUnlockExpiresAt] = useState<number | null>(null);
+  const [shortFormBlockedCount, setShortFormBlockedCount] = useState(0);
+  const [shortFormAllowedCount, setShortFormAllowedCount] = useState(0);
+  const [shortFormUnlockCount, setShortFormUnlockCount] = useState(0);
+  const [shortFormLastBlockedAt, setShortFormLastBlockedAt] = useState<number | null>(null);
 
   const holdStartRef = useRef<number | null>(null);
   const holdTimerRef = useRef<number | null>(null);
@@ -74,6 +121,13 @@ export default function GlanceHud({ domain }: Props) {
   const initialRemainingRef = useRef<number | null>(null);
   const remainingSamplesRef = useRef<Array<{ ts: number; remaining: number }>>([]);
   const riskEventsRef = useRef<Array<{ ts: number; kind: RiskActivityKind }>>([]);
+  const shortFormPassesRef = useRef(0);
+  const shortFormUnlockExpiresAtRef = useRef<number | null>(null);
+  const shortFormAllowedEventsRef = useRef<number[]>([]);
+  const shortFormBlockedEventsRef = useRef<number[]>([]);
+  const shortFormBurstBypassUntilRef = useRef(0);
+  const touchStartYRef = useRef<number | null>(null);
+  const touchSwipeHandledRef = useRef(false);
 
   const clearHoldTimer = () => {
     if (holdTimerRef.current != null) {
@@ -148,6 +202,31 @@ export default function GlanceHud({ domain }: Props) {
   useEffect(() => () => resetHold(), []);
 
   useEffect(() => {
+    shortFormPassesRef.current = shortFormPasses;
+  }, [shortFormPasses]);
+
+  useEffect(() => {
+    shortFormUnlockExpiresAtRef.current = shortFormUnlockExpiresAt;
+  }, [shortFormUnlockExpiresAt]);
+
+  useEffect(() => {
+    if (!shortFormUnlockExpiresAt) return;
+    if (nowTs < shortFormUnlockExpiresAt) return;
+    setShortFormPasses(0);
+    setShortFormUnlockExpiresAt(null);
+  }, [nowTs, shortFormUnlockExpiresAt]);
+
+  const grantShortFormSwipePasses = useCallback((count: number) => {
+    const nextCount = Math.max(0, Math.floor(count));
+    if (nextCount <= 0) return;
+    const expiresAt = Date.now() + SHORT_FORM_UNLOCK_WINDOW_MS;
+    setShortFormPasses((prev) => prev + nextCount);
+    setShortFormUnlockExpiresAt(expiresAt);
+    setShortFormUnlockCount((prev) => prev + nextCount);
+    shortFormBurstBypassUntilRef.current = 0;
+  }, []);
+
+  useEffect(() => {
     const checkMedia = () => {
       const elements = document.querySelectorAll('video, audio');
       let active = false;
@@ -192,6 +271,134 @@ export default function GlanceHud({ domain }: Props) {
       window.removeEventListener('keydown', onKeyDown);
     };
   }, []);
+
+  const recordShortFormAllowed = useCallback(() => {
+    const ts = Date.now();
+    shortFormAllowedEventsRef.current = shortFormAllowedEventsRef.current
+      .concat(ts)
+      .filter((value) => ts - value <= SHORT_FORM_STATS_WINDOW_MS);
+    setShortFormAllowedCount((prev) => prev + 1);
+  }, []);
+
+  const recordShortFormBlocked = useCallback(() => {
+    const ts = Date.now();
+    shortFormBlockedEventsRef.current = shortFormBlockedEventsRef.current
+      .concat(ts)
+      .filter((value) => ts - value <= SHORT_FORM_STATS_WINDOW_MS);
+    setShortFormBlockedCount((prev) => prev + 1);
+    setShortFormLastBlockedAt(ts);
+  }, []);
+
+  const tryConsumeShortFormPass = useCallback(() => {
+    const now = Date.now();
+    const expiresAt = shortFormUnlockExpiresAtRef.current;
+    if (expiresAt != null && now >= expiresAt) {
+      shortFormUnlockExpiresAtRef.current = null;
+      shortFormPassesRef.current = 0;
+      setShortFormUnlockExpiresAt(null);
+      setShortFormPasses(0);
+      return false;
+    }
+    if (now <= shortFormBurstBypassUntilRef.current) {
+      recordShortFormAllowed();
+      return true;
+    }
+    if (shortFormPassesRef.current <= 0) {
+      recordShortFormBlocked();
+      return false;
+    }
+    const nextPasses = Math.max(0, shortFormPassesRef.current - 1);
+    shortFormPassesRef.current = nextPasses;
+    setShortFormPasses(nextPasses);
+    shortFormBurstBypassUntilRef.current = now + SHORT_FORM_GESTURE_BURST_MS;
+    recordShortFormAllowed();
+    if (nextPasses <= 0) {
+      shortFormUnlockExpiresAtRef.current = null;
+      setShortFormUnlockExpiresAt(null);
+    }
+    return true;
+  }, [recordShortFormAllowed, recordShortFormBlocked]);
+
+  useEffect(() => {
+    const shouldIgnore = (event: Event) => {
+      if (isHudEvent(event)) return true;
+      const target = event.target;
+      return isEditableTarget(target);
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const surface = detectShortFormSurface(window.location.href);
+      if (!surface) return;
+      if (shouldIgnore(event)) return;
+      if (event.defaultPrevented) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const key = event.key;
+      const isShortsNavKey =
+        key === 'ArrowDown' ||
+        key === 'ArrowUp' ||
+        key === 'PageDown' ||
+        key === 'PageUp' ||
+        key === ' ' ||
+        key === 'Spacebar' ||
+        key === 'j' ||
+        key === 'k';
+      if (!isShortsNavKey) return;
+      if (tryConsumeShortFormPass()) return;
+      stopShortFormNavEvent(event);
+    };
+
+    const onWheel = (event: WheelEvent) => {
+      const surface = detectShortFormSurface(window.location.href);
+      if (!surface) return;
+      if (shouldIgnore(event)) return;
+      if (event.defaultPrevented) return;
+      if (Math.abs(event.deltaY) < 24) return;
+      if (tryConsumeShortFormPass()) return;
+      stopShortFormNavEvent(event);
+    };
+
+    const onTouchStart = (event: TouchEvent) => {
+      if (!detectShortFormSurface(window.location.href)) return;
+      if (shouldIgnore(event)) return;
+      const touch = event.touches[0];
+      touchStartYRef.current = touch ? touch.clientY : null;
+      touchSwipeHandledRef.current = false;
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (!detectShortFormSurface(window.location.href)) return;
+      if (shouldIgnore(event)) return;
+      if (touchSwipeHandledRef.current) return;
+      const startY = touchStartYRef.current;
+      const touch = event.touches[0];
+      if (startY == null || !touch) return;
+      const deltaY = touch.clientY - startY;
+      if (Math.abs(deltaY) < 36) return;
+      touchSwipeHandledRef.current = true;
+      if (tryConsumeShortFormPass()) return;
+      stopShortFormNavEvent(event);
+    };
+
+    const onTouchEnd = () => {
+      touchStartYRef.current = null;
+      touchSwipeHandledRef.current = false;
+    };
+
+    window.addEventListener('keydown', onKeyDown, { capture: true });
+    window.addEventListener('wheel', onWheel, { passive: false, capture: true });
+    window.addEventListener('touchstart', onTouchStart, { passive: true, capture: true });
+    window.addEventListener('touchmove', onTouchMove, { passive: false, capture: true });
+    window.addEventListener('touchend', onTouchEnd, { passive: true, capture: true });
+    window.addEventListener('touchcancel', onTouchEnd, { passive: true, capture: true });
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('wheel', onWheel, true);
+      window.removeEventListener('touchstart', onTouchStart, true);
+      window.removeEventListener('touchmove', onTouchMove, true);
+      window.removeEventListener('touchend', onTouchEnd, true);
+      window.removeEventListener('touchcancel', onTouchEnd, true);
+    };
+  }, [tryConsumeShortFormPass]);
 
   const session = status?.session ?? null;
   const displayRemaining = useMemo(() => {
@@ -293,6 +500,22 @@ export default function GlanceHud({ domain }: Props) {
 
     return { level: 'low', label: 'intentional', detail: 'interaction mix looks healthy' };
   }, [elapsedSeconds, nowTs, session]);
+
+  const shortFormSurface = useMemo(() => detectShortFormSurface(window.location.href), [nowTs, domain]);
+  const shortFormPassesExpired = shortFormUnlockExpiresAt != null && nowTs >= shortFormUnlockExpiresAt;
+  const shortFormPassesActive = !shortFormPassesExpired && shortFormPasses > 0;
+  const shortFormUnlockRemainingMs = shortFormPassesActive && shortFormUnlockExpiresAt != null
+    ? Math.max(0, shortFormUnlockExpiresAt - nowTs)
+    : 0;
+  const shortFormSwipesPerMinute = useMemo(() => {
+    const cutoff = nowTs - SHORT_FORM_STATS_WINDOW_MS;
+    return shortFormAllowedEventsRef.current.filter((ts) => ts >= cutoff).length;
+  }, [nowTs, shortFormAllowedCount]);
+  const shortFormBlockedPerMinute = useMemo(() => {
+    const cutoff = nowTs - SHORT_FORM_STATS_WINDOW_MS;
+    return shortFormBlockedEventsRef.current.filter((ts) => ts >= cutoff).length;
+  }, [nowTs, shortFormBlockedCount]);
+  const shortFormLockedFlash = shortFormLastBlockedAt != null && nowTs - shortFormLastBlockedAt < 1200;
 
   const ratePerMin = session?.ratePerMin ?? status?.rate?.ratePerMin ?? 0;
   const projectedCost5 = Math.max(0, ratePerMin * 5);
@@ -401,6 +624,48 @@ export default function GlanceHud({ domain }: Props) {
           </div>
           <span>{trajectory ? `${trajectory.label} · ~${formatClock(trajectory.secondsToEmpty)} left` : risk.detail}</span>
         </div>
+
+        {shortFormSurface ? (
+          <div className={`tws-glance-shortform ${shortFormLockedFlash ? 'is-blocked-flash' : ''}`}>
+            <div className="tws-glance-shortform-head">
+              <span>{shortFormSurfaceLabel(shortFormSurface)} friction</span>
+              <span className={`tws-glance-shortform-lock ${shortFormPassesActive ? 'is-open' : 'is-locked'}`}>
+                {shortFormPassesActive
+                  ? `${shortFormPasses} pass${shortFormPasses === 1 ? '' : 'es'} · ${Math.ceil(shortFormUnlockRemainingMs / 1000)}s`
+                  : 'locked'}
+              </span>
+            </div>
+
+            <div className="tws-glance-shortform-stats">
+              <span>spm <strong>{shortFormSwipesPerMinute}</strong></span>
+              <span>blocked/min <strong>{shortFormBlockedPerMinute}</strong></span>
+              <span>unlocks <strong>{shortFormUnlockCount}</strong></span>
+            </div>
+
+            <div className="tws-glance-shortform-actions">
+              <button
+                type="button"
+                className="tws-glance-btn tws-glance-shortform-btn"
+                disabled={buying || ending || pauseBusy}
+                onClick={() => grantShortFormSwipePasses(1)}
+              >
+                unlock next
+              </button>
+              <button
+                type="button"
+                className="tws-glance-btn tws-glance-shortform-btn"
+                disabled={buying || ending || pauseBusy}
+                onClick={() => grantShortFormSwipePasses(3)}
+              >
+                unlock x3
+              </button>
+            </div>
+
+            <div className="tws-glance-shortform-note">
+              Arrow keys, wheel, and vertical swipe need an unlock.
+            </div>
+          </div>
+        ) : null}
 
         <div className="tws-glance-actions">
           <button

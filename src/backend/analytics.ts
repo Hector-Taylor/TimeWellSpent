@@ -57,6 +57,18 @@ type SessionAnalyticsRow = {
     engagement_level: EngagementLevel | null;
 };
 
+type ReadingHourlyRollupRow = {
+    hour_start: string;
+    active_seconds: number;
+    focused_seconds: number;
+};
+
+type WritingHourlyRollupRow = {
+    hour_start: string;
+    active_seconds: number;
+    focused_seconds: number;
+};
+
 export class AnalyticsService {
     private db: BetterSqlite3Database;
     private getExcludedKeywords?: () => string[];
@@ -71,6 +83,10 @@ export class AnalyticsService {
     private clearPatternsStmt: Statement;
     private getPatternsStmt: Statement;
     private pomodorosInRangeStmt: Statement;
+    private readingHourlyRollupsInRangeStmt: Statement;
+    private readingDailyRollupsInRangeStmt: Statement;
+    private writingHourlyRollupsInRangeStmt: Statement;
+    private writingDailyRollupsInRangeStmt: Statement;
 
     constructor(database: Database, getExcludedKeywords?: () => string[]) {
         this.db = database.connection;
@@ -138,6 +154,32 @@ export class AnalyticsService {
       SELECT started_at as startedAt, ended_at as endedAt, planned_duration_sec as plannedDurationSec
       FROM pomodoro_sessions
       WHERE (ended_at IS NULL OR ended_at >= ?) AND started_at <= ?
+    `);
+
+        this.readingHourlyRollupsInRangeStmt = this.db.prepare(`
+      SELECT hour_start, active_seconds, focused_seconds
+      FROM reading_hourly_rollups
+      WHERE hour_start >= ? AND hour_start <= ?
+      ORDER BY hour_start ASC
+    `);
+
+        this.readingDailyRollupsInRangeStmt = this.db.prepare(`
+      SELECT COALESCE(SUM(active_seconds), 0) as activeSeconds, COALESCE(SUM(focused_seconds), 0) as focusedSeconds
+      FROM reading_daily_rollups
+      WHERE day >= ? AND day <= ?
+    `);
+
+        this.writingHourlyRollupsInRangeStmt = this.db.prepare(`
+      SELECT hour_start, active_seconds, focused_seconds
+      FROM writing_hourly_rollups
+      WHERE hour_start >= ? AND hour_start <= ?
+      ORDER BY hour_start ASC
+    `);
+
+        this.writingDailyRollupsInRangeStmt = this.db.prepare(`
+      SELECT COALESCE(SUM(active_seconds), 0) as activeSeconds, COALESCE(SUM(focused_seconds), 0) as focusedSeconds
+      FROM writing_daily_rollups
+      WHERE day >= ? AND day <= ?
     `);
     }
 
@@ -208,6 +250,7 @@ export class AnalyticsService {
             neutral: 0,
             frivolity: 0,
             draining: 0,
+            emergency: 0,
             idle: 0,
             avgEngagement: 0,
             dominantCategory: 'idle' as ActivityCategory | 'idle',
@@ -248,6 +291,7 @@ export class AnalyticsService {
                 if (category === 'productive') bucket.productive += activeSlice;
                 else if (category === 'frivolity') bucket.frivolity += activeSlice;
                 else if (category === 'draining') bucket.draining += activeSlice;
+                else if (category === 'emergency') bucket.emergency += activeSlice;
                 else bucket.neutral += activeSlice;
 
                 if (!suppressed) {
@@ -255,6 +299,30 @@ export class AnalyticsService {
                     hourDomains.set(domain, (hourDomains.get(domain) ?? 0) + activeSlice);
                 }
             }
+        }
+
+        const readingRows = this.readingHourlyRollupsInRangeStmt.all(rangeStart, rangeEnd) as ReadingHourlyRollupRow[];
+        for (const row of readingRows) {
+            const hourStartMs = Date.parse(row.hour_start);
+            if (!Number.isFinite(hourStartMs)) continue;
+            const hour = new Date(hourStartMs).getHours();
+            const bucketIndex = shiftHourToDayStart(hour, DAY_START_HOUR);
+            const bucket = buckets[bucketIndex];
+            if (!bucket) continue;
+            bucket.productive += Math.max(0, row.active_seconds ?? 0);
+            bucket.sampleCount += 1;
+        }
+
+        const writingRows = this.writingHourlyRollupsInRangeStmt.all(rangeStart, rangeEnd) as WritingHourlyRollupRow[];
+        for (const row of writingRows) {
+            const hourStartMs = Date.parse(row.hour_start);
+            if (!Number.isFinite(hourStartMs)) continue;
+            const hour = new Date(hourStartMs).getHours();
+            const bucketIndex = shiftHourToDayStart(hour, DAY_START_HOUR);
+            const bucket = buckets[bucketIndex];
+            if (!bucket) continue;
+            bucket.productive += Math.max(0, row.active_seconds ?? 0);
+            bucket.sampleCount += 1;
         }
 
         // Compute dominant category and domain for each hour
@@ -265,6 +333,7 @@ export class AnalyticsService {
                 { cat: 'neutral' as const, val: bucket.neutral },
                 { cat: 'frivolity' as const, val: bucket.frivolity },
                 { cat: 'draining' as const, val: bucket.draining },
+                { cat: 'emergency' as const, val: bucket.emergency },
                 { cat: 'idle' as const, val: bucket.idle },
             ];
             const dominant = totals.reduce((a, b) => (b.val > a.val ? b : a));
@@ -283,7 +352,7 @@ export class AnalyticsService {
             bucket.dominantDomain = maxDomain;
 
             // Calculate engagement (ratio of active to idle)
-            const totalActive = bucket.productive + bucket.neutral + bucket.frivolity + bucket.draining;
+            const totalActive = bucket.productive + bucket.neutral + bucket.frivolity + bucket.draining + bucket.emergency;
             const totalTime = totalActive + bucket.idle;
             bucket.avgEngagement = totalTime > 0 ? Math.round((totalActive / totalTime) * 100) : 0;
         }
@@ -540,6 +609,7 @@ export class AnalyticsService {
             neutral: 0,
             frivolity: 0,
             draining: 0,
+            emergency: 0,
             idle: 0,
         };
         const domainTotals = new Map<string, number>();
@@ -584,6 +654,53 @@ export class AnalyticsService {
             }
         }
 
+        const rangeStartDay = (() => {
+            const startDayMs = getLocalDayStartMs(rangeEndMs, DAY_START_HOUR) - (days - 1) * 24 * 60 * 60 * 1000;
+            const date = new Date(startDayMs);
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        })();
+        const todayDay = (() => {
+            const date = new Date(getLocalDayStartMs(rangeEndMs, DAY_START_HOUR));
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        })();
+        const readingDailyTotals = this.readingDailyRollupsInRangeStmt.get(rangeStartDay, todayDay) as
+            | { activeSeconds: number; focusedSeconds: number }
+            | undefined;
+        const readingActiveSeconds = Math.max(0, readingDailyTotals?.activeSeconds ?? 0);
+        const writingDailyTotals = this.writingDailyRollupsInRangeStmt.get(rangeStartDay, todayDay) as
+            | { activeSeconds: number; focusedSeconds: number }
+            | undefined;
+        const writingActiveSeconds = Math.max(0, writingDailyTotals?.activeSeconds ?? 0);
+        if (readingActiveSeconds > 0) {
+            totalActive += readingActiveSeconds;
+            categoryTotals.productive += readingActiveSeconds;
+            // Use hourly rollups so reading also influences peak productive hour in the core analytics.
+            const readingHourly = this.readingHourlyRollupsInRangeStmt.all(rangeStart, rangeEnd) as ReadingHourlyRollupRow[];
+            for (const row of readingHourly) {
+                const hourStartMs = Date.parse(row.hour_start);
+                if (!Number.isFinite(hourStartMs)) continue;
+                const hour = new Date(hourStartMs).getHours();
+                hourlyProductive.set(hour, (hourlyProductive.get(hour) ?? 0) + Math.max(0, row.active_seconds ?? 0));
+            }
+        }
+        if (writingActiveSeconds > 0) {
+            totalActive += writingActiveSeconds;
+            categoryTotals.productive += writingActiveSeconds;
+            const writingHourly = this.writingHourlyRollupsInRangeStmt.all(rangeStart, rangeEnd) as WritingHourlyRollupRow[];
+            for (const row of writingHourly) {
+                const hourStartMs = Date.parse(row.hour_start);
+                if (!Number.isFinite(hourStartMs)) continue;
+                const hour = new Date(hourStartMs).getHours();
+                hourlyProductive.set(hour, (hourlyProductive.get(hour) ?? 0) + Math.max(0, row.active_seconds ?? 0));
+            }
+        }
+
         // Find top engagement domain
         let topDomain: string | null = null;
         let topDomainSeconds = 0;
@@ -615,7 +732,7 @@ export class AnalyticsService {
         });
 
         // Calculate productivity score (0-100)
-        const totalCategorized = categoryTotals.productive + categoryTotals.neutral + categoryTotals.frivolity + categoryTotals.draining;
+        const totalCategorized = categoryTotals.productive + categoryTotals.neutral + categoryTotals.frivolity + categoryTotals.draining + categoryTotals.emergency;
         const productivityScore = totalCategorized > 0
             ? Math.round((categoryTotals.productive / totalCategorized) * 100)
             : 50;
@@ -642,6 +759,12 @@ export class AnalyticsService {
 
         // Generate insights
         const insights = this.generateInsights(categoryTotals, peakProductiveHour, riskHour, focusTrend);
+        if (readingActiveSeconds > 0) {
+            insights.unshift(`📚 Reading contributed ${Math.round(readingActiveSeconds / 60)}m of productive time in this window`);
+        }
+        if (writingActiveSeconds > 0) {
+            insights.unshift(`✍️ Writing contributed ${Math.round(writingActiveSeconds / 60)}m of productive time in this window`);
+        }
         const deepWorkSeconds = this.computeDeepWork(rangeStart, new Date().toISOString());
 
         return {
@@ -692,6 +815,7 @@ export class AnalyticsService {
                 productive: 0,
                 neutral: 0,
                 frivolity: 0,
+                emergency: 0,
                 idle: 0,
                 deepWork: 0,
                 engagement: 0,
@@ -722,10 +846,30 @@ export class AnalyticsService {
 
                 const bucket = buckets[idx];
                 if (category === 'productive') bucket.productive += activeSlice;
+                else if (category === 'emergency') bucket.emergency += activeSlice;
                 else if (category === 'frivolity' || category === 'draining') bucket.frivolity += activeSlice;
                 else bucket.neutral += activeSlice;
                 bucket.idle += idleSlice;
             }
+        }
+
+        // Merge literary reading as productive time (separate source, same productive category)
+        const readingRows = this.readingHourlyRollupsInRangeStmt.all(rangeStart, rangeEnd) as ReadingHourlyRollupRow[];
+        for (const row of readingRows) {
+            const ts = Date.parse(row.hour_start);
+            if (!Number.isFinite(ts)) continue;
+            const idx = Math.floor((ts - rangeStartMs) / msPerUnit);
+            if (idx < 0 || idx >= buckets.length) continue;
+            buckets[idx].productive += Math.max(0, row.active_seconds ?? 0);
+        }
+
+        const writingRows = this.writingHourlyRollupsInRangeStmt.all(rangeStart, rangeEnd) as WritingHourlyRollupRow[];
+        for (const row of writingRows) {
+            const ts = Date.parse(row.hour_start);
+            if (!Number.isFinite(ts)) continue;
+            const idx = Math.floor((ts - rangeStartMs) / msPerUnit);
+            if (idx < 0 || idx >= buckets.length) continue;
+            buckets[idx].productive += Math.max(0, row.active_seconds ?? 0);
         }
 
         // Overlay deep work onto trend buckets
@@ -756,8 +900,8 @@ export class AnalyticsService {
 
         // Calculate engagement and quality scores
         for (const bucket of buckets) {
-            const total = bucket.productive + bucket.neutral + bucket.frivolity + bucket.idle;
-            const active = bucket.productive + bucket.neutral + bucket.frivolity;
+            const total = bucket.productive + bucket.neutral + bucket.frivolity + bucket.emergency + bucket.idle;
+            const active = bucket.productive + bucket.neutral + bucket.frivolity + bucket.emergency;
 
             bucket.engagement = total > 0 ? Math.round((active / total) * 100) : 0;
             bucket.qualityScore = active > 0
@@ -802,7 +946,7 @@ export class AnalyticsService {
         }
 
         // Idle insight
-        const totalActive = categories.productive + categories.neutral + categories.frivolity + (categories.draining ?? 0);
+        const totalActive = categories.productive + categories.neutral + categories.frivolity + (categories.draining ?? 0) + (categories.emergency ?? 0);
         const idleRatio = categories.idle / (totalActive + categories.idle);
         if (idleRatio > 0.3) {
             insights.push(`💤 ${Math.round(idleRatio * 100)}% idle time detected — are you stepping away often?`);

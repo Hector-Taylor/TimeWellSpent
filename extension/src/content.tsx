@@ -3,9 +3,11 @@ import PaywallOverlay from './paywall/PaywallOverlay';
 import GlanceHud from './paywall/GlanceHud';
 import PomodoroOverlay from './pomodoro/PomodoroOverlay';
 import PomodoroHud from './pomodoro/PomodoroHud';
+import WritingHud from './writing/WritingHud';
 import DailyOnboardingOverlay from './onboarding/DailyOnboardingOverlay';
 import styles from './paywall/paywall.css?inline';
 import { isPomodoroSiteAllowed } from '../../src/shared/pomodoroMatcher';
+import { getWritingTargetIdentity, matchesWritingTargetUrl, type WritingTargetKind } from './writing/targetAdapters';
 
 type BlockMessage = {
   type: 'BLOCK_SCREEN';
@@ -13,6 +15,7 @@ type BlockMessage = {
     domain: string;
     reason?: string;
     peek?: { allowed: boolean; isNewPage: boolean };
+    keepPageVisible?: boolean;
   };
 };
 
@@ -152,10 +155,41 @@ const HUD_HOST_ID = 'tws-hud-host';
 let hudHost: HTMLDivElement | null = null;
 let hudRoot: ReturnType<typeof createRoot> | null = null;
 let hudKey: string | null = null;
-let hudKind: 'glance' | 'pomodoro' | null = null;
+let hudKind: 'glance' | 'pomodoro' | 'writing' | null = null;
 let pomodoroOverlayCleanup: (() => void) | null = null;
+let ambientWritingHudSession: WritingHudSessionState | null = null;
+let hiddenAmbientWritingCanonicalKey: string | null = null;
 
 type GuardrailColorFilter = 'full-color' | 'greyscale' | 'redscale';
+type WritingHudSessionState = {
+  sessionId: string;
+  projectId: number;
+  projectTitle: string;
+  projectKind: 'journal' | 'paper' | 'substack' | 'fiction' | 'essay' | 'notes' | 'other';
+  targetKind: 'google-doc' | 'tana-node' | 'external-link';
+  targetUrl: string;
+  targetId?: string | null;
+  canonicalKey: string;
+  canonicalId?: string | null;
+  adapter: 'google-docs' | 'tana-web' | 'generic-web';
+  sourceSurface: 'extension-newtab';
+  sprintMinutes?: number | null;
+  tabId?: number | null;
+  startedAt: number;
+  currentWordCount: number;
+  baselineWordCount: number;
+  activeSecondsTotal: number;
+  focusedSecondsTotal: number;
+  keystrokesTotal: number;
+  wordsAddedTotal: number;
+  wordsDeletedTotal: number;
+  netWordsTotal: number;
+  bodyTextLength?: number | null;
+  locationLabel?: string | null;
+  pageTitle?: string | null;
+  lastEventAt?: number | null;
+  ambient?: boolean;
+};
 type ContentSyncState = {
   settings?: {
     frivolityDomains?: string[];
@@ -184,6 +218,10 @@ type ContentSyncState = {
       remainingMs: number;
       breakRemainingMs?: number | null;
     } | null;
+  };
+  writingHud?: {
+    session: WritingHudSessionState | null;
+    lastUpdated: number | null;
   };
 };
 
@@ -353,6 +391,106 @@ function mountPomodoroHud(
   hudKey = nextKey;
 }
 
+function findActiveWritingHudForUrl(state: ContentSyncState, currentUrl: string): WritingHudSessionState | null {
+  const session = state.writingHud?.session ?? null;
+  if (!session) return null;
+  const targetKind = session.targetKind as WritingTargetKind;
+  const matches = matchesWritingTargetUrl(currentUrl, {
+    targetKind,
+    targetUrl: session.targetUrl,
+    targetId: session.targetId ?? null,
+    canonicalKey: session.canonicalKey,
+    canonicalId: session.canonicalId ?? null
+  });
+  return matches ? session : null;
+}
+
+function supportsAmbientWritingHud(adapter: WritingHudSessionState['adapter']) {
+  return adapter === 'google-docs' || adapter === 'tana-web';
+}
+
+function deriveAmbientWritingTargetKind(adapter: WritingHudSessionState['adapter']): WritingHudSessionState['targetKind'] {
+  if (adapter === 'google-docs') return 'google-doc';
+  if (adapter === 'tana-web') return 'tana-node';
+  return 'external-link';
+}
+
+function getAmbientWritingHudForCurrentUrl(currentUrl: string): WritingHudSessionState | null {
+  const identity = getWritingTargetIdentity(currentUrl, null, null);
+  if (!identity || !supportsAmbientWritingHud(identity.adapter)) {
+    ambientWritingHudSession = null;
+    hiddenAmbientWritingCanonicalKey = null;
+    return null;
+  }
+
+  if (hiddenAmbientWritingCanonicalKey && hiddenAmbientWritingCanonicalKey !== identity.canonicalKey) {
+    hiddenAmbientWritingCanonicalKey = null;
+  }
+  if (hiddenAmbientWritingCanonicalKey === identity.canonicalKey) return null;
+
+  const pageTitle = (document.title || '').trim() || (identity.adapter === 'google-docs' ? 'Google Doc' : 'Tana');
+  if (ambientWritingHudSession && ambientWritingHudSession.canonicalKey === identity.canonicalKey) {
+    ambientWritingHudSession = {
+      ...ambientWritingHudSession,
+      targetUrl: identity.href,
+      targetId: identity.canonicalId ?? ambientWritingHudSession.targetId ?? null,
+      pageTitle,
+      projectTitle: pageTitle,
+      locationLabel: identity.adapter === 'google-docs' ? 'Google Docs' : 'Tana Web'
+    };
+    return ambientWritingHudSession;
+  }
+
+  const now = Date.now();
+  ambientWritingHudSession = {
+    sessionId: `ambient-${identity.canonicalKey}`,
+    projectId: 0,
+    projectTitle: pageTitle,
+    projectKind: 'notes',
+    targetKind: deriveAmbientWritingTargetKind(identity.adapter),
+    targetUrl: identity.href,
+    targetId: identity.canonicalId ?? null,
+    canonicalKey: identity.canonicalKey,
+    canonicalId: identity.canonicalId ?? null,
+    adapter: identity.adapter,
+    sourceSurface: 'extension-newtab',
+    sprintMinutes: null,
+    tabId: null,
+    startedAt: now,
+    currentWordCount: 0,
+    baselineWordCount: 0,
+    activeSecondsTotal: 0,
+    focusedSecondsTotal: 0,
+    keystrokesTotal: 0,
+    wordsAddedTotal: 0,
+    wordsDeletedTotal: 0,
+    netWordsTotal: 0,
+    bodyTextLength: null,
+    locationLabel: identity.adapter === 'google-docs' ? 'Google Docs' : 'Tana Web',
+    pageTitle,
+    lastEventAt: null,
+    ambient: true
+  };
+  return ambientWritingHudSession;
+}
+
+function hideAmbientWritingHud() {
+  if (ambientWritingHudSession?.canonicalKey) {
+    hiddenAmbientWritingCanonicalKey = ambientWritingHudSession.canonicalKey;
+  }
+  ambientWritingHudSession = null;
+  unmountGlanceHud();
+}
+
+function mountWritingHud(domain: string, session: WritingHudSessionState, onRequestHide?: () => void) {
+  ensureHudHost();
+  if (!hudRoot) return;
+  const nextKey = `writing:${session.sessionId}:${session.canonicalKey}`;
+  hudRoot.render(<WritingHud domain={domain} session={session} onRequestHide={onRequestHide} />);
+  hudKind = 'writing';
+  hudKey = nextKey;
+}
+
 async function syncHudWithState() {
   if (contextInvalidated || !isContextValid()) {
     unmountGlanceHud();
@@ -379,6 +517,14 @@ async function syncHudWithState() {
     );
     if (pomodoroSession && pomodoroAllowedOnUrl && domain) {
       mountPomodoroHud(domain, pomodoroSession);
+      return;
+    }
+
+    const writingSession =
+      findActiveWritingHudForUrl(state, window.location.href) ??
+      getAmbientWritingHudForCurrentUrl(window.location.href);
+    if (writingSession && domain) {
+      mountWritingHud(domain, writingSession, writingSession.ambient ? hideAmbientWritingHud : undefined);
       return;
     }
 
@@ -564,12 +710,14 @@ try {
       sendResponse?.({ ok: true });
       return;
     }
-    if (message.type === 'BLOCK_SCREEN') {
-      unmountPomodoroOverlay();
-      unmountGlanceHud();
-      mountOverlay(message.payload.domain, message.payload.reason, message.payload.peek);
-      void refreshGuardrailFilter();
-    }
+      if (message.type === 'BLOCK_SCREEN') {
+        unmountPomodoroOverlay();
+        unmountGlanceHud();
+        mountOverlay(message.payload.domain, message.payload.reason, message.payload.peek, {
+          keepPageVisible: message.payload.keepPageVisible
+        });
+        void refreshGuardrailFilter();
+      }
     if (message.type === 'POMODORO_BLOCK') {
       unmountPomodoroOverlay();
       unmountGlanceHud();
@@ -610,10 +758,15 @@ function isMediaPlaying() {
   return false;
 }
 
-async function mountOverlay(domain: string, reason?: string, peek?: { allowed: boolean; isNewPage: boolean }) {
+async function mountOverlay(
+  domain: string,
+  reason?: string,
+  peek?: { allowed: boolean; isNewPage: boolean },
+  options?: { keepPageVisible?: boolean }
+) {
   unmountPomodoroOverlay();
   unmountGlanceHud();
-  const removePageHide = hidePage();
+  const removePageHide = options?.keepPageVisible ? () => undefined : hidePage();
   // Check for existing shadow host
   const existingHost = document.getElementById('tws-shadow-host');
   if (existingHost) existingHost.remove();

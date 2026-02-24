@@ -53,7 +53,7 @@ export class CameraService {
   }
 
   async listPhotos(limit = 200): Promise<CameraPhoto[]> {
-    const rows = this.listStmt.all(Math.max(1, Math.min(1000, Math.round(limit)))) as CameraPhotoRow[];
+    const rows = this.listStmt.all(Math.max(1, Math.min(5000, Math.round(limit)))) as CameraPhotoRow[];
     return rows.map((row) => ({
       id: row.id,
       capturedAt: row.captured_at,
