@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import type { AnalyticsService } from '../analytics';
-import type { BehaviorEvent } from '@shared/types';
+import type { BehaviorEpisodeQuery, BehaviorEvent } from '@shared/types';
 
 export function createAnalyticsRoutes(analytics: AnalyticsService): Router {
     const router = Router();
@@ -29,6 +29,18 @@ export function createAnalyticsRoutes(analytics: AnalyticsService): Router {
     router.get('/trends', (req, res) => {
         const granularity = (req.query.granularity as 'hour' | 'day' | 'week') || 'day';
         res.json(analytics.getTrends(granularity));
+    });
+
+    router.get('/episodes', (req, res) => {
+        const query: BehaviorEpisodeQuery = {
+            start: typeof req.query.start === 'string' ? req.query.start : undefined,
+            end: typeof req.query.end === 'string' ? req.query.end : undefined,
+            hours: req.query.hours != null ? Number(req.query.hours) : undefined,
+            gapMinutes: req.query.gapMinutes != null ? Number(req.query.gapMinutes) : undefined,
+            binSeconds: req.query.binSeconds != null ? Number(req.query.binSeconds) : undefined,
+            maxEpisodes: req.query.maxEpisodes != null ? Number(req.query.maxEpisodes) : undefined
+        };
+        res.json(analytics.getBehaviorEpisodes(query));
     });
 
     router.post('/behavior-events', (req, res) => {

@@ -3,6 +3,7 @@ import type { MarketService } from './market';
 import type { WalletManager } from './wallet';
 import type { GuardrailColorFilter } from '@shared/types';
 import { logger } from '@shared/logger';
+import { reducePaywallSessionLifecycle } from '@shared/paywallSessionLifecycle';
 
 export type PaywallSession = {
   domain: string;
@@ -23,6 +24,25 @@ export type PaywallSession = {
   allowedUrl?: string;
 };
 
+export type PaywallDiagnosticEvent = {
+  ts: number;
+  event:
+    | 'session-started'
+    | 'session-ended'
+    | 'session-paused'
+    | 'session-resumed'
+    | 'session-tick'
+    | 'session-ignored-inactive';
+  domain: string;
+  mode?: PaywallSession['mode'];
+  reason?: string;
+  remainingSeconds?: number | null;
+  paused?: boolean;
+  intervalSeconds?: number;
+  activeDomain?: string | null;
+  activeUrl?: string | null;
+};
+
 function normaliseBaseUrl(url: string): string | null {
   try {
     const parsed = new URL(url);
@@ -40,13 +60,31 @@ function urlsMatch(expectedBaseUrl: string, actualUrl: string) {
 
 export class PaywallManager extends EventEmitter {
   private sessions = new Map<string, PaywallSession>();
+  private diagnostics: PaywallDiagnosticEvent[] = [];
+  private readonly diagnosticsLimit = 500;
 
   constructor(private wallet: WalletManager, private market: MarketService) {
     super();
   }
 
+  private recordDiagnostic(event: PaywallDiagnosticEvent) {
+    this.diagnostics.push(event);
+    if (this.diagnostics.length > this.diagnosticsLimit) {
+      this.diagnostics.splice(0, this.diagnostics.length - this.diagnosticsLimit);
+    }
+  }
+
   getSession(domain: string) {
     return this.sessions.get(domain) ?? null;
+  }
+
+  getDiagnostics(limit = 200) {
+    const n = Number.isFinite(limit) ? Math.max(1, Math.min(1000, Math.round(limit))) : 200;
+    return this.diagnostics.slice(-n).map((entry) => ({ ...entry }));
+  }
+
+  clearDiagnostics() {
+    this.diagnostics = [];
   }
 
   hasValidPass(domain: string, url?: string) {
@@ -91,6 +129,14 @@ export class PaywallManager extends EventEmitter {
       allowedUrl: url ? normaliseBaseUrl(url) ?? undefined : undefined
     };
     this.sessions.set(domain, session);
+    this.recordDiagnostic({
+      ts: Date.now(),
+      event: 'session-started',
+      domain,
+      mode: session.mode,
+      remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
+      paused: Boolean(session.paused)
+    });
     this.emit('session-started', session);
     return session;
   }
@@ -112,6 +158,14 @@ export class PaywallManager extends EventEmitter {
       meteredMultiplier
     };
     this.sessions.set(domain, session);
+    this.recordDiagnostic({
+      ts: Date.now(),
+      event: 'session-started',
+      domain,
+      mode: session.mode,
+      remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
+      paused: Boolean(session.paused)
+    });
     this.emit('session-started', session);
     return session;
   }
@@ -137,6 +191,14 @@ export class PaywallManager extends EventEmitter {
       allowedUrl: options.allowedUrl
     };
     this.sessions.set(domain, session);
+    this.recordDiagnostic({
+      ts: Date.now(),
+      event: 'session-started',
+      domain,
+      mode: session.mode,
+      remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
+      paused: Boolean(session.paused)
+    });
     this.emit('session-started', session);
     return session;
   }
@@ -183,6 +245,14 @@ export class PaywallManager extends EventEmitter {
         packChainCount: 1
       };
     this.sessions.set(domain, session);
+    this.recordDiagnostic({
+      ts: Date.now(),
+      event: 'session-started',
+      domain,
+      mode: session.mode,
+      remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
+      paused: Boolean(session.paused)
+    });
     this.emit('session-started', session);
     return session;
   }
@@ -190,14 +260,31 @@ export class PaywallManager extends EventEmitter {
   pause(domain: string) {
     const session = this.sessions.get(domain);
     if (!session || session.paused) return;
-    session.paused = true;
+    Object.assign(session, reducePaywallSessionLifecycle(session, { type: 'pause' }));
+    this.recordDiagnostic({
+      ts: Date.now(),
+      event: 'session-paused',
+      domain,
+      mode: session.mode,
+      remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
+      paused: true,
+      reason: 'manual'
+    });
     this.emit('session-paused', { domain, reason: 'manual' });
   }
 
   resume(domain: string) {
     const session = this.sessions.get(domain);
     if (!session || !session.paused) return;
-    session.paused = false;
+    Object.assign(session, reducePaywallSessionLifecycle(session, { type: 'resume' }));
+    this.recordDiagnostic({
+      ts: Date.now(),
+      event: 'session-resumed',
+      domain,
+      mode: session.mode,
+      remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
+      paused: false
+    });
     this.emit('session-resumed', { domain });
   }
 
@@ -225,6 +312,15 @@ export class PaywallManager extends EventEmitter {
     const endedAt = Date.now();
     const durationSeconds = session.startedAt ? Math.round((endedAt - session.startedAt) / 1000) : null;
     this.sessions.delete(domain);
+    this.recordDiagnostic({
+      ts: endedAt,
+      event: 'session-ended',
+      domain,
+      mode: session.mode,
+      remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
+      paused: Boolean(session.paused),
+      reason
+    });
     this.emit('session-ended', { domain, reason, refund, startedAt: session.startedAt ?? null, durationSeconds });
     return session;
   }
@@ -242,12 +338,45 @@ export class PaywallManager extends EventEmitter {
 
       if (!isActive) {
         if (!session.paused) {
-          session.paused = true;
+          Object.assign(session, reducePaywallSessionLifecycle(session, { type: 'pause' }));
+          this.recordDiagnostic({
+            ts: now,
+            event: 'session-paused',
+            domain: session.domain,
+            mode: session.mode,
+            remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
+            paused: true,
+            reason: 'inactive',
+            activeDomain: activeDomain ?? null,
+            activeUrl: activeUrl ?? null
+          });
           this.emit('session-paused', { domain: session.domain, reason: 'inactive' });
+        } else {
+          this.recordDiagnostic({
+            ts: now,
+            event: 'session-ignored-inactive',
+            domain: session.domain,
+            mode: session.mode,
+            remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
+            paused: true,
+            activeDomain: activeDomain ?? null,
+            activeUrl: activeUrl ?? null
+          });
         }
         continue;
       } else if (session.paused) {
-        session.paused = false;
+        Object.assign(session, reducePaywallSessionLifecycle(session, { type: 'resume' }));
+        this.recordDiagnostic({
+          ts: now,
+          event: 'session-resumed',
+          domain: session.domain,
+          mode: session.mode,
+          remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
+          paused: false,
+          reason: 'active',
+          activeDomain: activeDomain ?? null,
+          activeUrl: activeUrl ?? null
+        });
         this.emit('session-resumed', { domain: session.domain });
       }
 
@@ -262,16 +391,38 @@ export class PaywallManager extends EventEmitter {
           });
         }
         if (Number.isFinite(session.remainingSeconds)) {
-          session.remainingSeconds -= intervalSeconds;
-          session.lastTick = now;
+          Object.assign(
+            session,
+            reducePaywallSessionLifecycle(session, { type: 'tick-countdown', now, intervalSeconds })
+          );
+          this.recordDiagnostic({
+            ts: now,
+            event: 'session-tick',
+            domain: session.domain,
+            mode: session.mode,
+            remainingSeconds: session.remainingSeconds,
+            paused: Boolean(session.paused),
+            intervalSeconds,
+            activeDomain: activeDomain ?? null,
+            activeUrl: activeUrl ?? null
+          });
           this.emit('session-tick', session);
           if (session.remainingSeconds <= 0) {
             this.sessions.delete(session.domain);
             const durationSeconds = session.startedAt ? Math.round((now - session.startedAt) / 1000) : null;
+            this.recordDiagnostic({
+              ts: now,
+              event: 'session-ended',
+              domain: session.domain,
+              mode: session.mode,
+              remainingSeconds: session.remainingSeconds,
+              paused: Boolean(session.paused),
+              reason: 'emergency-expired'
+            });
             this.emit('session-ended', { domain: session.domain, reason: 'emergency-expired', startedAt: session.startedAt ?? null, durationSeconds });
           }
         } else {
-          session.lastTick = now;
+          Object.assign(session, reducePaywallSessionLifecycle(session, { type: 'touch', now }));
         }
       } else if (session.mode === 'metered') {
         let currentRate = session.ratePerMin;
@@ -294,22 +445,72 @@ export class PaywallManager extends EventEmitter {
             this.wallet.spend(due, { type: 'frivolity-metered', domain: session.domain, intervalSeconds });
             this.emit('wallet-update', this.wallet.getSnapshot());
           }
-          session.spendRemainder = remainder;
-          session.lastTick = now;
+          Object.assign(
+            session,
+            reducePaywallSessionLifecycle(session, {
+              type: 'patch',
+              patch: {
+                spendRemainder: remainder,
+                lastTick: now
+              } as Partial<typeof session>
+            })
+          );
+          this.recordDiagnostic({
+            ts: now,
+            event: 'session-tick',
+            domain: session.domain,
+            mode: session.mode,
+            remainingSeconds: null,
+            paused: Boolean(session.paused),
+            intervalSeconds,
+            activeDomain: activeDomain ?? null,
+            activeUrl: activeUrl ?? null
+          });
         } catch (error) {
           logger.warn('Metered session ended due to insufficient funds', session.domain);
           this.sessions.delete(session.domain);
           const durationSeconds = session.startedAt ? Math.round((now - session.startedAt) / 1000) : null;
+          this.recordDiagnostic({
+            ts: now,
+            event: 'session-ended',
+            domain: session.domain,
+            mode: session.mode,
+            remainingSeconds: null,
+            paused: Boolean(session.paused),
+            reason: 'insufficient-funds'
+          });
           this.emit('session-ended', { domain: session.domain, reason: 'insufficient-funds', startedAt: session.startedAt ?? null, durationSeconds });
         }
       } else {
-        session.remainingSeconds -= intervalSeconds;
-        session.lastTick = now;
+        Object.assign(
+          session,
+          reducePaywallSessionLifecycle(session, { type: 'tick-countdown', now, intervalSeconds })
+        );
+        this.recordDiagnostic({
+          ts: now,
+          event: 'session-tick',
+          domain: session.domain,
+          mode: session.mode,
+          remainingSeconds: session.remainingSeconds,
+          paused: Boolean(session.paused),
+          intervalSeconds,
+          activeDomain: activeDomain ?? null,
+          activeUrl: activeUrl ?? null
+        });
         this.emit('session-tick', session);
 
         if (session.remainingSeconds <= 0) {
           this.sessions.delete(session.domain);
           const durationSeconds = session.startedAt ? Math.round((now - session.startedAt) / 1000) : null;
+          this.recordDiagnostic({
+            ts: now,
+            event: 'session-ended',
+            domain: session.domain,
+            mode: session.mode,
+            remainingSeconds: session.remainingSeconds,
+            paused: Boolean(session.paused),
+            reason: 'completed'
+          });
           this.emit('session-ended', { domain: session.domain, reason: 'completed', startedAt: session.startedAt ?? null, durationSeconds });
         }
       }

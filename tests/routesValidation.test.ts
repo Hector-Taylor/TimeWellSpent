@@ -5,6 +5,8 @@ import { createUiRoutes } from '../src/backend/routes/actions';
 import { createWritingRoutes } from '../src/backend/routes/writing';
 import { createWritingAnalyticsRoutes } from '../src/backend/routes/writing-analytics';
 import { createLiteraryAnalyticsRoutes } from '../src/backend/routes/literary-analytics';
+import { createExtensionSyncRoutes } from '../src/backend/routes/settings';
+import { EXTENSION_SYNC_PROTOCOL_VERSION } from '../src/shared/extensionSyncContract';
 
 type InvokeArgs = {
   body?: unknown;
@@ -185,5 +187,42 @@ describe('route validation housekeeping', () => {
     expect(result.status).toBe(400);
     expect(result.body).toMatchObject({ error: expect.stringContaining('Unrecognized') });
     expect(literary.createAnnotation).not.toHaveBeenCalled();
+  });
+
+  it('wraps extension sync state in a versioned envelope', async () => {
+    const router = createExtensionSyncRoutes({
+      settings: {
+        getCategorisation: () => ({ productive: [], neutral: [], frivolity: [], draining: [] }),
+        getPeekConfig: () => ({ enabled: true, allowOnNewPages: false }),
+        getDailyOnboardingState: () => ({ completedDay: null, lastPromptedDay: null, lastSkippedDay: null, lastForcedDay: null, note: null }),
+        getIdleThreshold: () => 15,
+        getEmergencyPolicy: () => 'balanced',
+        getEconomyExchangeRate: () => 1,
+        getJournalConfig: () => ({ url: null, minutes: 10 }),
+        getSessionFadeSeconds: () => 30,
+        getDailyWalletResetEnabled: () => true,
+        getContinuityWindowSeconds: () => 120,
+        getProductivityGoalHours: () => 2,
+        getCameraModeEnabled: () => false,
+        getGuardrailColorFilter: () => 'full-color',
+        getAlwaysGreyscale: () => false
+      } as any,
+      market: { listRates: () => [] } as any,
+      wallet: { getSnapshot: () => ({ balance: 42 }) } as any,
+      paywall: { listSessions: () => [] } as any,
+      library: { list: () => [] } as any,
+      consumption: { latestByKind: () => null } as any,
+      pomodoro: { status: () => null } as any
+    });
+
+    const result = await invokeRoute(router, 'get', '/state');
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({
+      protocolVersion: EXTENSION_SYNC_PROTOCOL_VERSION,
+      state: expect.objectContaining({
+        wallet: expect.objectContaining({ balance: 42 }),
+        sessions: {}
+      })
+    });
   });
 });

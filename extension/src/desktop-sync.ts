@@ -1,6 +1,7 @@
 // Desktop app synchronization module
 import { storage } from './storage';
 import { DESKTOP_API_URL, DESKTOP_WS_URL } from './constants';
+import { parseExtensionSyncEnvelope } from '../../src/shared/extensionSyncContract';
 
 type TimeoutHandle = ReturnType<typeof setTimeout>;
 
@@ -85,8 +86,12 @@ export async function syncFromDesktop(): Promise<boolean> {
     try {
         const response = await fetch(`${DESKTOP_API_URL}/extension/state`, { cache: 'no-store' });
         if (response.ok) {
-            const desktopState = await response.json();
-            await storage.updateFromDesktop(desktopState);
+            const raw = await response.json();
+            const parsed = parseExtensionSyncEnvelope(raw);
+            if (parsed.warnings.length) {
+                console.warn('[desktop-sync]', ...parsed.warnings);
+            }
+            await storage.updateFromDesktop(parsed.state as any);
             console.log('✅ Synced state from desktop app');
             return true;
         }

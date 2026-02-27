@@ -60,6 +60,7 @@ export class EconomyEngine extends EventEmitter {
   private spendTimer: NodeJS.Timeout;
   private rates: EconomyRateGetters;
   private drainingRemainder = 0;
+  private lastSpendTickAt: number | null = null;
 
   constructor(
     private wallet: WalletManager,
@@ -177,15 +178,20 @@ export class EconomyEngine extends EventEmitter {
   }
 
   private tickSpend() {
-    const activeDomain = this.state.activeCategory === 'idle' ? null : this.state.activeDomain;
-    const activeUrl = this.state.activeCategory === 'idle' ? null : this.state.activeUrl;
-    const intervalSec = this.rates.getSpendIntervalSeconds();
+    const now = Date.now();
+    const configuredIntervalSec = this.rates.getSpendIntervalSeconds();
+    const elapsedSec = this.lastSpendTickAt == null ? configuredIntervalSec : Math.max(1, Math.floor((now - this.lastSpendTickAt) / 1000));
+    this.lastSpendTickAt = now;
+    const intervalSec = Number.isFinite(elapsedSec) && elapsedSec > 0 ? elapsedSec : configuredIntervalSec;
+    const isStale = !this.state.lastUpdated || now - this.state.lastUpdated > 60_000 * 5;
+    const activeDomain = this.state.activeCategory === 'idle' || isStale ? null : this.state.activeDomain;
+    const activeUrl = this.state.activeCategory === 'idle' || isStale ? null : this.state.activeUrl;
     this.paywall.tick(intervalSec, activeDomain, activeUrl, this.getReminderInterval());
 
     if (
       this.state.activeCategory === 'draining' &&
       this.state.lastUpdated &&
-      Date.now() - this.state.lastUpdated <= 60_000 * 5
+      now - this.state.lastUpdated <= 60_000 * 5
     ) {
       const perSecond = this.rates.getDrainingRatePerMin() / 60;
       const accrued = perSecond * intervalSec + this.drainingRemainder;

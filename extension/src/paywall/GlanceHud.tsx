@@ -4,6 +4,8 @@ type GuardrailColorFilter = 'full-color' | 'greyscale' | 'redscale';
 
 type StatusResponse = {
   balance: number;
+  lastSync?: number | null;
+  desktopConnected?: boolean;
   rate: {
     domain: string;
     ratePerMin: number;
@@ -28,6 +30,8 @@ type ShortFormSurface = 'youtube-shorts' | 'instagram-reels';
 
 const HUD_REFRESH_MS = 3000;
 const HUD_TICK_MS = 1000;
+const HUD_SYNC_STALE_MS = 35_000;
+const HUD_SYNC_RECONNECT_BADGE_MS = 12_000;
 const HOLD_TO_BUY_MS = 1200;
 const BUY_MORE_MINUTES = 5;
 const DOOMSCROLL_WINDOW_MS = 90_000;
@@ -113,10 +117,12 @@ export default function GlanceHud({ domain }: Props) {
   const [shortFormAllowedCount, setShortFormAllowedCount] = useState(0);
   const [shortFormUnlockCount, setShortFormUnlockCount] = useState(0);
   const [shortFormLastBlockedAt, setShortFormLastBlockedAt] = useState<number | null>(null);
+  const [lastReconnectAt, setLastReconnectAt] = useState<number | null>(null);
 
   const holdStartRef = useRef<number | null>(null);
   const holdTimerRef = useRef<number | null>(null);
   const holdTriggeredRef = useRef(false);
+  const prevDesktopConnectedRef = useRef<boolean | null>(null);
   const sessionKeyRef = useRef<string | null>(null);
   const initialRemainingRef = useRef<number | null>(null);
   const remainingSamplesRef = useRef<Array<{ ts: number; remaining: number }>>([]);
@@ -198,6 +204,15 @@ export default function GlanceHud({ domain }: Props) {
     const id = window.setInterval(() => setNowTs(Date.now()), HUD_TICK_MS);
     return () => window.clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    const connected = status?.desktopConnected;
+    if (typeof connected !== 'boolean') return;
+    if (prevDesktopConnectedRef.current === false && connected) {
+      setLastReconnectAt(Date.now());
+    }
+    prevDesktopConnectedRef.current = connected;
+  }, [status?.desktopConnected]);
 
   useEffect(() => () => resetHold(), []);
 
@@ -518,6 +533,51 @@ export default function GlanceHud({ domain }: Props) {
   const shortFormLockedFlash = shortFormLastBlockedAt != null && nowTs - shortFormLastBlockedAt < 1200;
 
   const ratePerMin = session?.ratePerMin ?? status?.rate?.ratePerMin ?? 0;
+  const syncAgeSeconds = useMemo(() => {
+    const lastSync = status?.lastSync;
+    if (typeof lastSync !== 'number' || !Number.isFinite(lastSync)) return null;
+    return Math.max(0, Math.floor((nowTs - lastSync) / 1000));
+  }, [nowTs, status?.lastSync]);
+  const sessionConfidence = useMemo(() => {
+    const desktopConnected = status?.desktopConnected === true;
+    const reconnectFresh = lastReconnectAt != null && (nowTs - lastReconnectAt) <= HUD_SYNC_RECONNECT_BADGE_MS;
+    const syncStale = syncAgeSeconds != null && (syncAgeSeconds * 1000) > HUD_SYNC_STALE_MS;
+    const syncAgeLabel = syncAgeSeconds == null ? 'n/a' : `${syncAgeSeconds}s`;
+
+    if (session?.paused) {
+      return {
+        label: 'paused',
+        backend: desktopConnected ? 'desktop online' : 'local pause',
+        freshness: `last ${syncAgeLabel}`
+      };
+    }
+    if (!desktopConnected) {
+      return {
+        label: syncStale ? 'sync stale' : 'offline local',
+        backend: 'desktop offline',
+        freshness: syncAgeSeconds == null ? 'local timer' : `last ${syncAgeLabel}`
+      };
+    }
+    if (reconnectFresh) {
+      return {
+        label: 'reconnected',
+        backend: 'desktop online',
+        freshness: `last ${syncAgeLabel}`
+      };
+    }
+    if (syncStale) {
+      return {
+        label: 'sync stale',
+        backend: 'desktop online',
+        freshness: `last ${syncAgeLabel}`
+      };
+    }
+    return {
+      label: 'live',
+      backend: 'desktop online',
+      freshness: `last ${syncAgeLabel}`
+    };
+  }, [lastReconnectAt, nowTs, session?.paused, status?.desktopConnected, syncAgeSeconds]);
   const projectedCost5 = Math.max(0, ratePerMin * 5);
   const projectedCost15 = Math.max(0, ratePerMin * 15);
   const sessionCostEstimate = session?.mode === 'metered'
@@ -604,6 +664,12 @@ export default function GlanceHud({ domain }: Props) {
             <span>{session.mode}</span>
             <span>{session.paused ? 'paused' : mediaPlaying ? 'media on' : 'active'}</span>
           </div>
+        </div>
+
+        <div className="tws-glance-stat-row">
+          <span>sync {sessionConfidence.label}</span>
+          <span>{sessionConfidence.backend}</span>
+          <span>{sessionConfidence.freshness}</span>
         </div>
 
         <div className="tws-glance-stat-row">

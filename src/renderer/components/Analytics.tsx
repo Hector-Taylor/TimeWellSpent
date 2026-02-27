@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
     AnalyticsOverview,
+    BehaviorEpisodeMap,
     BehavioralPattern,
     RendererApi,
     TimeOfDayStats,
@@ -20,6 +21,8 @@ export default function Analytics({ api }: AnalyticsProps) {
     const [timeOfDay, setTimeOfDay] = useState<TimeOfDayStats[]>([]);
     const [patterns, setPatterns] = useState<BehavioralPattern[]>([]);
     const [trends, setTrends] = useState<TrendPoint[]>([]);
+    const [episodeMap, setEpisodeMap] = useState<BehaviorEpisodeMap | null>(null);
+    const [selectedEpisodeId, setSelectedEpisodeId] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [excludedKeywords, setExcludedKeywords] = useState<string[]>([]);
 
@@ -33,16 +36,26 @@ export default function Analytics({ api }: AnalyticsProps) {
 
     const refresh = useCallback(async () => {
         setLoading(true);
-        const [o, t, p, tr] = await Promise.all([
+        const [o, t, p, tr, ep] = await Promise.all([
             api.analytics.overview(days),
             api.analytics.timeOfDay(days),
             api.analytics.patterns(days),
             api.analytics.trends(days <= 1 ? 'hour' : 'day'),
+            api.analytics.episodes({
+                hours: Math.max(12, Math.min(72, days * 24)),
+                gapMinutes: 8,
+                binSeconds: 30,
+                maxEpisodes: 20
+            })
         ]);
         setOverview(o);
         setTimeOfDay(t);
         setPatterns(p);
         setTrends(tr);
+        setEpisodeMap(ep);
+        setSelectedEpisodeId((prev) => prev && ep.episodes.some((item) => item.id === prev)
+            ? prev
+            : (ep.episodes[ep.episodes.length - 1]?.id ?? null));
         setLoading(false);
     }, [api, days]);
 
@@ -92,6 +105,22 @@ export default function Analytics({ api }: AnalyticsProps) {
         }
         return next;
     }, [excludedKeywords]);
+
+    const selectedEpisode = useMemo(() => {
+        if (!episodeMap) return null;
+        if (!selectedEpisodeId) return episodeMap.episodes[episodeMap.episodes.length - 1] ?? null;
+        return episodeMap.episodes.find((episode) => episode.id === selectedEpisodeId) ?? null;
+    }, [episodeMap, selectedEpisodeId]);
+
+    const formatDuration = (seconds: number) => {
+        const s = Math.max(0, Math.round(seconds));
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const rem = s % 60;
+        if (h > 0) return `${h}h ${m}m`;
+        if (m > 0) return `${m}m ${rem}s`;
+        return `${rem}s`;
+    };
 
     return (
         <section className="panel analytics-panel">
@@ -303,6 +332,145 @@ export default function Analytics({ api }: AnalyticsProps) {
                                 );
                             })}
                         </div>
+                    </div>
+
+                    {/* Episode Explorer (beta) */}
+                    <div className="card" style={{ gridColumn: '1 / -1' }}>
+                        <div className="card-header-row">
+                            <h2>Episode Explorer (beta)</h2>
+                            <span className="subtle">
+                                {episodeMap
+                                    ? `${episodeMap.summary.totalEpisodes} episodes · ${Math.round(episodeMap.summary.totalActiveSeconds / 60)}m active`
+                                    : 'Loading episodes'}
+                            </span>
+                        </div>
+                        {episodeMap ? (
+                            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 0.9fr) 1.6fr', gap: 12 }}>
+                                <div style={{ display: 'grid', gap: 8, maxHeight: 420, overflow: 'auto' }}>
+                                    {episodeMap.episodes.slice().reverse().map((episode) => {
+                                        const selected = episode.id === selectedEpisode?.id;
+                                        return (
+                                            <button
+                                                key={episode.id}
+                                                type="button"
+                                                onClick={() => setSelectedEpisodeId(episode.id)}
+                                                style={{
+                                                    textAlign: 'left',
+                                                    borderRadius: 10,
+                                                    border: selected ? '1px solid rgba(110,190,255,0.7)' : '1px solid rgba(255,255,255,0.08)',
+                                                    background: selected ? 'rgba(70,130,255,0.12)' : 'rgba(255,255,255,0.02)',
+                                                    color: 'inherit',
+                                                    padding: '10px 12px',
+                                                    cursor: 'pointer'
+                                                }}
+                                            >
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                                                    <strong>{new Date(episode.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</strong>
+                                                    <span className="subtle">{formatDuration(episode.durationSeconds)}</span>
+                                                </div>
+                                                <div className="subtle" style={{ marginTop: 4 }}>
+                                                    {episode.topDomains[0]?.domain ?? episode.topApps[0]?.appName ?? 'Unknown context'}
+                                                    {' · '}
+                                                    {episode.rates.actionsPerMinute} APM
+                                                    {' · '}
+                                                    {episode.markers.length} markers
+                                                </div>
+                                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(28px, 1fr))', gap: 3, marginTop: 8 }}>
+                                                    {episode.timelineBins.slice(0, 40).map((bin, idx) => {
+                                                        const total = bin.activeSeconds + bin.idleSeconds;
+                                                        const productive = bin.categoryBreakdown.productive ?? 0;
+                                                        const frivolity = (bin.categoryBreakdown.frivolity ?? 0) + (bin.categoryBreakdown.draining ?? 0);
+                                                        const neutral = bin.categoryBreakdown.neutral ?? 0;
+                                                        const p = total > 0 ? Math.round((productive / total) * 255) : 30;
+                                                        const f = total > 0 ? Math.round((frivolity / total) * 255) : 30;
+                                                        const n = total > 0 ? Math.round((neutral / total) * 180) : 30;
+                                                        return (
+                                                            <span
+                                                                key={`${episode.id}-${idx}`}
+                                                                title={`${new Date(bin.start).toLocaleTimeString()} · ${Math.round(total)}s`}
+                                                                style={{
+                                                                    display: 'block',
+                                                                    height: 6,
+                                                                    borderRadius: 999,
+                                                                    background: `rgb(${Math.max(20, f)}, ${Math.max(20, p)}, ${Math.max(20, n)})`,
+                                                                    opacity: total > 0 ? 0.95 : 0.25
+                                                                }}
+                                                            />
+                                                        );
+                                                    })}
+                                                </div>
+                                            </button>
+                                        );
+                                    })}
+                                    {episodeMap.episodes.length === 0 && <div className="subtle">No episodes in this window yet.</div>}
+                                </div>
+
+                                <div style={{ display: 'grid', gap: 12, alignContent: 'start' }}>
+                                    {selectedEpisode ? (
+                                        <>
+                                            <div style={{ display: 'grid', gap: 4 }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                                                    <strong>
+                                                        {new Date(selectedEpisode.start).toLocaleString()} - {new Date(selectedEpisode.end).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                                                    </strong>
+                                                    <span className="subtle">{selectedEpisode.dominantCategory}</span>
+                                                </div>
+                                                <div className="subtle">
+                                                    {formatDuration(selectedEpisode.activeSeconds)} active · {formatDuration(selectedEpisode.idleSeconds)} idle · {selectedEpisode.domainSwitches} switches
+                                                </div>
+                                                <div className="subtle">
+                                                    {selectedEpisode.rates.actionsPerMinute} APM · {selectedEpisode.rates.scrollsPerMinute} scroll/m · {selectedEpisode.rates.keystrokesPerMinute} key/m
+                                                </div>
+                                            </div>
+
+                                            <div style={{ display: 'grid', gap: 6 }}>
+                                                <strong>Top Contexts</strong>
+                                                <div className="subtle">
+                                                    Domains: {selectedEpisode.topDomains.slice(0, 4).map((d) => `${scrubLabel(d.domain) ?? 'Hidden'} (${Math.round(d.activeSeconds / 60)}m)`).join(' · ') || 'None'}
+                                                </div>
+                                                <div className="subtle">
+                                                    Apps: {selectedEpisode.topApps.slice(0, 4).map((a) => `${scrubLabel(a.appName) ?? 'Hidden'} (${Math.round(a.activeSeconds / 60)}m)`).join(' · ') || 'None'}
+                                                </div>
+                                            </div>
+
+                                            <div style={{ display: 'grid', gap: 6 }}>
+                                                <strong>Markers</strong>
+                                                {selectedEpisode.markers.length ? selectedEpisode.markers.slice(0, 8).map((marker, idx) => (
+                                                    <div key={`${marker.timestamp}-${idx}`} className="subtle">
+                                                        {new Date(marker.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })} · {marker.kind}
+                                                        {marker.domain ? ` · ${scrubLabel(marker.domain) ?? 'Hidden'}` : ''}
+                                                    </div>
+                                                )) : <div className="subtle">No paywall/library/emergency markers captured in this episode.</div>}
+                                            </div>
+
+                                            <div style={{ display: 'grid', gap: 6 }}>
+                                                <strong>Content Snapshots (titles / URLs)</strong>
+                                                {selectedEpisode.contentSnapshots.length ? selectedEpisode.contentSnapshots.slice(0, 16).map((snap, idx) => (
+                                                    <div key={`${snap.timestamp}-${idx}`} className="subtle">
+                                                        {new Date(snap.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })} · {scrubLabel(snap.domain ?? '') ?? 'Hidden'}
+                                                        {snap.title ? ` · ${scrubText(snap.title)}` : ''}
+                                                    </div>
+                                                )) : <div className="subtle">No title/url snapshots captured yet in this episode.</div>}
+                                            </div>
+
+                                            <div style={{ display: 'grid', gap: 6 }}>
+                                                <strong>Capture Coverage / Breadcrumbs</strong>
+                                                <div className="subtle">
+                                                    {selectedEpisode.sourceCoverage.hasBehaviorEvents ? 'behavior events' : 'no behavior events'} · {selectedEpisode.sourceCoverage.hasContentTitles ? 'titles present' : 'sparse titles'} · {selectedEpisode.sourceCoverage.hasConsumptionMarkers ? 'markers present' : 'no markers'}
+                                                </div>
+                                                <div className="subtle">
+                                                    Missing next: {episodeMap.breadcrumbs.missingSignals.slice(0, 3).join(' · ')}
+                                                </div>
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <div className="subtle">Select an episode to inspect the timeline and content snapshots.</div>
+                                    )}
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="subtle">Loading episode explorer…</div>
+                        )}
                     </div>
 
                     {/* Behavioral Patterns */}

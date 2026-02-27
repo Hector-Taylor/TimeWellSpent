@@ -8,6 +8,14 @@ import type { Database } from './storage';
 import type {
     ActivityCategory,
     AnalyticsOverview,
+    BehaviorEpisode,
+    BehaviorEpisodeContentSnapshot,
+    BehaviorEpisodeContextSlice,
+    BehaviorEpisodeEventCounts,
+    BehaviorEpisodeMap,
+    BehaviorEpisodeMarker,
+    BehaviorEpisodeQuery,
+    BehaviorEpisodeTimeBin,
     BehavioralPattern,
     BehaviorEvent,
     EngagementLevel,
@@ -31,6 +39,21 @@ type ActivityRow = {
     idleSeconds: number;
 };
 
+type ActivityEpisodeRow = {
+    id: number;
+    startedAt: string;
+    endedAt: string | null;
+    source: 'app' | 'url';
+    appName: string | null;
+    bundleId: string | null;
+    windowTitle: string | null;
+    url: string | null;
+    domain: string | null;
+    category: ActivityCategory | null;
+    secondsActive: number;
+    idleSeconds: number;
+};
+
 type BehaviorEventRow = {
     id: number;
     timestamp: string;
@@ -40,6 +63,16 @@ type BehaviorEventRow = {
     value_int: number | null;
     value_float: number | null;
     metadata: string | null;
+};
+
+type ConsumptionMarkerRow = {
+    id: number;
+    occurred_at: string;
+    kind: string;
+    title: string | null;
+    url: string | null;
+    domain: string | null;
+    meta: string | null;
 };
 
 type SessionAnalyticsRow = {
@@ -69,14 +102,89 @@ type WritingHourlyRollupRow = {
     focused_seconds: number;
 };
 
+type ClippedActivitySlice = {
+    activityId: number;
+    startMs: number;
+    endMs: number;
+    appName: string | null;
+    domain: string | null;
+    url: string | null;
+    windowTitle: string | null;
+    category: ActivityCategory | null;
+    activeSeconds: number;
+    idleSeconds: number;
+};
+
+function emptyEpisodeEventCounts(): BehaviorEpisodeEventCounts {
+    return {
+        scroll: 0,
+        click: 0,
+        keystroke: 0,
+        focus: 0,
+        blur: 0,
+        idleStart: 0,
+        idleEnd: 0,
+        visibility: 0
+    };
+}
+
+function emptyCategoryBreakdown(): Record<ActivityCategory | 'idle', number> {
+    return {
+        productive: 0,
+        neutral: 0,
+        frivolity: 0,
+        draining: 0,
+        emergency: 0,
+        idle: 0
+    };
+}
+
+function parseJsonObject(value: string | null): Record<string, unknown> | undefined {
+    if (!value) return undefined;
+    try {
+        const parsed = JSON.parse(value) as unknown;
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? parsed as Record<string, unknown>
+            : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+function parseIsoMs(iso: string | null | undefined): number | null {
+    if (!iso) return null;
+    const ms = Date.parse(iso);
+    return Number.isFinite(ms) ? ms : null;
+}
+
+function clampFiniteNumber(value: unknown, fallback = 0) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+}
+
+function toEpisodeEventCountKey(eventType: string): keyof BehaviorEpisodeEventCounts | null {
+    if (eventType === 'scroll') return 'scroll';
+    if (eventType === 'click') return 'click';
+    if (eventType === 'keystroke') return 'keystroke';
+    if (eventType === 'focus') return 'focus';
+    if (eventType === 'blur') return 'blur';
+    if (eventType === 'idle_start') return 'idleStart';
+    if (eventType === 'idle_end') return 'idleEnd';
+    if (eventType === 'visibility') return 'visibility';
+    return null;
+}
+
 export class AnalyticsService {
     private db: BetterSqlite3Database;
     private getExcludedKeywords?: () => string[];
 
     // Prepared statements for performance
     private activitiesInRangeStmt: Statement;
+    private activitiesDetailedInRangeStmt: Statement;
     private behaviorEventsInRangeStmt: Statement;
+    private behaviorEventsWindowStmt: Statement;
     private sessionAnalyticsInRangeStmt: Statement;
+    private consumptionLogInRangeStmt: Statement;
     private insertBehaviorEventStmt: Statement;
     private upsertSessionAnalyticsStmt: Statement;
     private insertPatternStmt: Statement;
@@ -102,6 +210,25 @@ export class AnalyticsService {
       ORDER BY started_at DESC
     `);
 
+        this.activitiesDetailedInRangeStmt = this.db.prepare(`
+      SELECT
+        id,
+        started_at as startedAt,
+        ended_at as endedAt,
+        source,
+        app_name as appName,
+        bundle_id as bundleId,
+        window_title as windowTitle,
+        url,
+        domain,
+        category,
+        seconds_active as secondsActive,
+        idle_seconds as idleSeconds
+      FROM activities
+      WHERE started_at <= ? AND (ended_at IS NULL OR ended_at >= ?)
+      ORDER BY started_at ASC
+    `);
+
         this.behaviorEventsInRangeStmt = this.db.prepare(`
       SELECT id, timestamp, session_id, domain, event_type, value_int, value_float, metadata
       FROM behavior_events
@@ -109,10 +236,24 @@ export class AnalyticsService {
       ORDER BY timestamp DESC
     `);
 
+        this.behaviorEventsWindowStmt = this.db.prepare(`
+      SELECT id, timestamp, session_id, domain, event_type, value_int, value_float, metadata
+      FROM behavior_events
+      WHERE timestamp >= ? AND timestamp <= ?
+      ORDER BY timestamp ASC
+    `);
+
         this.sessionAnalyticsInRangeStmt = this.db.prepare(`
       SELECT * FROM session_analytics
       WHERE date >= ?
       ORDER BY date DESC
+    `);
+
+        this.consumptionLogInRangeStmt = this.db.prepare(`
+      SELECT id, occurred_at, kind, title, url, domain, meta
+      FROM consumption_log
+      WHERE occurred_at >= ? AND occurred_at <= ?
+      ORDER BY occurred_at ASC
     `);
 
         this.insertBehaviorEventStmt = this.db.prepare(`
@@ -910,6 +1051,363 @@ export class AnalyticsService {
         }
 
         return buckets;
+    }
+
+    getBehaviorEpisodes(query: BehaviorEpisodeQuery = {}): BehaviorEpisodeMap {
+        const now = Date.now();
+        const safeHours = Math.max(1, Math.min(24 * 14, Math.round(query.hours ?? 24)));
+        const parsedEnd = parseIsoMs(query.end);
+        const rangeEndMs = parsedEnd ?? now;
+        const parsedStart = parseIsoMs(query.start);
+        const rangeStartMs = parsedStart ?? (rangeEndMs - safeHours * HOUR_MS);
+        const startMs = Math.min(rangeStartMs, rangeEndMs);
+        const endMs = Math.max(rangeStartMs, rangeEndMs);
+        const gapMinutes = Math.max(1, Math.min(120, Math.round(query.gapMinutes ?? 8)));
+        const gapMs = gapMinutes * 60_000;
+        const binSeconds = Math.max(5, Math.min(300, Math.round(query.binSeconds ?? 30)));
+        const maxEpisodes = Math.max(1, Math.min(500, Math.round(query.maxEpisodes ?? 100)));
+        const rangeStartIso = new Date(startMs).toISOString();
+        const rangeEndIso = new Date(endMs).toISOString();
+
+        const activityRows = this.activitiesDetailedInRangeStmt.all(rangeEndIso, rangeStartIso) as ActivityEpisodeRow[];
+        const eventRows = this.behaviorEventsWindowStmt.all(rangeStartIso, rangeEndIso) as BehaviorEventRow[];
+        const markerRows = this.consumptionLogInRangeStmt.all(rangeStartIso, rangeEndIso) as ConsumptionMarkerRow[];
+
+        const clippedSlices = activityRows
+            .map((row) => this.clipEpisodeActivity(row, startMs, endMs))
+            .filter((value): value is ClippedActivitySlice => Boolean(value));
+
+        const normalizedEvents = eventRows
+            .map((row) => {
+                const tsMs = parseIsoMs(row.timestamp);
+                if (tsMs == null) return null;
+                return {
+                    id: row.id,
+                    tsMs,
+                    timestamp: row.timestamp,
+                    domain: row.domain,
+                    eventType: row.event_type,
+                    valueInt: row.value_int ?? undefined,
+                    valueFloat: row.value_float ?? undefined,
+                    metadata: parseJsonObject(row.metadata)
+                };
+            })
+            .filter((value): value is NonNullable<typeof value> => Boolean(value));
+
+        const markers = markerRows
+            .map((row): (BehaviorEpisodeMarker & { tsMs: number }) | null => {
+                const tsMs = parseIsoMs(row.occurred_at);
+                if (tsMs == null) return null;
+                return {
+                    tsMs,
+                    timestamp: row.occurred_at,
+                    kind: row.kind,
+                    title: row.title,
+                    domain: row.domain,
+                    url: row.url,
+                    meta: parseJsonObject(row.meta),
+                    source: 'consumption-log'
+                };
+            })
+            .filter((value): value is BehaviorEpisodeMarker & { tsMs: number } => Boolean(value));
+
+        const episodesRaw: Array<{ startMs: number; endMs: number; slices: ClippedActivitySlice[] }> = [];
+        for (const slice of clippedSlices) {
+            const current = episodesRaw[episodesRaw.length - 1];
+            if (!current || slice.startMs - current.endMs > gapMs) {
+                episodesRaw.push({ startMs: slice.startMs, endMs: slice.endMs, slices: [slice] });
+            } else {
+                current.slices.push(slice);
+                current.endMs = Math.max(current.endMs, slice.endMs);
+            }
+        }
+
+        const episodes = episodesRaw.slice(-maxEpisodes).map((episodeRaw, index): BehaviorEpisode => {
+            const durationSeconds = Math.max(1, Math.round((episodeRaw.endMs - episodeRaw.startMs) / 1000));
+            const contextSlices: BehaviorEpisodeContextSlice[] = [];
+            const categoryBreakdown = emptyCategoryBreakdown();
+            const topDomainMap = new Map<string, number>();
+            const topAppMap = new Map<string, number>();
+            let activeSeconds = 0;
+            let idleSeconds = 0;
+            let domainSwitches = 0;
+            let previousDomain: string | null = null;
+
+            for (const slice of episodeRaw.slices) {
+                const suppressed = this.shouldSuppress(slice.domain, slice.appName);
+                const activeCategory = suppressed ? 'neutral' : (slice.category ?? 'neutral');
+                const category = (activeCategory ?? 'neutral') as ActivityCategory;
+                activeSeconds += Math.max(0, slice.activeSeconds);
+                idleSeconds += Math.max(0, slice.idleSeconds);
+                categoryBreakdown.idle += Math.max(0, slice.idleSeconds);
+                categoryBreakdown[category] += Math.max(0, slice.activeSeconds);
+
+                if (!suppressed) {
+                    const domainKey = slice.domain ?? slice.appName ?? 'unknown';
+                    topDomainMap.set(domainKey, (topDomainMap.get(domainKey) ?? 0) + Math.max(0, slice.activeSeconds));
+                    if (previousDomain && previousDomain !== domainKey) domainSwitches += 1;
+                    previousDomain = domainKey;
+                }
+                if (slice.appName) {
+                    topAppMap.set(slice.appName, (topAppMap.get(slice.appName) ?? 0) + Math.max(0, slice.activeSeconds));
+                }
+
+                contextSlices.push({
+                    source: 'activity',
+                    activityId: slice.activityId,
+                    start: new Date(slice.startMs).toISOString(),
+                    end: new Date(slice.endMs).toISOString(),
+                    appName: slice.appName,
+                    domain: slice.domain,
+                    url: slice.url,
+                    windowTitle: slice.windowTitle,
+                    category,
+                    activeSeconds: Math.max(0, slice.activeSeconds),
+                    idleSeconds: Math.max(0, slice.idleSeconds)
+                });
+            }
+
+            const episodeEvents = normalizedEvents.filter((evt) => evt.tsMs >= episodeRaw.startMs && evt.tsMs <= episodeRaw.endMs);
+            const episodeMarkers = markers
+                .filter((marker) => marker.tsMs >= episodeRaw.startMs && marker.tsMs <= episodeRaw.endMs)
+                .map(({ tsMs: _tsMs, ...rest }) => rest);
+
+            const eventCounts = emptyEpisodeEventCounts();
+            for (const evt of episodeEvents) {
+                const key = toEpisodeEventCountKey(evt.eventType);
+                if (!key) continue;
+                const increment = Math.max(1, Math.round(clampFiniteNumber(evt.valueInt ?? 1, 1)));
+                eventCounts[key] += increment;
+            }
+
+            const contentSnapshotsRaw: Array<{ tsMs: number; snapshot: BehaviorEpisodeContentSnapshot }> = [];
+            for (const slice of episodeRaw.slices) {
+                if (slice.url || slice.windowTitle) {
+                    contentSnapshotsRaw.push({
+                        tsMs: slice.startMs,
+                        snapshot: {
+                            timestamp: new Date(slice.startMs).toISOString(),
+                            domain: slice.domain,
+                            url: slice.url ?? null,
+                            title: slice.windowTitle ?? null,
+                            source: 'activity',
+                            confidence: 0.7
+                        }
+                    });
+                }
+            }
+            for (const evt of episodeEvents) {
+                const title = typeof evt.metadata?.title === 'string' ? evt.metadata.title : null;
+                const url = typeof evt.metadata?.url === 'string' ? evt.metadata.url : null;
+                if (!title && !url) continue;
+                contentSnapshotsRaw.push({
+                    tsMs: evt.tsMs,
+                    snapshot: {
+                        timestamp: evt.timestamp,
+                        domain: evt.domain ?? null,
+                        url,
+                        title,
+                        source: 'behavior-event',
+                        confidence: 0.95
+                    }
+                });
+            }
+            contentSnapshotsRaw.sort((a, b) => a.tsMs - b.tsMs);
+            const contentSnapshots: BehaviorEpisodeContentSnapshot[] = [];
+            let lastSnapshotKey: string | null = null;
+            for (const item of contentSnapshotsRaw) {
+                const key = `${item.snapshot.domain ?? ''}|${item.snapshot.url ?? ''}|${item.snapshot.title ?? ''}`;
+                if (key === lastSnapshotKey) continue;
+                lastSnapshotKey = key;
+                contentSnapshots.push(item.snapshot);
+                if (contentSnapshots.length >= 120) break;
+            }
+
+            const topDomains = Array.from(topDomainMap.entries())
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 8)
+                .map(([domain, seconds]) => ({ domain, activeSeconds: Math.round(seconds) }));
+            const topApps = Array.from(topAppMap.entries())
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 8)
+                .map(([appName, seconds]) => ({ appName, activeSeconds: Math.round(seconds) }));
+
+            const dominantCategory = (Object.entries(categoryBreakdown)
+                .sort((a, b) => Number(b[1]) - Number(a[1]))[0]?.[0] ?? 'idle') as ActivityCategory | 'idle';
+
+            const binMs = binSeconds * 1000;
+            const timelineBins: BehaviorEpisodeTimeBin[] = [];
+            for (let binStart = episodeRaw.startMs; binStart < episodeRaw.endMs; binStart += binMs) {
+                const binEnd = Math.min(episodeRaw.endMs, binStart + binMs);
+                const binBreakdown = emptyCategoryBreakdown();
+                const binEventCounts = emptyEpisodeEventCounts();
+                const domainSeconds = new Map<string, number>();
+                const titleCounts = new Map<string, number>();
+                for (const slice of episodeRaw.slices) {
+                    const overlap = overlapMs(slice.startMs, slice.endMs, binStart, binEnd);
+                    if (overlap <= 0) continue;
+                    const sliceSpan = Math.max(1, slice.endMs - slice.startMs);
+                    const fraction = overlap / sliceSpan;
+                    const suppressed = this.shouldSuppress(slice.domain, slice.appName);
+                    const activeCategory = suppressed ? 'neutral' : (slice.category ?? 'neutral');
+                    binBreakdown.idle += slice.idleSeconds * fraction;
+                    binBreakdown[activeCategory] += slice.activeSeconds * fraction;
+                    const domainKey = !suppressed ? (slice.domain ?? slice.appName ?? null) : null;
+                    if (domainKey) domainSeconds.set(domainKey, (domainSeconds.get(domainKey) ?? 0) + slice.activeSeconds * fraction);
+                    if (slice.windowTitle) titleCounts.set(slice.windowTitle, (titleCounts.get(slice.windowTitle) ?? 0) + 1);
+                }
+                for (const evt of episodeEvents) {
+                    if (evt.tsMs < binStart || evt.tsMs >= binEnd) continue;
+                    const key = toEpisodeEventCountKey(evt.eventType);
+                    if (!key) continue;
+                    binEventCounts[key] += Math.max(1, Math.round(clampFiniteNumber(evt.valueInt ?? 1, 1)));
+                    const title = typeof evt.metadata?.title === 'string' ? evt.metadata.title : null;
+                    if (title) titleCounts.set(title, (titleCounts.get(title) ?? 0) + 2);
+                }
+                const topDomain = Array.from(domainSeconds.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+                const topTitle = Array.from(titleCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+                timelineBins.push({
+                    start: new Date(binStart).toISOString(),
+                    end: new Date(binEnd).toISOString(),
+                    activeSeconds: Math.max(0, Object.entries(binBreakdown)
+                        .filter(([key]) => key !== 'idle')
+                        .reduce((sum, [, value]) => sum + Number(value), 0)),
+                    idleSeconds: Math.max(0, binBreakdown.idle),
+                    categoryBreakdown: binBreakdown,
+                    eventCounts: binEventCounts,
+                    topDomain,
+                    topTitle
+                });
+            }
+
+            const totalActions = eventCounts.scroll + eventCounts.click + eventCounts.keystroke;
+            const durationMinutes = Math.max(1 / 60, durationSeconds / 60);
+            return {
+                id: `ep-${episodeRaw.startMs}-${index + 1}`,
+                start: new Date(episodeRaw.startMs).toISOString(),
+                end: new Date(episodeRaw.endMs).toISOString(),
+                durationSeconds,
+                activeSeconds: Math.round(activeSeconds),
+                idleSeconds: Math.round(idleSeconds),
+                categoryBreakdown: Object.fromEntries(
+                    Object.entries(categoryBreakdown).map(([key, value]) => [key, Math.round(Number(value))])
+                ) as Record<ActivityCategory | 'idle', number>,
+                dominantCategory,
+                topDomains,
+                topApps,
+                eventCounts,
+                rates: {
+                    actionsPerMinute: Math.round((totalActions / durationMinutes) * 10) / 10,
+                    scrollsPerMinute: Math.round((eventCounts.scroll / durationMinutes) * 10) / 10,
+                    clicksPerMinute: Math.round((eventCounts.click / durationMinutes) * 10) / 10,
+                    keystrokesPerMinute: Math.round((eventCounts.keystroke / durationMinutes) * 10) / 10,
+                    focusEventsPerMinute: Math.round(((eventCounts.focus + eventCounts.blur) / durationMinutes) * 10) / 10
+                },
+                domainSwitches,
+                contextSlices,
+                contentSnapshots,
+                markers: episodeMarkers,
+                timelineBins,
+                sourceCoverage: {
+                    hasBehaviorEvents: episodeEvents.length > 0,
+                    hasContentTitles: contentSnapshots.some((item) => Boolean(item.title)),
+                    hasConsumptionMarkers: episodeMarkers.length > 0
+                }
+            };
+        });
+
+        const totalDurationSeconds = episodes.reduce((sum, episode) => sum + episode.durationSeconds, 0);
+        const totalActiveSeconds = episodes.reduce((sum, episode) => sum + episode.activeSeconds, 0);
+        const totalIdleSeconds = episodes.reduce((sum, episode) => sum + episode.idleSeconds, 0);
+        const globalDomainTotals = new Map<string, number>();
+        for (const episode of episodes) {
+            for (const domain of episode.topDomains) {
+                globalDomainTotals.set(domain.domain, (globalDomainTotals.get(domain.domain) ?? 0) + domain.activeSeconds);
+            }
+        }
+
+        return {
+            schemaVersion: 1,
+            generatedAt: new Date().toISOString(),
+            range: { start: rangeStartIso, end: rangeEndIso },
+            query: {
+                start: rangeStartIso,
+                end: rangeEndIso,
+                hours: safeHours,
+                gapMinutes,
+                binSeconds,
+                maxEpisodes
+            },
+            summary: {
+                totalEpisodes: episodes.length,
+                totalDurationSeconds,
+                totalActiveSeconds,
+                totalIdleSeconds,
+                topDomains: Array.from(globalDomainTotals.entries())
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 12)
+                    .map(([domain, activeSeconds]) => ({ domain, activeSeconds: Math.round(activeSeconds) })),
+                totalMarkers: episodes.reduce((sum, episode) => sum + episode.markers.length, 0),
+                totalContentSnapshots: episodes.reduce((sum, episode) => sum + episode.contentSnapshots.length, 0)
+            },
+            episodes,
+            breadcrumbs: {
+                capturedSignals: [
+                    'activities (app/domain/url/window title)',
+                    'behavior events (scroll/click/keystroke/focus with metadata.url/title)',
+                    'consumption log markers (paywall/library/emergency outcomes)'
+                ],
+                missingSignals: [
+                    'scroll delta / velocity per event',
+                    'tab switch explicit events',
+                    'media play/pause snapshots',
+                    'DOM-derived content type adapters (video/article/feed/short-form)',
+                    'periodic title/url snapshots independent of user input'
+                ],
+                nextInstrumentation: [
+                    'Add content snapshot behavior events on navigation/title-change (low cadence)',
+                    'Add event provenance fields (source/schemaVersion/observedAt/receivedAt)',
+                    'Add page surface classification adapters (YouTube/Reels/Reddit/etc)',
+                    'Persist derived episode IDs and feedback for AI coach memory'
+                ],
+                notes: [
+                    'Episode boundaries are currently inferred from activity gaps only.',
+                    'Titles and URLs are opportunistic (captured when user activity events include metadata).',
+                    'This object is intended as the stable substrate for future AI coach skills and a user-facing episode explorer.'
+                ]
+            }
+        };
+    }
+
+    private clipEpisodeActivity(activity: ActivityEpisodeRow, rangeStartMs: number, rangeEndMs: number): ClippedActivitySlice | null {
+        const startMs = parseIsoMs(activity.startedAt);
+        if (startMs == null) return null;
+        const activeSecondsRaw = Math.max(0, clampFiniteNumber(activity.secondsActive));
+        const idleSecondsRaw = Math.max(0, clampFiniteNumber(activity.idleSeconds));
+        const totalSeconds = activeSecondsRaw + idleSecondsRaw;
+        if (totalSeconds <= 0) return null;
+        const rawEndMs = parseIsoMs(activity.endedAt);
+        const inferredEndMs = startMs + totalSeconds * 1000;
+        const endMs = rawEndMs ?? inferredEndMs;
+        if (!Number.isFinite(endMs)) return null;
+        const clippedStartMs = Math.max(startMs, rangeStartMs);
+        const clippedEndMs = Math.min(endMs, rangeEndMs);
+        if (clippedEndMs <= clippedStartMs) return null;
+        const overlapMsValue = clippedEndMs - clippedStartMs;
+        const rowDurationMs = Math.max(1, endMs - startMs);
+        const clipRatio = Math.min(1, overlapMsValue / rowDurationMs);
+        return {
+            activityId: activity.id,
+            startMs: clippedStartMs,
+            endMs: clippedEndMs,
+            appName: activity.appName ?? null,
+            domain: activity.domain ?? null,
+            url: activity.url ?? null,
+            windowTitle: activity.windowTitle ?? null,
+            category: activity.category ?? null,
+            activeSeconds: activeSecondsRaw * clipRatio,
+            idleSeconds: idleSecondsRaw * clipRatio
+        };
     }
 
     /**
