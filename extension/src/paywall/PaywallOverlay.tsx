@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import SudokuChallenge from './SudokuChallenge';
 import ReflectionSlideshow from './ReflectionSlideshow';
+import { useEyeTracking } from './useEyeTracking';
 
 type LinkPreview = {
   url: string;
@@ -143,6 +144,7 @@ type StatusResponse = {
     emergencyPolicy?: 'off' | 'gentle' | 'balanced' | 'strict';
     discouragementIntervalMinutes?: number;
     cameraModeEnabled?: boolean;
+    eyeTrackingEnabled?: boolean;
     guardrailColorFilter?: 'full-color' | 'greyscale' | 'redscale';
     alwaysGreyscale?: boolean;
     reflectionSlideshowEnabled?: boolean;
@@ -608,6 +610,8 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const [spendGuardBusy, setSpendGuardBusy] = useState(false);
   const [cameraModeEnabled, setCameraModeEnabled] = useState(status.settings?.cameraModeEnabled ?? false);
   const [cameraModeBusy, setCameraModeBusy] = useState(false);
+  const [eyeTrackingEnabled, setEyeTrackingEnabled] = useState(status.settings?.eyeTrackingEnabled ?? false);
+  const [eyeTrackingBusy, setEyeTrackingBusy] = useState(false);
   const [guardrailColorFilter, setGuardrailColorFilter] = useState<GuardrailColorFilter>(status.settings?.guardrailColorFilter ?? 'full-color');
   const [guardrailColorFilterBusy, setGuardrailColorFilterBusy] = useState(false);
   const [alwaysGreyscale, setAlwaysGreyscale] = useState(Boolean(status.settings?.alwaysGreyscale));
@@ -792,6 +796,9 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     setCameraModeEnabled(status.settings?.cameraModeEnabled ?? false);
   }, [status.settings?.cameraModeEnabled]);
   useEffect(() => {
+    setEyeTrackingEnabled(status.settings?.eyeTrackingEnabled ?? false);
+  }, [status.settings?.eyeTrackingEnabled]);
+  useEffect(() => {
     setGuardrailColorFilter(status.settings?.guardrailColorFilter ?? 'full-color');
   }, [status.settings?.guardrailColorFilter]);
   useEffect(() => {
@@ -811,6 +818,17 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   }, [status.settings?.reflectionSlideshowMaxPhotos]);
 
   const showDiscouragement = discouragementEnabled && isFrivolousDomain;
+  const eyeTracking = useEyeTracking({
+    enabled: eyeTrackingEnabled && isFrivolousDomain,
+    active: true
+  });
+  const gazeAnchor = eyeTracking.isTracking && eyeTracking.gazePoint && eyeTracking.gazePoint.confidence >= 0.25
+    ? {
+      xPct: Math.max(12, Math.min(88, eyeTracking.gazePoint.xPct)),
+      yPct: Math.max(14, Math.min(86, eyeTracking.gazePoint.yPct))
+    }
+    : null;
+  const effectiveDiscouragementVariant = gazeAnchor ? 'cloud' : discouragementVariant;
 
   useEffect(() => {
     if (!PAYWALL_DISCOURAGEMENT_BANNERS_ENABLED || !showDiscouragement || SINISTER_PHRASES.length === 0) return;
@@ -1022,8 +1040,14 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       picks[0] = sinisterPhrase;
     }
     return picks.map((message, idx) => {
-      const x = 10 + seededJitter(discouragementCycle + idx, message) * 80;
-      const y = 12 + seededJitter(discouragementCycle + idx + 9, message) * 70;
+      const anchorX = gazeAnchor?.xPct;
+      const anchorY = gazeAnchor?.yPct;
+      const x = anchorX == null
+        ? 10 + seededJitter(discouragementCycle + idx, message) * 80
+        : Math.max(10, Math.min(90, anchorX + (seededJitter(discouragementCycle + idx, message) - 0.5) * 22));
+      const y = anchorY == null
+        ? 12 + seededJitter(discouragementCycle + idx + 9, message) * 70
+        : Math.max(12, Math.min(88, anchorY + (seededJitter(discouragementCycle + idx + 9, message) - 0.5) * 18));
       const delay = Math.round(seededJitter(discouragementCycle + idx + 17, message) * 350);
       const scale = 0.85 + seededJitter(discouragementCycle + idx + 23, message) * 0.35;
       return {
@@ -1036,7 +1060,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
         } as CSSProperties
       };
     });
-  }, [showDiscouragement, discouragementCycle, sinisterIndex, sinisterPhrase]);
+  }, [showDiscouragement, discouragementCycle, sinisterIndex, sinisterPhrase, gazeAnchor]);
 
   const peekToggle = peekAllowed ? (
     <div className="tws-peek-controls">
@@ -1053,7 +1077,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   ) : null;
 
   const discouragementBanner = PAYWALL_DISCOURAGEMENT_BANNERS_ENABLED && showDiscouragement && !peekActive ? (() => {
-    if (discouragementVariant === 'rails') {
+    if (effectiveDiscouragementVariant === 'rails') {
       return (
         <div key={`discourage-${discouragementCycle}`} className="tws-discourage-rails" aria-hidden="true">
           <div className="tws-discourage-rail tws-discourage-rail-top" />
@@ -1062,7 +1086,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
         </div>
       );
     }
-    if (discouragementVariant === 'cloud') {
+    if (effectiveDiscouragementVariant === 'cloud') {
       return (
         <div key={`discourage-${discouragementCycle}`} className="tws-discourage-cloud" aria-hidden="true">
           <div className="tws-discourage-cloud-field">
@@ -1079,13 +1103,75 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     return (
       <div
         key={`discourage-${discouragementCycle}`}
-        className={`tws-discourage-banner tws-discourage-${discouragementVariant}`}
+        className={`tws-discourage-banner tws-discourage-${effectiveDiscouragementVariant}`}
         aria-hidden="true"
       >
         <span>{sinisterPhrase}</span>
       </div>
     );
   })() : null;
+  const eyeTrackingOverlay = eyeTrackingEnabled && isFrivolousDomain && (eyeTracking.status === 'starting' || eyeTracking.status === 'calibrating' || eyeTracking.status === 'error')
+    ? (() => {
+      const target = eyeTracking.calibrationTargets[Math.min(eyeTracking.calibrationIndex, eyeTracking.calibrationTargets.length - 1)] ?? null;
+      return (
+        <div className="tws-eye-calibration-scrim" role="dialog" aria-modal="true" aria-live="polite">
+          <div className="tws-eye-calibration-panel">
+            <p className="tws-eyebrow">Eye-tracking calibration</p>
+            {eyeTracking.status === 'starting' ? (
+              <>
+                <h3>Starting camera…</h3>
+                <p className="tws-subtle">Allow camera access if prompted. Calibration will start immediately after.</p>
+              </>
+            ) : eyeTracking.status === 'error' ? (
+              <>
+                <h3>Eye-tracking unavailable</h3>
+                <p className="tws-subtle">{eyeTracking.error ?? 'Unable to access the camera on this page.'}</p>
+                <div className="tws-eye-calibration-actions">
+                  <button type="button" className="tws-secondary" onClick={eyeTracking.startCalibration}>
+                    Retry calibration
+                  </button>
+                  <button type="button" className="tws-primary" onClick={eyeTracking.skipCalibration}>
+                    Continue without it
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3>Look at the dot and click it</h3>
+                <p className="tws-subtle">
+                  Point {Math.min(eyeTracking.calibrationIndex + 1, eyeTracking.calibrationTargets.length)} of {eyeTracking.calibrationTargets.length}
+                  {' '}• click {eyeTracking.calibrationClicksRequired - eyeTracking.calibrationClicksDone} more time(s)
+                </p>
+                <p className="tws-subtle tws-eye-calibration-helper">
+                  Keep your face inside the camera preview box in the top-right, then look directly at the dot.
+                </p>
+                <div className="tws-eye-calibration-actions">
+                  <button type="button" className="tws-secondary" onClick={eyeTracking.skipCalibration}>
+                    Skip for now
+                  </button>
+                </div>
+                {target && (
+                  <button
+                    type="button"
+                    className="tws-eye-calibration-dot"
+                    aria-label={`Calibration target: ${target.label}`}
+                    onClick={eyeTracking.completeCalibrationClick}
+                    style={{
+                      left: `${target.xPct}%`,
+                      top: `${target.yPct}%`
+                    }}
+                  >
+                    <span className="tws-eye-calibration-dot-core" />
+                    <span className="tws-eye-calibration-dot-ring" />
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      );
+    })()
+    : null;
   const discouragementAntechamber = spendGuardEnabled && proceedConfirm ? (
     <div className="tws-antechamber">
       <div className="tws-antechamber-body">
@@ -1682,6 +1768,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''} ${theme === 'olive' ? 'tws-theme-olive' : ''}`}>
         {peekToggle}
         {discouragementBanner}
+        {eyeTrackingOverlay}
         <div className="tws-paywall-modal">
           <header className="tws-paywall-header">
             <div>
@@ -1769,6 +1856,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''} ${theme === 'olive' ? 'tws-theme-olive' : ''}`}>
         {peekToggle}
         {discouragementBanner}
+        {eyeTrackingOverlay}
         <div className="tws-paywall-modal">
           <header className="tws-paywall-header">
             <div>
@@ -2305,6 +2393,24 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     }
   };
 
+  const handleEyeTrackingToggle = async () => {
+    if (eyeTrackingBusy) return;
+    const next = !eyeTrackingEnabled;
+    setEyeTrackingBusy(true);
+    setError(null);
+    try {
+      const result = await chrome.runtime.sendMessage({ type: 'SET_EYE_TRACKING', payload: { enabled: next } });
+      if (!result?.success) {
+        throw new Error(result?.error ? String(result.error) : 'Failed to update eye tracking');
+      }
+      setEyeTrackingEnabled(next);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setEyeTrackingBusy(false);
+    }
+  };
+
   const handleGuardrailColorFilterChange = async (mode: GuardrailColorFilter) => {
     if (guardrailColorFilterBusy) return;
     setGuardrailColorFilterBusy(true);
@@ -2441,6 +2547,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''} ${theme === 'olive' ? 'tws-theme-olive' : ''}`}>
       {peekToggle}
       {discouragementAntechamber || discouragementBanner}
+      {eyeTrackingOverlay}
       <div
         className={`tws-nav-backdrop ${navOpen ? 'open' : ''}`}
         aria-hidden={!navOpen}
@@ -3743,6 +3850,25 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                           <span className="tws-switch-knob" />
                         </span>
                         <span className="tws-switch-label">{spendGuardEnabled ? 'On' : 'Off'}</span>
+                      </button>
+                    </div>
+                    <div className="tws-toggle-row">
+                      <div>
+                        <span className="tws-toggle-title">Eye-tracking nudges</span>
+                        <span className="tws-subtle">Experimental: calibrate on paywall open and place discouragement near your gaze.</span>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={eyeTrackingEnabled}
+                        className={`tws-switch ${eyeTrackingEnabled ? 'active' : ''}`}
+                        onClick={handleEyeTrackingToggle}
+                        disabled={eyeTrackingBusy || isProcessing}
+                      >
+                        <span className="tws-switch-track" aria-hidden="true">
+                          <span className="tws-switch-knob" />
+                        </span>
+                        <span className="tws-switch-label">{eyeTrackingEnabled ? 'On' : 'Off'}</span>
                       </button>
                     </div>
                     <div className="tws-toggle-row">

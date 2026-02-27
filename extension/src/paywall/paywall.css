@@ -318,6 +318,86 @@
   100% { opacity: 0; filter: blur(0.6px); }
 }
 
+.tws-eye-calibration-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 22;
+  background: radial-gradient(circle at 50% 50%, rgba(10, 12, 18, 0.18), rgba(8, 10, 16, 0.76));
+  pointer-events: auto;
+}
+
+.tws-eye-calibration-panel {
+  position: absolute;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  width: min(560px, calc(100% - 24px));
+  padding: 16px 18px;
+  border-radius: 16px;
+  background: rgba(17, 19, 28, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35);
+  color: #f7efe8;
+}
+
+.tws-eye-calibration-panel h3 {
+  margin: 4px 0 8px;
+}
+
+.tws-eye-calibration-panel .tws-subtle {
+  margin: 0;
+}
+
+.tws-eye-calibration-helper {
+  margin-top: 8px !important;
+}
+
+.tws-eye-calibration-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.tws-eye-calibration-dot {
+  position: absolute;
+  width: 42px;
+  height: 42px;
+  margin-left: -21px;
+  margin-top: -21px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.tws-eye-calibration-dot-core {
+  position: absolute;
+  inset: 10px;
+  border-radius: 999px;
+  background: #ffb45c;
+  box-shadow: 0 0 0 2px rgba(255, 240, 218, 0.6), 0 0 18px rgba(255, 168, 75, 0.7);
+}
+
+.tws-eye-calibration-dot-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 216, 170, 0.7);
+  animation: tws-eye-calibration-pulse 1.25s ease-out infinite;
+}
+
+@keyframes tws-eye-calibration-pulse {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+
 .tws-encourage-banner {
   position: fixed;
   top: 14px;

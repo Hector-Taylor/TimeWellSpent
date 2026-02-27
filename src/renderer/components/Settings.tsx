@@ -96,6 +96,7 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
   const [resetBusy, setResetBusy] = useState(false);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
   const [cameraModeEnabled, setCameraModeEnabled] = useState(false);
+  const [eyeTrackingEnabled, setEyeTrackingEnabled] = useState(false);
   const [guardrailColorFilter, setGuardrailColorFilter] = useState<GuardrailColorFilter>('full-color');
   const [alwaysGreyscale, setAlwaysGreyscale] = useState(false);
   const [cameraPhotos, setCameraPhotos] = useState<CameraPhoto[]>([]);
@@ -127,6 +128,7 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
       setExcludedKeywordsText((keywords ?? []).join('\n'));
     }).catch(() => { });
     api.settings.cameraModeEnabled().then(setCameraModeEnabled).catch(() => { });
+    api.settings.eyeTrackingEnabled().then(setEyeTrackingEnabled).catch(() => { });
     api.settings.guardrailColorFilter().then(setGuardrailColorFilter).catch(() => { });
     api.settings.alwaysGreyscale().then(setAlwaysGreyscale).catch(() => { });
     api.integrations.zotero.config().then(setZoteroConfig).catch(() => { });
@@ -169,7 +171,7 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
         await requestCameraPermission();
       } catch (err) {
         console.error('Camera permission request failed', err);
-        setCameraError('Camera access is blocked. Enable TimeWellSpent in macOS System Settings → Privacy & Security → Camera, then try again.');
+        setCameraError('Camera access is blocked. Enable camera permission for TimeWellSpent in your operating system privacy settings, then try again.');
         setCameraModeEnabled(false);
         return;
       }
@@ -239,6 +241,7 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
       await api.settings.updateContinuityWindowSeconds(continuityWindowSeconds);
       await api.settings.updateProductivityGoalHours(productivityGoalHours);
       await api.settings.updateCameraModeEnabled(cameraModeEnabled);
+      await api.settings.updateEyeTrackingEnabled(eyeTrackingEnabled);
       await api.settings.updateGuardrailColorFilter(guardrailColorFilter);
       await api.settings.updateAlwaysGreyscale(alwaysGreyscale);
       await api.integrations.zotero.updateConfig(zoteroConfig);
@@ -598,6 +601,19 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
                   <label>
                     <input
                       type="checkbox"
+                      checked={eyeTrackingEnabled}
+                      onChange={(e) => setEyeTrackingEnabled(e.target.checked)}
+                    />
+                    <span className="subtle">Enable paywall eye-tracking (experimental)</span>
+                  </label>
+                </div>
+                <p className="subtle" style={{ marginTop: 8 }}>
+                  Calibrates in the browser paywall and keeps the camera on while the paywall is open so nudges can appear near your gaze.
+                </p>
+                <div className="settings-inline">
+                  <label>
+                    <input
+                      type="checkbox"
                       checked={peekEnabled}
                       onChange={(e) => setPeekEnabled(e.target.checked)}
                     />
@@ -651,7 +667,7 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
               <div className="card settings-section">
                 <div className="settings-section-header">
                   <h3>Camera mode</h3>
-                  <p className="subtle">Captures a still every minute during frivolity. Stored locally on this Mac. macOS will prompt for camera access when enabling.</p>
+                  <p className="subtle">Captures a still every minute during frivolity. Stored locally on this device. Your OS may prompt for camera access when enabling.</p>
                 </div>
                 <div className="settings-inline">
                   <label>
@@ -900,14 +916,14 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
               </section>
 
               <section className="card">
-                <h2>Accessibility permissions</h2>
+                <h2>Accessibility permissions (macOS)</h2>
                 <ol className="instructions">
                   <li>Open System Settings → Privacy &amp; Security → Accessibility.</li>
                   <li>Click the lock to make changes and authenticate.</li>
                   <li>Find “TimeWellSpent” in the list and toggle it on.</li>
                   <li>Repeat under “Automation” to allow browser control.</li>
                 </ol>
-                <p className="subtle">You can paste <code>x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility</code> into Spotlight to jump there quickly.</p>
+                <p className="subtle">On Windows/Linux, grant equivalent OS permissions if prompted.</p>
               </section>
             </div>
           )}

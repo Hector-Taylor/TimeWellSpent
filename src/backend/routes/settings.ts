@@ -6,6 +6,7 @@ import type { PaywallManager } from '../paywall';
 import type { LibraryService } from '../library';
 import type { ConsumptionLogService } from '../consumption';
 import type { ConsumptionLogKind, MarketRate } from '@shared/types';
+import { createExtensionSyncEnvelope } from '@shared/extensionSyncContract';
 
 export type SettingsRoutesContext = {
     settings: SettingsService;
@@ -118,6 +119,20 @@ export function createSettingsRoutes(ctx: SettingsRoutesContext): Router {
         try {
             const { enabled } = req.body as { enabled?: boolean };
             settings.setCameraModeEnabled(Boolean(enabled));
+            res.json({ ok: true });
+        } catch (error) {
+            res.status(400).json({ error: (error as Error).message });
+        }
+    });
+
+    router.get('/eye-tracking', (_req, res) => {
+        res.json({ enabled: settings.getEyeTrackingEnabled() });
+    });
+
+    router.post('/eye-tracking', (req, res) => {
+        try {
+            const { enabled } = req.body as { enabled?: boolean };
+            settings.setEyeTrackingEnabled(Boolean(enabled));
             res.json({ ok: true });
         } catch (error) {
             res.status(400).json({ error: (error as Error).message });
@@ -280,7 +295,7 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
                 return acc;
             }, {});
 
-            res.json({
+            const statePayload = {
                 wallet: {
                     balance: wallet.getSnapshot().balance,
                     lastSynced: Date.now()
@@ -312,11 +327,14 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
                     continuityWindowSeconds: settings.getContinuityWindowSeconds(),
                     productivityGoalHours: settings.getProductivityGoalHours(),
                     cameraModeEnabled: settings.getCameraModeEnabled(),
+                    eyeTrackingEnabled: settings.getEyeTrackingEnabled(),
                     guardrailColorFilter: settings.getGuardrailColorFilter(),
                     alwaysGreyscale: settings.getAlwaysGreyscale()
                 },
                 sessions: sessionsRecord
-            });
+            };
+
+            res.json(createExtensionSyncEnvelope(statePayload));
         } catch (error) {
             res.status(500).json({ error: (error as Error).message });
         }

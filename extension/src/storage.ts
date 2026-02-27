@@ -2,6 +2,7 @@
  * Storage layer for extension data
  * Uses chrome.storage.local to persist state
  */
+import { EXTENSION_STATE_SCHEMA_VERSION, migrateExtensionStateSnapshot } from './stateSchema';
 
 export interface MarketRate {
     domain: string;
@@ -192,6 +193,7 @@ export type WritingHudSession = {
 };
 
 export interface ExtensionState {
+    schemaVersion: number;
     wallet: {
         balance: number;
         lastSynced: number; // timestamp
@@ -216,6 +218,7 @@ export interface ExtensionState {
         continuityWindowSeconds?: number;
         productivityGoalHours?: number;
         cameraModeEnabled?: boolean;
+        eyeTrackingEnabled?: boolean;
         guardrailColorFilter?: 'full-color' | 'greyscale' | 'redscale';
         alwaysGreyscale?: boolean;
         reflectionSlideshowEnabled?: boolean;
@@ -278,6 +281,7 @@ export interface ExtensionState {
 }
 
 const DEFAULT_STATE: ExtensionState = {
+    schemaVersion: EXTENSION_STATE_SCHEMA_VERSION,
     wallet: {
         balance: 100, // Default starting balance
         lastSynced: Date.now()
@@ -345,6 +349,7 @@ const DEFAULT_STATE: ExtensionState = {
         continuityWindowSeconds: 120,
         productivityGoalHours: 2,
         cameraModeEnabled: false,
+        eyeTrackingEnabled: false,
         guardrailColorFilter: 'full-color',
         alwaysGreyscale: false,
         reflectionSlideshowEnabled: true,
@@ -398,6 +403,13 @@ const DEFAULT_STATE: ExtensionState = {
         lastUpdated: null
     }
 };
+
+function cloneDefaultState(): ExtensionState {
+    if (typeof structuredClone === 'function') {
+        return structuredClone(DEFAULT_STATE);
+    }
+    return JSON.parse(JSON.stringify(DEFAULT_STATE)) as ExtensionState;
+}
 
 const MAX_PENDING_WALLET_TRANSACTIONS = 1000;
 const MAX_PENDING_CONSUMPTION_EVENTS = 1000;
@@ -486,6 +498,7 @@ class ExtensionStorage {
 
     private ensureStateDefaults() {
         if (!this.state) return;
+        this.state.schemaVersion = EXTENSION_STATE_SCHEMA_VERSION;
         if (!this.state.pendingLibrarySync) {
             this.state.pendingLibrarySync = {};
         }
@@ -493,10 +506,10 @@ class ExtensionStorage {
             this.state.nextLibraryTempId = -1;
         }
         if (!this.state.emergency) {
-            this.state.emergency = DEFAULT_STATE.emergency;
+            this.state.emergency = cloneDefaultState().emergency;
         }
         if (!this.state.settings) {
-            this.state.settings = DEFAULT_STATE.settings;
+            this.state.settings = cloneDefaultState().settings;
         }
         if (!Array.isArray(this.state.settings.drainingDomains)) {
             this.state.settings.drainingDomains = DEFAULT_STATE.settings.drainingDomains ?? [];
@@ -527,6 +540,9 @@ class ExtensionStorage {
         }
         if (typeof this.state.settings.cameraModeEnabled !== 'boolean') {
             this.state.settings.cameraModeEnabled = false;
+        }
+        if (typeof this.state.settings.eyeTrackingEnabled !== 'boolean') {
+            this.state.settings.eyeTrackingEnabled = false;
         }
         if (
             this.state.settings.guardrailColorFilter !== 'full-color' &&
@@ -602,7 +618,7 @@ class ExtensionStorage {
         }
 
         if (!this.state.dailyOnboarding || typeof this.state.dailyOnboarding !== 'object') {
-            this.state.dailyOnboarding = DEFAULT_STATE.dailyOnboarding;
+            this.state.dailyOnboarding = cloneDefaultState().dailyOnboarding;
         } else {
             const raw = this.state.dailyOnboarding as any;
             this.state.dailyOnboarding = {
@@ -760,17 +776,18 @@ class ExtensionStorage {
     async init(): Promise<void> {
         const result = await chrome.storage.local.get('state');
         if (result.state) {
-            this.state = result.state as ExtensionState;
+            this.state = migrateExtensionStateSnapshot(result.state) as unknown as ExtensionState;
             this.ensureStateDefaults();
         } else {
             // First time - initialize with defaults
-            this.state = DEFAULT_STATE;
+            this.state = cloneDefaultState();
             await this.save();
         }
     }
 
     private async save(): Promise<void> {
         if (this.state) {
+            this.state.schemaVersion = EXTENSION_STATE_SCHEMA_VERSION;
             await chrome.storage.local.set({ state: this.state });
         }
     }
@@ -1018,6 +1035,18 @@ class ExtensionStorage {
         this.state!.settings.cameraModeEnabled = Boolean(enabled);
         await this.save();
         return this.state!.settings.cameraModeEnabled;
+    }
+
+    async getEyeTrackingEnabled(): Promise<boolean> {
+        if (!this.state) await this.init();
+        return Boolean(this.state!.settings.eyeTrackingEnabled);
+    }
+
+    async setEyeTrackingEnabled(enabled: boolean) {
+        if (!this.state) await this.init();
+        this.state!.settings.eyeTrackingEnabled = Boolean(enabled);
+        await this.save();
+        return this.state!.settings.eyeTrackingEnabled;
     }
 
     async getGuardrailColorFilter(): Promise<'full-color' | 'greyscale' | 'redscale'> {

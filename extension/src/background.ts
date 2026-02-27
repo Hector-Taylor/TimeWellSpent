@@ -1,5 +1,8 @@
 import { storage, type DailyOnboardingState, type LibraryItem, type LibraryPurpose, type PendingActivityEvent, type PomodoroSession, type PaywallSession, type ReflectionSlideshowSettings, type WritingHudSession } from './storage';
 import { DESKTOP_API_URL, DESKTOP_WS_URL } from './constants';
+import { createDesktopStateSyncController, logSessionDrift } from './background/desktopStateSync';
+import { createExtensionSessionTickerController } from './background/sessionTicker';
+import { reducePaywallSessionLifecycle } from '../../src/shared/paywallSessionLifecycle';
 import {
     getPomodoroSiteBlockReason,
     isPomodoroSiteAllowed,
@@ -33,7 +36,6 @@ const CONTEXT_MENU_IDS = {
 let ws: WebSocket | null = null;
 let reconnectTimer: TimeoutHandle | null = null;
 let heartbeatTimer: IntervalHandle | null = null;
-let sessionTicker: IntervalHandle | null = null;
 let devSimulateDesktopDisconnect = false;
 let devLogSessionDrift = false;
 let idleState: IdleState = 'active';
@@ -44,6 +46,7 @@ const ROULETTE_PROMPT_MIN_MS = 20_000;
 const PENDING_ACTIVITY_FLUSH_LIMIT = 400;
 const PENDING_USAGE_FLUSH_LIMIT = 200;
 const rotModeStartInFlight = new Set<string>();
+const paywallActionInFlight = new Map<string, Promise<unknown>>();
 let pendingUsageFlushTimer: TimeoutHandle | null = null;
 const lastEncouragement = new Map<string, number>();
 const lastEncouragementMessage = new Map<string, string>();
@@ -126,6 +129,26 @@ const DOOMSCROLL_MAX_CLICK_EVENTS = 3;
 const DOOMSCROLL_MIN_SCROLL_RATIO = 0.8;
 const DOOMSCROLL_MIN_SESSION_AGE_MS = 45_000;
 const DOOMSCROLL_INTERVENTION_COOLDOWN_MS = 2 * 60_000;
+const GET_STATUS_DESKTOP_SYNC_THROTTLE_MS = 15_000;
+const GET_STATUS_READING_CACHE_TTL_MS = 60_000;
+const GET_STATUS_READING_LIMIT = 12;
+
+function withPaywallActionDedup<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const existing = paywallActionInFlight.get(key) as Promise<T> | undefined;
+    if (existing) return existing;
+    const promise = run().finally(() => {
+        if (paywallActionInFlight.get(key) === promise) {
+            paywallActionInFlight.delete(key);
+        }
+    });
+    paywallActionInFlight.set(key, promise as Promise<unknown>);
+    return promise;
+}
+
+function normalizePaywallActionDomain(value: unknown): string {
+    if (typeof value !== 'string') return '';
+    return normalizeDomainInput(value) ?? '';
+}
 
 type BehaviorEventType = 'scroll' | 'click' | 'keystroke' | 'focus' | 'blur' | 'idle_start' | 'idle_end' | 'visibility';
 type UserActivityKind = 'mouse-move' | 'mouse-down' | 'key-down' | 'scroll' | 'wheel' | 'touch-start' | 'focus';
@@ -193,6 +216,10 @@ type ReflectionPhoto = {
     domain: string | null;
     imageDataUrl: string;
 };
+type ReadingIntegrationItem = {
+    id?: string | number;
+    [key: string]: unknown;
+};
 type BehaviorEventPayload = {
     timestamp: string;
     domain: string;
@@ -214,6 +241,11 @@ let behaviorEventFlushInFlight = false;
 const doomscrollByDomain = new Map<string, DoomscrollWindow>();
 const lastDoomscrollIntervention = new Map<string, number>();
 const pomodoroBlockStateByTab = new Map<number, { domain: string; reason: string }>();
+let readingItemsRefreshInFlight: Promise<void> | null = null;
+let readingItemsCache: { fetchedAt: number; items: ReadingIntegrationItem[] } = {
+    fetchedAt: 0,
+    items: []
+};
 
 function normalizeGuardrailColorFilter(value: unknown): GuardrailColorFilter {
     return value === 'greyscale' || value === 'redscale' || value === 'full-color'
@@ -699,46 +731,52 @@ function scheduleReconnect() {
     }, 30000); // Try every 30 seconds
 }
 
-function logSessionDrift(
-    before: Record<string, PaywallSession>,
-    after: Record<string, PaywallSession>,
-    context: string
-) {
-    const domains = new Set([...Object.keys(before), ...Object.keys(after)]);
-    for (const domain of domains) {
-        const prev = before[domain];
-        const next = after[domain];
-        if (!prev || !next) continue;
-        const prevRemaining = prev.remainingSeconds;
-        const nextRemaining = next.remainingSeconds;
-        if (!Number.isFinite(prevRemaining) || !Number.isFinite(nextRemaining)) continue;
-        const driftSeconds = Math.round(nextRemaining - prevRemaining);
-        if (Math.abs(driftSeconds) >= 5) {
-            console.info(
-                `[dev] session drift (${context})`,
-                domain,
-                { localRemaining: prevRemaining, desktopRemaining: nextRemaining, driftSeconds }
-            );
-        }
+let desktopStateSyncController: ReturnType<typeof createDesktopStateSyncController> | null = null;
+
+function getDesktopStateSyncController() {
+    if (!desktopStateSyncController) {
+        desktopStateSyncController = createDesktopStateSyncController({
+            storage,
+            desktopApiUrl: DESKTOP_API_URL,
+            getDevLogSessionDrift: () => devLogSessionDrift,
+            getSyncThrottleMs: () => GET_STATUS_DESKTOP_SYNC_THROTTLE_MS
+        });
     }
+    return desktopStateSyncController;
 }
 
 async function syncFromDesktop() {
-    try {
-        const before = devLogSessionDrift ? await storage.getAllSessions() : null;
-        const response = await fetch(`${DESKTOP_API_URL}/extension/state`, { cache: 'no-store' });
-        if (response.ok) {
-            const desktopState = await response.json();
-            await storage.updateFromDesktop(desktopState);
-            if (before && devLogSessionDrift) {
-                const after = await storage.getAllSessions();
-                logSessionDrift(before, after, 'sync');
-            }
-            console.log('✅ Synced state from desktop app');
+    await getDesktopStateSyncController().syncFromDesktop();
+}
+
+function requestDesktopSyncForGetStatus() {
+    getDesktopStateSyncController().requestDesktopSyncForGetStatus();
+}
+
+async function fetchReadingItemsFromDesktop(): Promise<ReadingIntegrationItem[]> {
+    const response = await fetch(`${DESKTOP_API_URL}/integrations/reading?limit=${GET_STATUS_READING_LIMIT}`, { cache: 'no-store' });
+    if (!response.ok) return [];
+    const data = (await response.json()) as { items?: ReadingIntegrationItem[] };
+    return Array.isArray(data.items) ? data.items : [];
+}
+
+function refreshReadingItemsCacheInBackground(force = false) {
+    const now = Date.now();
+    if (!force && now - readingItemsCache.fetchedAt < GET_STATUS_READING_CACHE_TTL_MS) return;
+    if (readingItemsRefreshInFlight) return;
+    readingItemsRefreshInFlight = (async () => {
+        try {
+            const items = await fetchReadingItemsFromDesktop();
+            readingItemsCache = {
+                fetchedAt: Date.now(),
+                items
+            };
+        } catch {
+            // Desktop not available or integration not supported.
         }
-    } catch (e) {
-        console.log('Desktop app not available for sync');
-    }
+    })().finally(() => {
+        readingItemsRefreshInFlight = null;
+    });
 }
 
 function handleDesktopMessage(data: any) {
@@ -800,7 +838,7 @@ function handleDesktopMessage(data: any) {
             const domain = data.payload.domain;
             storage.getSession(domain).then((session) => {
                 if (session) {
-                    storage.setSession(domain, { ...session, paused: true });
+                    storage.setSession(domain, reducePaywallSessionLifecycle(session, { type: 'pause' }));
                 }
             });
 
@@ -820,7 +858,7 @@ function handleDesktopMessage(data: any) {
             const domain = data.payload.domain;
             storage.getSession(domain).then((session) => {
                 if (session) {
-                    storage.setSession(domain, { ...session, paused: false });
+                    storage.setSession(domain, reducePaywallSessionLifecycle(session, { type: 'resume' }));
                 }
             });
         }
@@ -1024,11 +1062,13 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
                     // Avoid stale paused flags forcing a block while user is back on
                     // the paid domain.
                     if (session.paused) {
-                        await storage.setSession(domain, {
-                            ...session,
-                            paused: false,
-                            lastTick: Date.now()
-                        });
+                        await storage.setSession(
+                            domain,
+                            reducePaywallSessionLifecycle(
+                                reducePaywallSessionLifecycle(session, { type: 'resume' }),
+                                { type: 'touch', now: Date.now() }
+                            )
+                        );
                     }
                     return;
                 }
@@ -1056,195 +1096,30 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
 // Session Ticker (Every 15 seconds)
 // ============================================================================
 
-function startSessionTicker() {
-    if (sessionTicker) return;
+let sessionTickerController: ReturnType<typeof createExtensionSessionTickerController> | null = null;
 
-    sessionTicker = setInterval(async () => {
-        await tickSessions();
-    }, 15000);
+function getSessionTickerController() {
+    if (!sessionTickerController) {
+        sessionTickerController = createExtensionSessionTickerController({
+            storage,
+            isDesktopConnected: () => Boolean(ws && ws.readyState === WebSocket.OPEN),
+            baseUrl,
+            showBlockScreen,
+            maybeSendSessionFade,
+            maybeSendEncouragement,
+            queueWalletTransaction,
+            meteredPremiumMultiplier: METERED_PREMIUM_MULTIPLIER
+        });
+    }
+    return sessionTickerController;
 }
 
-function getSafeElapsedSeconds(session: PaywallSession, now: number) {
-    const startedAt = Number.isFinite(session.startedAt) ? session.startedAt : now;
-    const lastTick = Number.isFinite(session.lastTick) ? Number(session.lastTick) : startedAt;
-    if (!Number.isFinite(session.startedAt)) session.startedAt = startedAt;
-    if (!Number.isFinite(session.lastTick)) session.lastTick = lastTick;
-    const deltaSeconds = Math.round((now - lastTick) / 1000);
-    if (!Number.isFinite(deltaSeconds) || deltaSeconds <= 0) return 0;
-    return deltaSeconds;
+function startSessionTicker() {
+    getSessionTickerController().startSessionTicker();
 }
 
 async function tickSessions() {
-    const now = Date.now();
-
-    // If connected to desktop, let it handle the economy/spending.
-    // We just sync the state via events.
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        return;
-    }
-
-    const sessions = await storage.getAllSessions();
-    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
-
-    const pauseAll = async () => {
-        await Promise.all(Object.entries(sessions).map(([domain, s]) => storage.setSession(domain, { ...s, paused: true })));
-    };
-
-    if (activeTabs.length === 0) {
-        await pauseAll();
-        return;
-    }
-
-    const activeTab = activeTabs[0];
-    if (!activeTab.url || !activeTab.url.startsWith('http')) {
-        await pauseAll();
-        return;
-    }
-
-    const url = new URL(activeTab.url);
-    const activeDomain = url.hostname.replace(/^www\./, '');
-
-    // Tick the session for the current domain
-    const session = sessions[activeDomain];
-    Object.entries(sessions).forEach(async ([domain, s]) => {
-        if (domain !== activeDomain && !s.paused) {
-            await storage.setSession(domain, { ...s, paused: true });
-        } else if (domain === activeDomain && s.paused) {
-            await storage.setSession(domain, { ...s, paused: false });
-        }
-    });
-    if (!session) return;
-
-    if (session.mode !== 'emergency' && session.allowedUrl) {
-        const current = baseUrl(activeTab.url);
-        if (!current || current !== session.allowedUrl) {
-            if (!session.paused) {
-                await storage.setSession(activeDomain, { ...session, paused: true });
-            }
-            if (activeTab.id) {
-                await showBlockScreen(activeTab.id, activeDomain, 'url-locked', 'session-url-locked');
-            }
-            return;
-        }
-    }
-
-    if (session.mode === 'emergency') {
-        if (session.allowedUrl) {
-            const current = baseUrl(activeTab.url);
-            if (!current || current !== session.allowedUrl) {
-                if (!session.paused) {
-                    await storage.setSession(activeDomain, { ...session, paused: true });
-                }
-                if (activeTab.id) {
-                    await showBlockScreen(activeTab.id, activeDomain, 'url-locked', 'session-url-locked');
-                }
-                return;
-            }
-        }
-
-        const reminderIntervalMs = 300 * 1000; // default 5m for offline mode
-        const lastReminder = session.lastReminder ?? session.startedAt;
-        if (Date.now() - lastReminder > reminderIntervalMs) {
-            session.lastReminder = Date.now();
-            await storage.setSession(activeDomain, session);
-            chrome.notifications?.create(`tws-reminder-${activeDomain}-${Date.now()}`, {
-                type: 'basic',
-                iconUrl: 'icons/icon128.png',
-                title: 'Emergency access reminder',
-                message: `Emergency mode is still active for ${activeDomain}. Is this still an emergency?${session.justification ? ` Reason: ${session.justification}.` : ''}`
-            });
-        }
-
-        const elapsedSeconds = getSafeElapsedSeconds(session, now);
-        if (Number.isFinite(session.remainingSeconds)) {
-            session.remainingSeconds -= elapsedSeconds;
-        }
-        session.lastTick = now;
-        if (Number.isFinite(session.remainingSeconds) && session.remainingSeconds <= 0) {
-            await storage.recordEmergencyEnded({
-                domain: activeDomain,
-                justification: session.justification,
-                endedAt: now
-            });
-            await storage.clearSession(activeDomain);
-                if (activeTab.id) {
-                    await showBlockScreen(activeTab.id, activeDomain, 'emergency-expired', 'session-expired', {
-                        keepPageVisible: true
-                    });
-                }
-        } else {
-            await storage.setSession(activeDomain, session);
-        }
-        if (activeTab.id) {
-            await maybeSendSessionFade(activeTab.id, session);
-        }
-        return;
-    } else if (session.mode === 'metered') {
-        // Pay-as-you-go: deduct coins using the latest rate
-        const meteredMultiplier = session.meteredMultiplier ?? METERED_PREMIUM_MULTIPLIER;
-        const marketBaseRate = (await storage.getMarketRate(activeDomain))?.ratePerMin;
-        const fallbackBaseRate = session.ratePerMin / Math.max(1, meteredMultiplier);
-        const currentRate = (marketBaseRate ?? fallbackBaseRate) * meteredMultiplier;
-        // Calculate actual elapsed seconds since last tick
-        const elapsedSeconds = getSafeElapsedSeconds(session, now);
-        // Carry forward fractional coins so we don't over-charge
-        const accrued = (currentRate / 60) * elapsedSeconds + (session.spendRemainder ?? 0);
-        const cost = Math.floor(accrued); // whole coins to spend this tick
-        const remainder = accrued - cost;
-        try {
-            if (cost > 0) {
-                await storage.spendCoins(cost);
-                await queueWalletTransaction({
-                    type: 'spend',
-                    amount: cost,
-                    ts: new Date(now).toISOString(),
-                    meta: {
-                        source: 'extension',
-                        reason: 'metered-tick',
-                        domain: activeDomain,
-                        mode: 'metered',
-                        elapsedSeconds
-                    }
-                });
-            }
-            session.ratePerMin = currentRate;
-            session.spendRemainder = remainder;
-            session.lastTick = now;
-            await storage.setSession(activeDomain, session);
-        } catch (e) {
-            // Insufficient funds - clear session and block
-            console.log(`❌ Insufficient funds for ${activeDomain}`);
-            await storage.clearSession(activeDomain);
-            if (activeTab.id) {
-                await showBlockScreen(activeTab.id, activeDomain, 'insufficient-funds', 'session-insufficient-funds');
-            }
-        }
-        if (activeTab.id) {
-            await maybeSendSessionFade(activeTab.id, session);
-            await maybeSendEncouragement(activeTab.id, activeDomain, session);
-        }
-    } else {
-        // Pack mode: countdown time using actual elapsed time
-        const elapsedSeconds = getSafeElapsedSeconds(session, now);
-        if (!Number.isFinite(session.remainingSeconds)) {
-            session.remainingSeconds = typeof session.purchasedSeconds === 'number' ? session.purchasedSeconds : 0;
-        }
-        session.remainingSeconds -= elapsedSeconds;
-        session.lastTick = now;
-        if (session.remainingSeconds <= 0) {
-            console.log(`⏰ Time's up for ${activeDomain}`);
-            await storage.clearSession(activeDomain);
-            if (activeTab.id) {
-                await showBlockScreen(activeTab.id, activeDomain, 'time-expired', 'session-expired');
-            }
-        } else {
-            await storage.setSession(activeDomain, session);
-        }
-        if (activeTab.id) {
-            await maybeSendSessionFade(activeTab.id, session);
-            await maybeSendEncouragement(activeTab.id, activeDomain, session);
-        }
-    }
+    await getSessionTickerController().tickSessions();
 }
 
 async function hydrateIdleState() {
@@ -2009,19 +1884,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         handleSetDomainCategory(message.payload).then(sendResponse);
         return true;
     } else if (message.type === 'BUY_PACK') {
-        handleBuyPack(message.payload).then(sendResponse);
+        const domain = normalizePaywallActionDomain((message.payload as { domain?: unknown } | null | undefined)?.domain);
+        const minutes = Math.max(1, Math.round(Number((message.payload as { minutes?: unknown } | null | undefined)?.minutes)));
+        withPaywallActionDedup(`buy-pack:${domain}:${minutes}`, () => handleBuyPack(message.payload)).then(sendResponse);
         return true;
     } else if (message.type === 'START_METERED') {
         handleStartMetered(message.payload).then(sendResponse);
         return true;
     } else if (message.type === 'PAUSE_SESSION') {
-        handlePauseSession(message.payload).then(sendResponse);
+        const domain = normalizePaywallActionDomain((message.payload as { domain?: unknown } | null | undefined)?.domain);
+        withPaywallActionDedup(`pause-session:${domain}`, () => handlePauseSession(message.payload)).then(sendResponse);
         return true;
     } else if (message.type === 'RESUME_SESSION') {
-        handleResumeSession(message.payload).then(sendResponse);
+        const domain = normalizePaywallActionDomain((message.payload as { domain?: unknown } | null | undefined)?.domain);
+        withPaywallActionDedup(`resume-session:${domain}`, () => handleResumeSession(message.payload)).then(sendResponse);
         return true;
     } else if (message.type === 'END_SESSION') {
-        handleEndSession(message.payload).then(sendResponse);
+        const domain = normalizePaywallActionDomain((message.payload as { domain?: unknown } | null | undefined)?.domain);
+        withPaywallActionDedup(`end-session:${domain}`, () => handleEndSession(message.payload)).then(sendResponse);
         return true;
     } else if (message.type === 'START_EMERGENCY') {
         handleStartEmergency(message.payload).then(sendResponse);
@@ -2055,6 +1935,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return true;
     } else if (message.type === 'SET_CAMERA_MODE') {
         handleSetCameraMode(message.payload).then(sendResponse);
+        return true;
+    } else if (message.type === 'SET_EYE_TRACKING') {
+        handleSetEyeTracking(message.payload).then(sendResponse);
         return true;
     } else if (message.type === 'SET_GUARDRAIL_COLOR_FILTER') {
         handleSetGuardrailColorFilter(message.payload).then(sendResponse);
@@ -2919,6 +2802,18 @@ async function updateCameraModeOnDesktop(enabled: boolean) {
     }
 }
 
+async function updateEyeTrackingOnDesktop(enabled: boolean) {
+    const response = await fetch(`${DESKTOP_API_URL}/settings/eye-tracking`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: Boolean(enabled) }),
+        cache: 'no-store'
+    });
+    if (!response.ok) {
+        throw new Error(`Desktop eye tracking update failed (${response.status})`);
+    }
+}
+
 async function updateGuardrailColorFilterOnDesktop(mode: GuardrailColorFilter) {
     await fetch(`${DESKTOP_API_URL}/settings/guardrail-color-filter`, {
         method: 'POST',
@@ -3082,12 +2977,16 @@ async function promptForUnlockDetails(tabId: number, defaults: { url: string; pr
 }
 
 async function handleGetStatus(payload: { domain: string; url?: string }) {
-    await syncFromDesktop().catch(() => { });
-    const balance = await storage.getBalance();
-    const rate = await storage.getMarketRate(payload.domain);
-    const session = await storage.getSession(payload.domain);
-    const lastSync = await storage.getLastSyncTime();
-    const state = await storage.getState();
+    requestDesktopSyncForGetStatus();
+    refreshReadingItemsCacheInBackground();
+
+    const [balance, rate, session, lastSync, state] = await Promise.all([
+        storage.getBalance(),
+        storage.getMarketRate(payload.domain),
+        storage.getSession(payload.domain),
+        storage.getLastSyncTime(),
+        storage.getState()
+    ]);
     const normalizedDomain = normalizeDomainInput(payload.domain ?? '');
     const domainCategory = (() => {
         if (!normalizedDomain) return null;
@@ -3102,19 +3001,9 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
     const libraryItems = state.libraryItems ?? [];
     const matchedPricedItem = payload.url ? matchPricedLibraryItem(libraryItems, payload.url) : null;
 
-    let readingItems: any[] = [];
-    try {
-        const response = await fetch(`${DESKTOP_API_URL}/integrations/reading?limit=12`, { cache: 'no-store' });
-        if (response.ok) {
-            const data = (await response.json()) as { items?: any[] };
-            if (Array.isArray(data.items)) readingItems = data.items;
-        }
-    } catch {
-        // Desktop not available or integration not supported.
-    }
-
+    let readingItems = readingItemsCache.items;
     const consumedReading = state.consumedReading ?? {};
-    readingItems = readingItems.filter((item: any) => item?.id && !consumedReading[String(item.id)]);
+    readingItems = readingItems.filter((item) => item?.id && !consumedReading[String(item.id)]);
 
     return {
         balance,
@@ -3137,6 +3026,7 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
             emergencyPolicy: state.settings.emergencyPolicy ?? 'balanced',
             discouragementIntervalMinutes: state.settings.discouragementIntervalMinutes ?? 1,
             cameraModeEnabled: state.settings.cameraModeEnabled ?? false,
+            eyeTrackingEnabled: state.settings.eyeTrackingEnabled ?? false,
             guardrailColorFilter: normalizeGuardrailColorFilter(state.settings.guardrailColorFilter),
             alwaysGreyscale: Boolean(state.settings.alwaysGreyscale),
             reflectionSlideshowEnabled: state.settings.reflectionSlideshowEnabled ?? true,
@@ -3295,6 +3185,18 @@ async function handleSetCameraMode(payload: { enabled?: boolean }) {
     }
     const cameraModeEnabled = await storage.setCameraModeEnabled(enabled);
     return { success: true, cameraModeEnabled };
+}
+
+async function handleSetEyeTracking(payload: { enabled?: boolean }) {
+    const enabled = Boolean(payload?.enabled);
+    try {
+        await updateEyeTrackingOnDesktop(enabled);
+    } catch (error) {
+        console.warn('Failed to sync eye tracking to desktop', error);
+        return { success: false, error: 'Desktop unavailable for eye tracking' };
+    }
+    const eyeTrackingEnabled = await storage.setEyeTrackingEnabled(enabled);
+    return { success: true, eyeTrackingEnabled };
 }
 
 async function handleSetGuardrailColorFilter(payload: { mode?: GuardrailColorFilter }) {

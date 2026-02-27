@@ -64,6 +64,8 @@ const api: RendererApi = {
     cancelPack: (domain) => ipcRenderer.invoke('paywall:cancel-pack', { domain }),
     end: (domain, options) => ipcRenderer.invoke('paywall:end', { domain, refundUnused: options?.refundUnused }),
     sessions: () => ipcRenderer.invoke('paywall:sessions'),
+    diagnostics: (limit?: number) => ipcRenderer.invoke('paywall:diagnostics', { limit }),
+    clearDiagnostics: () => ipcRenderer.invoke('paywall:clear-diagnostics'),
     pause: (domain) => ipcRenderer.invoke('paywall:pause', { domain }),
     resume: (domain) => ipcRenderer.invoke('paywall:resume', { domain })
   },
@@ -98,6 +100,8 @@ const api: RendererApi = {
     updateProductivityGoalHours: (value) => ipcRenderer.invoke('settings:update-productivity-goal-hours', value),
     cameraModeEnabled: () => ipcRenderer.invoke('settings:camera-mode'),
     updateCameraModeEnabled: (value) => ipcRenderer.invoke('settings:update-camera-mode', value),
+    eyeTrackingEnabled: () => ipcRenderer.invoke('settings:eye-tracking'),
+    updateEyeTrackingEnabled: (value) => ipcRenderer.invoke('settings:update-eye-tracking', value),
     guardrailColorFilter: () => ipcRenderer.invoke('settings:guardrail-color-filter'),
     updateGuardrailColorFilter: (value) => ipcRenderer.invoke('settings:update-guardrail-color-filter', value),
     alwaysGreyscale: () => ipcRenderer.invoke('settings:always-greyscale'),
@@ -135,7 +139,8 @@ const api: RendererApi = {
     timeOfDay: (days) => ipcRenderer.invoke('analytics:time-of-day', { days }),
     patterns: (days) => ipcRenderer.invoke('analytics:patterns', { days }),
     engagement: (domain, days) => ipcRenderer.invoke('analytics:engagement', { domain, days }),
-    trends: (granularity) => ipcRenderer.invoke('analytics:trends', { granularity })
+    trends: (granularity) => ipcRenderer.invoke('analytics:trends', { granularity }),
+    episodes: (query) => ipcRenderer.invoke('analytics:episodes', query ?? {})
   },
   friends: {
     profile: () => ipcRenderer.invoke('friends:profile'),

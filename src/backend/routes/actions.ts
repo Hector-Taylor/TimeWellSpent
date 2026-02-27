@@ -11,9 +11,26 @@ export type ActionsRoutesContext = {
     uiEvents: EventEmitter;
 };
 
+function spawnDetached(command: string, args: string[]) {
+    const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+    child.unref();
+}
+
+function openWithSystemHandler(target: string) {
+    if (process.platform === 'darwin') {
+        spawnDetached('open', [target]);
+        return;
+    }
+    if (process.platform === 'win32') {
+        spawnDetached('cmd', ['/c', 'start', '', target]);
+        return;
+    }
+    spawnDetached('xdg-open', [target]);
+}
+
 export function createActionsRoutes(ctx: ActionsRoutesContext): Router {
     const router = Router();
-    const { settings, reading, uiEvents } = ctx;
+    const { settings } = ctx;
 
     router.post('/open', (req, res) => {
         try {
@@ -26,12 +43,21 @@ export function createActionsRoutes(ctx: ActionsRoutesContext): Router {
                 const appName = String(body.app ?? '').trim();
                 if (!appName) throw new Error('App is required');
                 if (!allowedApps.has(appName)) throw new Error('App not allowed');
-                if (process.platform !== 'darwin') throw new Error('Opening apps is only supported on macOS for now');
-
-                const child = spawn('open', ['-a', appName], { detached: true, stdio: 'ignore' });
-                child.unref();
-                res.json({ ok: true });
-                return;
+                if (process.platform === 'darwin') {
+                    spawnDetached('open', ['-a', appName]);
+                    res.json({ ok: true });
+                    return;
+                }
+                if (appName === 'Books') {
+                    throw new Error('Books app launch is only supported on macOS');
+                }
+                if (appName === 'Zotero') {
+                    // Uses the registered protocol handler to launch Zotero on Windows/Linux.
+                    openWithSystemHandler('zotero://select/library/items');
+                    res.json({ ok: true });
+                    return;
+                }
+                throw new Error('Unsupported app on this platform');
             }
 
             if (kind === 'deeplink') {
@@ -46,10 +72,7 @@ export function createActionsRoutes(ctx: ActionsRoutesContext): Router {
                 if (parsed.protocol !== 'zotero:') {
                     throw new Error('Deep link not allowed');
                 }
-                if (process.platform !== 'darwin') throw new Error('Deep links are only supported on macOS for now');
-
-                const child = spawn('open', [url], { detached: true, stdio: 'ignore' });
-                child.unref();
+                openWithSystemHandler(url);
                 res.json({ ok: true });
                 return;
             }
@@ -57,7 +80,6 @@ export function createActionsRoutes(ctx: ActionsRoutesContext): Router {
             if (kind === 'file') {
                 const filePath = String(body.path ?? '').trim();
                 if (!filePath) throw new Error('Path is required');
-                if (process.platform !== 'darwin') throw new Error('Opening files is only supported on macOS for now');
 
                 const allowedRoots = new Set<string>();
                 const zoteroDir = settings.getJson<string>('zoteroDataDir');
@@ -73,9 +95,11 @@ export function createActionsRoutes(ctx: ActionsRoutesContext): Router {
                 if (!isAllowed) throw new Error('File path not allowed');
 
                 const appName = body.app ? String(body.app).trim() : '';
-                const args = appName && allowedApps.has(appName) ? ['-a', appName, resolved] : [resolved];
-                const child = spawn('open', args, { detached: true, stdio: 'ignore' });
-                child.unref();
+                if (process.platform === 'darwin' && appName && allowedApps.has(appName)) {
+                    spawnDetached('open', ['-a', appName, resolved]);
+                } else {
+                    openWithSystemHandler(resolved);
+                }
                 res.json({ ok: true });
                 return;
             }
@@ -92,21 +116,7 @@ export function createActionsRoutes(ctx: ActionsRoutesContext): Router {
                 if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
                     throw new Error('Only http(s) URLs are supported');
                 }
-
-                if (process.platform === 'darwin') {
-                    const child = spawn('open', [url], { detached: true, stdio: 'ignore' });
-                    child.unref();
-                    res.json({ ok: true });
-                    return;
-                }
-                if (process.platform === 'win32') {
-                    const child = spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' });
-                    child.unref();
-                    res.json({ ok: true });
-                    return;
-                }
-                const child = spawn('xdg-open', [url], { detached: true, stdio: 'ignore' });
-                child.unref();
+                openWithSystemHandler(url);
                 res.json({ ok: true });
                 return;
             }

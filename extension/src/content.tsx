@@ -129,6 +129,7 @@ type StatusResponse = {
     emergencyPolicy?: 'off' | 'gentle' | 'balanced' | 'strict';
     discouragementIntervalMinutes?: number;
     cameraModeEnabled?: boolean;
+    eyeTrackingEnabled?: boolean;
     guardrailColorFilter?: 'full-color' | 'greyscale' | 'redscale';
     alwaysGreyscale?: boolean;
     reflectionSlideshowEnabled?: boolean;
@@ -285,7 +286,6 @@ function findActiveSessionForDomain(state: ContentSyncState, domain: string | nu
   for (const [key, session] of Object.entries(sessions)) {
     const sessionDomain = session?.domain ?? key;
     if (!matchesDomain(sessionDomain, domain)) continue;
-    if (session?.paused) continue;
     if (session?.allowedUrl) {
       const expected = toBaseUrl(session.allowedUrl);
       const current = toBaseUrl(window.location.href);
@@ -535,8 +535,11 @@ async function syncHudWithState() {
       return;
     }
     mountGlanceHud(domain);
-  } catch {
-    unmountGlanceHud();
+  } catch (error) {
+    if (shouldInvalidateContext(error)) {
+      contextInvalidated = true;
+      unmountGlanceHud();
+    }
   }
 }
 
@@ -597,6 +600,11 @@ function isContextValid() {
   }
 }
 
+function shouldInvalidateContext(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /extension context invalidated/i.test(message);
+}
+
 function sendHeartbeat() {
   if (contextInvalidated || !isContextValid()) return;
   if (document.visibilityState !== 'visible') return;
@@ -607,8 +615,10 @@ function sendHeartbeat() {
       type: 'PAGE_HEARTBEAT',
       payload: { url: window.location.href, title: document.title, mediaPlaying }
     })
-    .catch(() => {
-      contextInvalidated = true;
+    .catch((error) => {
+      if (shouldInvalidateContext(error)) {
+        contextInvalidated = true;
+      }
     });
 }
 
@@ -686,8 +696,10 @@ function sendUserActivity(kind: string) {
         title: document.title
       }
     })
-    .catch(() => {
-      contextInvalidated = true;
+    .catch((error) => {
+      if (shouldInvalidateContext(error)) {
+        contextInvalidated = true;
+      }
     });
 }
 

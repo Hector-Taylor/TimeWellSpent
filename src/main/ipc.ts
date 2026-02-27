@@ -184,6 +184,8 @@ export function createIpc(context: IpcContext) {
     return session;
   });
   ipcMain.handle('paywall:sessions', () => backend.paywall.listSessions());
+  ipcMain.handle('paywall:diagnostics', (_event, payload: { limit?: number } = {}) => backend.paywall.getDiagnostics(payload.limit ?? 200));
+  ipcMain.handle('paywall:clear-diagnostics', () => backend.paywall.clearDiagnostics());
   ipcMain.handle('paywall:pause', (_event, payload: { domain: string }) => backend.paywall.pause(payload.domain));
   ipcMain.handle('paywall:resume', (_event, payload: { domain: string }) => backend.paywall.resume(payload.domain));
 
@@ -217,6 +219,8 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('settings:update-productivity-goal-hours', (_event, value: number) => backend.settings.setProductivityGoalHours(value));
   ipcMain.handle('settings:camera-mode', () => backend.settings.getCameraModeEnabled());
   ipcMain.handle('settings:update-camera-mode', (_event, value: boolean) => backend.settings.setCameraModeEnabled(Boolean(value)));
+  ipcMain.handle('settings:eye-tracking', () => backend.settings.getEyeTrackingEnabled());
+  ipcMain.handle('settings:update-eye-tracking', (_event, value: boolean) => backend.settings.setEyeTrackingEnabled(Boolean(value)));
   ipcMain.handle('settings:guardrail-color-filter', () => backend.settings.getGuardrailColorFilter());
   ipcMain.handle('settings:update-guardrail-color-filter', (_event, value: GuardrailColorFilter) => backend.settings.setGuardrailColorFilter(value));
   ipcMain.handle('settings:always-greyscale', () => backend.settings.getAlwaysGreyscale());
@@ -466,6 +470,16 @@ export function createIpc(context: IpcContext) {
   });
   ipcMain.handle('analytics:trends', (_event, payload: { granularity?: 'hour' | 'day' | 'week' }) => {
     return backend.analytics.getTrends(payload.granularity ?? 'day');
+  });
+  ipcMain.handle('analytics:episodes', (_event, payload: {
+    start?: string;
+    end?: string;
+    hours?: number;
+    gapMinutes?: number;
+    binSeconds?: number;
+    maxEpisodes?: number;
+  } = {}) => {
+    return backend.analytics.getBehaviorEpisodes(payload);
   });
 
   ipcMain.handle('sync:status', async () => {

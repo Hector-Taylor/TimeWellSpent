@@ -377,6 +377,14 @@ export class SettingsService {
     this.setJson('cameraModeEnabled', Boolean(value));
   }
 
+  getEyeTrackingEnabled(): boolean {
+    return this.getBoolean('eyeTrackingEnabled', false);
+  }
+
+  setEyeTrackingEnabled(value: boolean) {
+    this.setJson('eyeTrackingEnabled', Boolean(value));
+  }
+
   getGuardrailColorFilter(): GuardrailColorFilter {
     const val = this.getJson<GuardrailColorFilter>('guardrailColorFilter');
     if (val === 'full-color' || val === 'greyscale' || val === 'redscale') return val;

@@ -278,6 +278,25 @@ export type PaywallSession = {
   allowedUrl?: string;
 };
 
+export type PaywallDiagnosticEvent = {
+  ts: number;
+  event:
+    | 'session-started'
+    | 'session-ended'
+    | 'session-paused'
+    | 'session-resumed'
+    | 'session-tick'
+    | 'session-ignored-inactive';
+  domain: string;
+  mode?: PaywallSession['mode'];
+  reason?: string;
+  remainingSeconds?: number | null;
+  paused?: boolean;
+  intervalSeconds?: number;
+  activeDomain?: string | null;
+  activeUrl?: string | null;
+};
+
 export type EmergencyPolicyId = 'off' | 'gentle' | 'balanced' | 'strict';
 export type GuardrailColorFilter = 'full-color' | 'greyscale' | 'redscale';
 
@@ -502,6 +521,8 @@ export type RendererApi = {
     cancelPack(domain: string): Promise<void>;
     end(domain: string, options?: { refundUnused?: boolean }): Promise<void>;
     sessions(): Promise<PaywallSession[]>;
+    diagnostics(limit?: number): Promise<PaywallDiagnosticEvent[]>;
+    clearDiagnostics(): Promise<void>;
     pause(domain: string): Promise<void>;
     resume(domain: string): Promise<void>;
   };
@@ -538,6 +559,8 @@ export type RendererApi = {
     updateDailyOnboardingState(value: Partial<DailyOnboardingState>): Promise<DailyOnboardingState>;
     cameraModeEnabled(): Promise<boolean>;
     updateCameraModeEnabled(value: boolean): Promise<void>;
+    eyeTrackingEnabled(): Promise<boolean>;
+    updateEyeTrackingEnabled(value: boolean): Promise<void>;
     guardrailColorFilter(): Promise<GuardrailColorFilter>;
     updateGuardrailColorFilter(value: GuardrailColorFilter): Promise<void>;
     alwaysGreyscale(): Promise<boolean>;
@@ -576,6 +599,7 @@ export type RendererApi = {
     patterns(days?: number): Promise<BehavioralPattern[]>;
     engagement(domain: string, days?: number): Promise<EngagementMetrics>;
     trends(granularity?: 'hour' | 'day' | 'week'): Promise<TrendPoint[]>;
+    episodes(query?: BehaviorEpisodeQuery): Promise<BehaviorEpisodeMap>;
   };
   friends: {
     profile(): Promise<FriendProfile | null>;
@@ -686,6 +710,124 @@ export type BehaviorEvent = {
   valueInt?: number;
   valueFloat?: number;
   metadata?: Record<string, unknown>;
+};
+
+export type BehaviorEpisodeEventCounts = {
+  scroll: number;
+  click: number;
+  keystroke: number;
+  focus: number;
+  blur: number;
+  idleStart: number;
+  idleEnd: number;
+  visibility: number;
+};
+
+export type BehaviorEpisodeContextSlice = {
+  source: 'activity';
+  activityId: number;
+  start: string;
+  end: string;
+  appName: string | null;
+  domain: string | null;
+  url?: string | null;
+  windowTitle?: string | null;
+  category: ActivityCategory | 'idle';
+  activeSeconds: number;
+  idleSeconds: number;
+};
+
+export type BehaviorEpisodeContentSnapshot = {
+  timestamp: string;
+  domain: string | null;
+  url?: string | null;
+  title?: string | null;
+  source: 'activity' | 'behavior-event';
+  confidence: number;
+};
+
+export type BehaviorEpisodeMarker = {
+  timestamp: string;
+  kind: string;
+  title?: string | null;
+  domain?: string | null;
+  url?: string | null;
+  meta?: Record<string, unknown>;
+  source: 'consumption-log';
+};
+
+export type BehaviorEpisodeTimeBin = {
+  start: string;
+  end: string;
+  activeSeconds: number;
+  idleSeconds: number;
+  categoryBreakdown: Record<ActivityCategory | 'idle', number>;
+  eventCounts: BehaviorEpisodeEventCounts;
+  topDomain: string | null;
+  topTitle: string | null;
+};
+
+export type BehaviorEpisode = {
+  id: string;
+  start: string;
+  end: string;
+  durationSeconds: number;
+  activeSeconds: number;
+  idleSeconds: number;
+  categoryBreakdown: Record<ActivityCategory | 'idle', number>;
+  dominantCategory: ActivityCategory | 'idle';
+  topDomains: Array<{ domain: string; activeSeconds: number }>;
+  topApps: Array<{ appName: string; activeSeconds: number }>;
+  eventCounts: BehaviorEpisodeEventCounts;
+  rates: {
+    actionsPerMinute: number;
+    scrollsPerMinute: number;
+    clicksPerMinute: number;
+    keystrokesPerMinute: number;
+    focusEventsPerMinute: number;
+  };
+  domainSwitches: number;
+  contextSlices: BehaviorEpisodeContextSlice[];
+  contentSnapshots: BehaviorEpisodeContentSnapshot[];
+  markers: BehaviorEpisodeMarker[];
+  timelineBins: BehaviorEpisodeTimeBin[];
+  sourceCoverage: {
+    hasBehaviorEvents: boolean;
+    hasContentTitles: boolean;
+    hasConsumptionMarkers: boolean;
+  };
+};
+
+export type BehaviorEpisodeQuery = {
+  start?: string;
+  end?: string;
+  hours?: number;
+  gapMinutes?: number;
+  binSeconds?: number;
+  maxEpisodes?: number;
+};
+
+export type BehaviorEpisodeMap = {
+  schemaVersion: number;
+  generatedAt: string;
+  range: { start: string; end: string };
+  query: Required<BehaviorEpisodeQuery>;
+  summary: {
+    totalEpisodes: number;
+    totalDurationSeconds: number;
+    totalActiveSeconds: number;
+    totalIdleSeconds: number;
+    topDomains: Array<{ domain: string; activeSeconds: number }>;
+    totalMarkers: number;
+    totalContentSnapshots: number;
+  };
+  episodes: BehaviorEpisode[];
+  breadcrumbs: {
+    capturedSignals: string[];
+    missingSignals: string[];
+    nextInstrumentation: string[];
+    notes: string[];
+  };
 };
 
 export type TimeOfDayStats = {
