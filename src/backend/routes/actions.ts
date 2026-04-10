@@ -152,5 +152,34 @@ export function createIntegrationsRoutes(reading: ReadingService): Router {
         }
     });
 
+    router.post('/zotero/sync', async (req, res) => {
+        try {
+            const payload = (req.body ?? {}) as { limit?: unknown };
+            const rawLimit = Number(payload.limit ?? 24);
+            const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(120, Math.round(rawLimit))) : 24;
+            const result = await reading.syncZoteroProgress(limit);
+            res.json(result);
+        } catch (error) {
+            res.status(500).json({ error: (error as Error).message });
+        }
+    });
+
+    router.get('/zotero/analytics', async (req, res) => {
+        try {
+            const rawDays = Number(req.query.days ?? 30);
+            const days = Number.isFinite(rawDays) ? Math.max(1, Math.min(180, Math.round(rawDays))) : 30;
+            const rawLimit = Number(req.query.limit ?? 8);
+            const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(20, Math.round(rawLimit))) : 8;
+            const syncFlag = String(req.query.sync ?? '').trim().toLowerCase();
+            const shouldSync = syncFlag === '1' || syncFlag === 'true' || syncFlag === 'yes';
+            if (shouldSync) {
+                await reading.syncZoteroProgress(Math.max(24, limit * 3));
+            }
+            res.json(reading.getZoteroProgressAnalytics(days, limit));
+        } catch (error) {
+            res.status(500).json({ error: (error as Error).message });
+        }
+    });
+
     return router;
 }

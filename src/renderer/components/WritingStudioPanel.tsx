@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type {
+  ActivityRecord,
+  RendererApi,
   WritingDashboard,
+  WritingHudSnapshot,
   WritingProjectCreateRequest,
   WritingProjectKind,
   WritingProjectRecord,
@@ -10,7 +13,7 @@ import type {
   WritingTargetKind
 } from '../../shared/types';
 
-type Variant = 'web' | 'extension';
+type Variant = 'web' | 'extension' | 'desktop';
 
 type Props = {
   apiBase: string;
@@ -21,6 +24,7 @@ type Props = {
 type ActiveWritingSession = {
   sessionId: string;
   project: WritingProjectRecord;
+  mode: 'editor' | 'external';
   sprintMinutes: number | null;
   startedAtMs: number;
   draftText: string;
@@ -69,6 +73,58 @@ function normalizeApiBase(base: string) {
 function getExtensionRuntime() {
   const globalObj = globalThis as { chrome?: { runtime?: { sendMessage?: (message: unknown) => Promise<unknown> } } };
   return globalObj.chrome?.runtime ?? null;
+}
+
+function getDesktopBridge(): RendererApi | null {
+  const globalObj = globalThis as { twsp?: RendererApi };
+  return globalObj.twsp ?? null;
+}
+
+function normalizeHost(raw: string | null | undefined) {
+  if (!raw) return null;
+  const normalized = raw.trim().toLowerCase().replace(/^www\./, '');
+  return normalized || null;
+}
+
+function targetHostFromProject(project: WritingProjectRecord): string | null {
+  if (!project.targetUrl) return null;
+  try {
+    const parsed = new URL(project.targetUrl);
+    return normalizeHost(parsed.hostname);
+  } catch {
+    return null;
+  }
+}
+
+function appLooksLikeTana(value: string | null | undefined) {
+  return (value ?? '').toLowerCase().includes('tana');
+}
+
+function matchesExternalTarget(project: WritingProjectRecord, row: ActivityRecord | null) {
+  if (!row) return false;
+  const appName = (row.appName ?? '').toLowerCase();
+  const domain = normalizeHost(row.domain);
+  const url = (row.url ?? '').toLowerCase();
+  const windowTitle = (row.windowTitle ?? '').toLowerCase();
+  const expectedHost = targetHostFromProject(project);
+
+  if (project.targetKind === 'tana-node') {
+    return appLooksLikeTana(appName) || appLooksLikeTana(windowTitle) || url.includes('tana');
+  }
+  if (project.targetKind === 'google-doc') {
+    return domain === 'docs.google.com' || url.includes('docs.google.com/document/');
+  }
+  if (expectedHost) {
+    return domain === expectedHost || url.includes(expectedHost);
+  }
+  return true;
+}
+
+function externalLocationLabel(project: WritingProjectRecord, row: ActivityRecord | null) {
+  if (project.targetKind === 'tana-node') return 'Tana Desktop';
+  if (row?.appName) return row.appName;
+  if (project.targetKind === 'google-doc') return 'Browser';
+  return 'External Target';
 }
 
 async function fetchJson<T>(apiBase: string, path: string, init?: RequestInit): Promise<T> {
@@ -252,6 +308,7 @@ function canCountKeystroke(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
 }
 
 export function WritingStudioPanel({ apiBase, surface, variant = 'web' }: Props) {
+  const desktopBridge = variant === 'desktop' ? getDesktopBridge() : null;
   const [dashboard, setDashboard] = useState<WritingDashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -263,12 +320,60 @@ export function WritingStudioPanel({ apiBase, surface, variant = 'web' }: Props)
   const [sessionBusy, setSessionBusy] = useState(false);
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
   const sessionRef = useRef<ActiveWritingSession | null>(null);
+  const finishingSessionRef = useRef(false);
+  const externalTickInFlightRef = useRef(false);
   const launchIntentRef = useRef<WritingLaunchIntent | null>(variant === 'extension' ? readWritingLaunchIntentFromLocation() : null);
   const launchIntentHandledRef = useRef(false);
 
   useEffect(() => {
     sessionRef.current = activeSession;
   }, [activeSession]);
+
+  const buildHudSnapshot = useCallback((session: ActiveWritingSession): WritingHudSnapshot => {
+    const remainingSprintSeconds =
+      session.sprintMinutes != null ? Math.max(0, session.sprintMinutes * 60 - session.activeSecondsTotal) : null;
+    return {
+      sessionId: session.sessionId,
+      title: session.project.title,
+      kind: session.project.kind,
+      targetKind: session.project.targetKind,
+      mode: session.mode,
+      locationLabel: session.locationLabel,
+      activeSecondsTotal: session.activeSecondsTotal,
+      focusedSecondsTotal: session.focusedSecondsTotal,
+      keystrokesTotal: session.keystrokesTotal,
+      currentWordCount: session.currentWordCount,
+      netWordsTotal: session.netWordsTotal,
+      sprintMinutes: session.sprintMinutes,
+      remainingSprintSeconds
+    };
+  }, []);
+
+  const showDesktopHud = useCallback((session: ActiveWritingSession) => {
+    if (!desktopBridge) return;
+    void desktopBridge.writingHud.show(buildHudSnapshot(session)).catch(() => {
+      // best effort
+    });
+  }, [buildHudSnapshot, desktopBridge]);
+
+  const updateDesktopHud = useCallback((session: ActiveWritingSession) => {
+    if (!desktopBridge) return;
+    void desktopBridge.writingHud.update(buildHudSnapshot(session)).catch(() => {
+      // best effort
+    });
+  }, [buildHudSnapshot, desktopBridge]);
+
+  const hideDesktopHud = useCallback(() => {
+    if (!desktopBridge) return;
+    void desktopBridge.writingHud.hide().catch(() => {
+      // best effort
+    });
+  }, [desktopBridge]);
+
+  useEffect(() => {
+    if (activeSession) return;
+    hideDesktopHud();
+  }, [activeSession, hideDesktopHud]);
 
   const loadDashboard = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -428,9 +533,10 @@ export function WritingStudioPanel({ apiBase, surface, variant = 'web' }: Props)
           })
         });
 
-        setActiveSession({
+        const nextSession: ActiveWritingSession = {
           sessionId,
           project,
+          mode: 'editor',
           sprintMinutes,
           startedAtMs: Date.now(),
           draftText: project.bodyText ?? '',
@@ -446,7 +552,9 @@ export function WritingStudioPanel({ apiBase, surface, variant = 'web' }: Props)
           bodyTextLength: (project.bodyText ?? '').length,
           sprintCompleted: false,
           locationLabel: 'Writing Studio Editor'
-        });
+        };
+        setActiveSession(nextSession);
+        showDesktopHud(nextSession);
         setNotice(`Started ${sprintMinutes ? `${sprintMinutes}m` : ''} writing session for “${project.title}”.`.trim());
       } catch (startError) {
         setError((startError as Error).message ?? 'Unable to start writing session.');
@@ -454,22 +562,86 @@ export function WritingStudioPanel({ apiBase, surface, variant = 'web' }: Props)
         setSessionBusy(false);
       }
     },
-    [apiBase, sessionBusy, surface]
+    [apiBase, sessionBusy, showDesktopHud, surface]
+  );
+
+  const startDesktopExternalSession = useCallback(
+    async (project: WritingProjectRecord, sprintMinutes: number | null) => {
+      if (sessionBusy) return;
+      if (!project.targetUrl) {
+        setNotice(project.targetKind === 'tana-node' ? 'Add a Tana URL/deeplink to this project to track it.' : 'No target link saved yet.');
+        return;
+      }
+      setSessionBusy(true);
+      try {
+        const sessionId = createSessionId();
+        await fetchJson(apiBase, '/analytics/writing/sessions/start', {
+          method: 'POST',
+          body: JSON.stringify({
+            sessionId,
+            projectId: project.id,
+            sourceSurface: surface,
+            sprintMinutes
+          })
+        });
+
+        await touchProject(project.id);
+        window.open(project.targetUrl, '_blank', 'noopener,noreferrer');
+
+        const nextSession: ActiveWritingSession = {
+          sessionId,
+          project,
+          mode: 'external',
+          sprintMinutes,
+          startedAtMs: Date.now(),
+          draftText: '',
+          reentryNoteDraft: project.reentryNote ?? '',
+          baselineWordCount: project.currentWordCount ?? 0,
+          currentWordCount: project.currentWordCount ?? 0,
+          activeSecondsTotal: 0,
+          focusedSecondsTotal: 0,
+          keystrokesTotal: 0,
+          wordsAddedTotal: 0,
+          wordsDeletedTotal: 0,
+          netWordsTotal: 0,
+          bodyTextLength: 0,
+          sprintCompleted: false,
+          locationLabel: externalLocationLabel(project, null)
+        };
+        setActiveSession(nextSession);
+        showDesktopHud(nextSession);
+        setNotice(`Tracking “${project.title}” in ${nextSession.locationLabel ?? 'external target'} with desktop HUD.`);
+        void loadDashboard(true);
+      } catch (startError) {
+        setError((startError as Error).message ?? 'Unable to start external writing session.');
+      } finally {
+        setSessionBusy(false);
+      }
+    },
+    [apiBase, loadDashboard, sessionBusy, showDesktopHud, surface, touchProject]
   );
 
   const launchProjectSession = useCallback(
     async (project: WritingProjectRecord, sprintMinutes: number | null) => {
-      const shouldUseExternalHud =
+      const shouldUseExtensionHud =
         variant === 'extension' &&
         project.targetKind !== 'tws-doc' &&
         Boolean(project.targetUrl);
-      if (shouldUseExternalHud) {
+      if (shouldUseExtensionHud) {
         await startExternalTrackedSession(project, sprintMinutes);
+        return;
+      }
+      const shouldUseDesktopHud =
+        variant === 'desktop' &&
+        project.targetKind !== 'tws-doc' &&
+        Boolean(project.targetUrl);
+      if (shouldUseDesktopHud) {
+        await startDesktopExternalSession(project, sprintMinutes);
         return;
       }
       await startTrackedSession(project, sprintMinutes);
     },
-    [startExternalTrackedSession, startTrackedSession, variant]
+    [startDesktopExternalSession, startExternalTrackedSession, startTrackedSession, variant]
   );
 
   const postWritingProgress = useCallback(
@@ -502,28 +674,35 @@ export function WritingStudioPanel({ apiBase, surface, variant = 'web' }: Props)
   const endTrackedSession = useCallback(
     async (saveProject = true) => {
       const session = sessionRef.current;
-      if (!session || sessionBusy) return;
+      if (!session || sessionBusy || finishingSessionRef.current) return;
+      finishingSessionRef.current = true;
       setSessionBusy(true);
       try {
         await postWritingProgress('end');
         if (saveProject) {
-          await patchProject(session.project.id, {
-            bodyText: session.draftText,
+          const patch: WritingProjectUpdateRequest = {
             currentWordCount: session.currentWordCount,
             reentryNote: session.reentryNoteDraft,
             lastTouchedAt: new Date().toISOString()
-          });
+          };
+          if (session.mode === 'editor') {
+            patch.bodyText = session.draftText;
+          }
+          await patchProject(session.project.id, patch);
         }
+        sessionRef.current = null;
+        hideDesktopHud();
         setActiveSession(null);
         setNotice(`Saved session for “${session.project.title}” (${session.netWordsTotal >= 0 ? '+' : ''}${session.netWordsTotal} words).`);
         await loadDashboard(true);
       } catch (endError) {
         setError((endError as Error).message ?? 'Unable to end writing session.');
       } finally {
+        finishingSessionRef.current = false;
         setSessionBusy(false);
       }
     },
-    [loadDashboard, patchProject, postWritingProgress, sessionBusy]
+    [hideDesktopHud, loadDashboard, patchProject, postWritingProgress, sessionBusy]
   );
 
   useEffect(() => {
@@ -539,6 +718,56 @@ export function WritingStudioPanel({ apiBase, surface, variant = 'web' }: Props)
 
   useEffect(() => {
     if (!activeSession) return undefined;
+    if (activeSession.mode === 'external') {
+      let cancelled = false;
+      const tick = async () => {
+        if (cancelled || externalTickInFlightRef.current) return;
+        externalTickInFlightRef.current = true;
+        let isMatch = true;
+        let locationLabel = activeSession.locationLabel;
+        try {
+          if (desktopBridge) {
+            try {
+              const recent = await desktopBridge.activities.recent(1);
+              const current = recent[0] ?? null;
+              isMatch = matchesExternalTarget(activeSession.project, current);
+              if (current) {
+                locationLabel = externalLocationLabel(activeSession.project, current);
+              }
+            } catch {
+              isMatch = true;
+            }
+          }
+          if (cancelled) return;
+          setActiveSession((prev) => {
+            if (!prev || prev.mode !== 'external') return prev;
+            const activeSecondsTotal = isMatch ? prev.activeSecondsTotal + 1 : prev.activeSecondsTotal;
+            const focusedSecondsTotal = isMatch ? prev.focusedSecondsTotal + 1 : prev.focusedSecondsTotal;
+            const sprintCompleted =
+              !prev.sprintCompleted &&
+              prev.sprintMinutes != null &&
+              activeSecondsTotal >= prev.sprintMinutes * 60
+                ? true
+                : prev.sprintCompleted;
+            const next = { ...prev, activeSecondsTotal, focusedSecondsTotal, sprintCompleted, locationLabel };
+            updateDesktopHud(next);
+            return next;
+          });
+        } finally {
+          externalTickInFlightRef.current = false;
+        }
+      };
+      void tick();
+      const timer = window.setInterval(() => {
+        void tick();
+      }, 1000);
+      return () => {
+        cancelled = true;
+        externalTickInFlightRef.current = false;
+        window.clearInterval(timer);
+      };
+    }
+
     const timer = window.setInterval(() => {
       setActiveSession((prev) => {
         if (!prev) return prev;
@@ -551,11 +780,13 @@ export function WritingStudioPanel({ apiBase, surface, variant = 'web' }: Props)
           activeSecondsTotal >= prev.sprintMinutes * 60
             ? true
             : prev.sprintCompleted;
-        return { ...prev, activeSecondsTotal, focusedSecondsTotal, sprintCompleted };
+        const next = { ...prev, activeSecondsTotal, focusedSecondsTotal, sprintCompleted };
+        updateDesktopHud(next);
+        return next;
       });
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [activeSession]);
+  }, [activeSession, desktopBridge, updateDesktopHud]);
 
   useEffect(() => {
     if (!activeSession) return undefined;
@@ -567,9 +798,34 @@ export function WritingStudioPanel({ apiBase, surface, variant = 'web' }: Props)
 
   useEffect(() => {
     return () => {
-      void postWritingProgress('end');
+      const session = sessionRef.current;
+      if (!session || finishingSessionRef.current) {
+        hideDesktopHud();
+        return;
+      }
+      finishingSessionRef.current = true;
+      const patch: WritingProjectUpdateRequest = {
+        currentWordCount: session.currentWordCount,
+        reentryNote: session.reentryNoteDraft,
+        lastTouchedAt: new Date().toISOString()
+      };
+      if (session.mode === 'editor') {
+        patch.bodyText = session.draftText;
+      }
+      void (async () => {
+        try {
+          await postWritingProgress('end');
+          await patchProject(session.project.id, patch);
+        } catch {
+          // non-blocking cleanup path
+        } finally {
+          sessionRef.current = null;
+          finishingSessionRef.current = false;
+          hideDesktopHud();
+        }
+      })();
     };
-  }, [postWritingProgress]);
+  }, [hideDesktopHud, patchProject, postWritingProgress]);
 
   const handleDraftTextChange = useCallback((nextText: string) => {
     setActiveSession((prev) => {
@@ -577,7 +833,7 @@ export function WritingStudioPanel({ apiBase, surface, variant = 'web' }: Props)
       const prevWords = prev.currentWordCount;
       const nextWords = countWords(nextText);
       const diff = nextWords - prevWords;
-      return {
+      const next = {
         ...prev,
         draftText: nextText,
         currentWordCount: nextWords,
@@ -586,13 +842,20 @@ export function WritingStudioPanel({ apiBase, surface, variant = 'web' }: Props)
         wordsDeletedTotal: prev.wordsDeletedTotal + (diff < 0 ? Math.abs(diff) : 0),
         netWordsTotal: nextWords - prev.baselineWordCount
       };
+      updateDesktopHud(next);
+      return next;
     });
-  }, []);
+  }, [updateDesktopHud]);
 
   const handleDraftKeyDown = useCallback((event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (!canCountKeystroke(event)) return;
-    setActiveSession((prev) => (prev ? { ...prev, keystrokesTotal: prev.keystrokesTotal + 1 } : prev));
-  }, []);
+    setActiveSession((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, keystrokesTotal: prev.keystrokesTotal + 1 };
+      updateDesktopHud(next);
+      return next;
+    });
+  }, [updateDesktopHud]);
 
   const remainingSprintSeconds = useMemo(() => {
     if (!activeSession?.sprintMinutes) return null;
@@ -760,19 +1023,52 @@ export function WritingStudioPanel({ apiBase, surface, variant = 'web' }: Props)
   ]);
 
   const rootClassName =
-    variant === 'web'
+    variant === 'web' || variant === 'desktop'
       ? 'card web-full-width writing-studio'
       : 'newtab-card tall writing-studio writing-studio--extension';
+  const featuredProject =
+    dashboard?.projects.find((project) => project.id === dashboard?.overview.currentProject?.id)
+    ?? dashboard?.projects.find((project) => project.status !== 'done')
+    ?? dashboard?.projects[0]
+    ?? null;
+  const heroMetrics = dashboard ? [
+    {
+      label: 'Today',
+      value: `${dashboard.overview.today.netWords >= 0 ? '+' : ''}${dashboard.overview.today.netWords} words`,
+      detail: `${formatDuration(dashboard.overview.today.activeSeconds)} active`
+    },
+    {
+      label: 'Focused',
+      value: formatDuration(dashboard.overview.today.focusedSeconds),
+      detail: `${dashboard.overview.today.sessions} sessions today`
+    },
+    {
+      label: 'Pace',
+      value: `${dashboard.overview.pace.wordsPerMinute.toFixed(1)} w/m`,
+      detail: `${dashboard.overview.pace.keystrokesPerMinute.toFixed(1)} keys/min`
+    },
+    {
+      label: 'Projects',
+      value: `${projectCounts.active} active`,
+      detail: `${projectCounts.total} total in studio`
+    }
+  ] : [];
+  const templateActions: Array<{ kind: WritingProjectKind; label: string; detail: string }> = [
+    { kind: 'journal', label: 'Journal Sprint', detail: 'Clear your head and keep the chain moving.' },
+    { kind: 'paper', label: 'Paper Draft', detail: 'Push one argument or one section forward.' },
+    { kind: 'substack', label: 'Substack Draft', detail: 'Capture a publishable idea before it fades.' },
+    { kind: 'fiction', label: 'Fiction Scene', detail: 'Return to a scene, voice, or image quickly.' }
+  ];
 
   return (
     <>
       <article className={rootClassName}>
         <div className="writing-studio__header">
           <div>
-            <p className={variant === 'web' ? 'eyebrow' : 'newtab-eyebrow'}>Writing Studio</p>
-            <h2>Projects, prompts, and tracked writing sprints</h2>
+            <p className={variant === 'extension' ? 'newtab-eyebrow' : 'eyebrow'}>Writing Studio</p>
+            <h2>Make the next writing session obvious.</h2>
             <p className="writing-studio__subtle">
-              Surface the right draft, start a timed sprint, and keep writing in a productive loop with re-entry notes.
+              Keep one draft in motion, start a timed sprint quickly, and leave strong re-entry notes behind.
             </p>
           </div>
           <div className="writing-studio__headerActions">
@@ -787,285 +1083,352 @@ export function WritingStudioPanel({ apiBase, surface, variant = 'web' }: Props)
 
         {error ? <p className="writing-studio__notice error">{error}</p> : null}
         {notice ? <p className="writing-studio__notice">{notice}</p> : null}
+        {activeSession?.mode === 'external' ? (
+          <div className="writing-studio__externalSession">
+            <div>
+              <strong>Tracking external writing</strong>
+              <p className="writing-studio__subtle">
+                {activeSession.locationLabel ?? 'External target'} · {activeSession.project.title}
+              </p>
+            </div>
+            <div className="writing-studio__rowActions">
+              <span className="pill ghost">{formatDuration(activeSession.activeSecondsTotal)} active</span>
+              <span className="pill ghost">{formatDuration(activeSession.focusedSecondsTotal)} focused</span>
+              <button type="button" onClick={() => void openProjectTarget(activeSession.project)}>
+                Re-open Target
+              </button>
+              <button type="button" onClick={() => void endTrackedSession(true)} disabled={sessionBusy}>
+                {sessionBusy ? 'Saving…' : 'End Session'}
+              </button>
+            </div>
+          </div>
+        ) : null}
 
-        <div className="writing-studio__topline">
-          <span className="pill ghost">{projectCounts.total} projects</span>
-          <span className="pill ghost">{projectCounts.active} active</span>
-          <span className="pill ghost">{projectCounts.tws} TWS drafts</span>
-          <span className="pill ghost">
-            Today {dashboard ? `${dashboard.overview.today.netWords >= 0 ? '+' : ''}${dashboard.overview.today.netWords} words` : '--'}
-          </span>
-          <span className="pill ghost">
-            Pace {dashboard ? `${dashboard.overview.pace.wordsPerMinute.toFixed(1)} w/m` : '--'}
-          </span>
-        </div>
+        <section className="writing-studio__hero">
+          <div className="writing-studio__heroCopy">
+            <div className="writing-studio__topline">
+              <span className="pill ghost">{projectCounts.total} projects</span>
+              <span className="pill ghost">{projectCounts.active} active</span>
+              <span className="pill ghost">{projectCounts.tws} TWS drafts</span>
+            </div>
 
-        <div className="writing-studio__templates">
-          <button type="button" onClick={() => void createTemplateProject('journal')} disabled={savingProject}>
-            Journal Sprint
-          </button>
-          <button type="button" onClick={() => void createTemplateProject('paper')} disabled={savingProject}>
-            Paper Draft
-          </button>
-          <button type="button" onClick={() => void createTemplateProject('substack')} disabled={savingProject}>
-            Substack Draft
-          </button>
-          <button type="button" onClick={() => void createTemplateProject('fiction')} disabled={savingProject}>
-            Fiction Scene
-          </button>
-        </div>
-
-        {dashboard?.suggestions?.length ? (
-          <div className="writing-studio__suggestions">
-            {dashboard.suggestions.map((suggestion) => (
-              <article key={`suggestion-${suggestion.project.id}`} className="writing-suggestion-card">
-                <div className="writing-suggestion-card__cover" style={{ background: projectGradient(suggestion.project.kind, suggestion.project.title) }}>
-                  <span className="writing-suggestion-card__badge">{formatProjectKind(suggestion.project.kind)}</span>
-                  <strong>{suggestion.project.title}</strong>
-                  <small>{formatTargetLabel(suggestion.project.targetKind)}</small>
-                </div>
-                <div className="writing-suggestion-card__body">
-                  <p className="writing-studio__subtle">{suggestion.reason}</p>
-                  <p className="writing-suggestion-card__nextStep">{suggestion.smallNextStep}</p>
-                  <div className="writing-studio__rowActions">
-                    <button type="button" onClick={() => void launchProjectSession(suggestion.project, 10)} disabled={sessionBusy}>
-                      Write 10m
+            {featuredProject ? (
+              <div className="writing-studio__heroProject">
+                <p className="eyebrow">Featured draft</p>
+                <h3>{featuredProject.title}</h3>
+                <p className="writing-studio__subtle">
+                  {formatProjectKind(featuredProject.kind)} · {formatTargetLabel(featuredProject.targetKind)} · {formatRelativeTime(featuredProject.lastTouchedAt ?? featuredProject.updatedAt)}
+                </p>
+                {featuredProject.reentryNote ? (
+                  <p className="writing-studio__heroNote">{featuredProject.reentryNote}</p>
+                ) : (
+                  <p className="writing-studio__heroNote writing-studio__heroNote--muted">No re-entry note yet. Leave one after the next sprint.</p>
+                )}
+                <div className="writing-studio__rowActions">
+                  <button type="button" className="primary" onClick={() => void launchProjectSession(featuredProject, 25)} disabled={sessionBusy}>
+                    Write 25m
+                  </button>
+                  <button type="button" onClick={() => void launchProjectSession(featuredProject, 10)} disabled={sessionBusy}>
+                    Write 10m
+                  </button>
+                  {featuredProject.targetUrl ? (
+                    <button
+                      type="button"
+                      onClick={() => void (variant === 'extension' && featuredProject.targetKind !== 'tws-doc'
+                        ? startExternalTrackedSession(featuredProject, 12)
+                        : openProjectTarget(featuredProject))}
+                    >
+                      {variant === 'extension' && featuredProject.targetKind !== 'tws-doc' ? 'Open + Track' : 'Open Target'}
                     </button>
-                    <button type="button" onClick={() => void launchProjectSession(suggestion.project, 25)} disabled={sessionBusy}>
-                      Write 25m
-                    </button>
-                    {suggestion.project.targetUrl ? (
-                      <button
-                        type="button"
-                        onClick={() => void (variant === 'extension' && suggestion.project.targetKind !== 'tws-doc'
-                          ? startExternalTrackedSession(suggestion.project, 12)
-                          : openProjectTarget(suggestion.project))}
-                      >
-                        {variant === 'extension' && suggestion.project.targetKind !== 'tws-doc' ? 'Open + Track' : 'Open Target'}
-                      </button>
-                    ) : null}
-                  </div>
+                  ) : null}
                 </div>
-              </article>
+              </div>
+            ) : (
+              <div className="writing-studio__heroProject">
+                <p className="eyebrow">Start here</p>
+                <h3>No active draft yet.</h3>
+                <p className="writing-studio__subtle">Create a project or launch a template so the next session has somewhere to land.</p>
+              </div>
+            )}
+          </div>
+
+          <div className="writing-studio__heroRail">
+            {heroMetrics.map((metric) => (
+              <div key={metric.label} className="writing-studio__heroMetric">
+                <span>{metric.label}</span>
+                <strong>{metric.value}</strong>
+                <small>{metric.detail}</small>
+              </div>
             ))}
           </div>
-        ) : null}
+        </section>
 
-        {dashboard?.prompts?.length ? (
-          <div className="writing-studio__prompts">
-            <div className="writing-studio__promptsHeader">
-              <strong>Prompt Capsule</strong>
-              <span className="writing-studio__subtle">Use these to reduce start friction.</span>
+        <section className="writing-studio__section">
+          <div className="writing-studio__sectionHeader">
+            <div>
+              <p className="eyebrow">Quick start</p>
+              <h3>Reduce the cost of beginning.</h3>
+              <p className="writing-studio__subtle">Templates, suggestions, and prompts should get you writing within a few seconds.</p>
             </div>
-            <div className="writing-studio__promptList">
-              {dashboard.prompts.map((prompt) => (
-                <button
-                  type="button"
-                  key={prompt.id}
-                  className={`writing-prompt-chip ${selectedPrompt?.id === prompt.id ? 'active' : ''}`}
-                  onClick={() => setSelectedPromptId(prompt.id)}
-                >
-                  <span>{prompt.kind === 'any' ? 'Any' : formatProjectKind(prompt.kind)}</span>
-                  <small>{prompt.text}</small>
-                </button>
-              ))}
-            </div>
-            {selectedPrompt ? (
-              <div className="writing-studio__promptActions">
-                <button type="button" onClick={() => void createProjectFromPrompt(selectedPrompt, 'journal')} disabled={savingProject}>
-                  Journal From Prompt
-                </button>
-                <button type="button" onClick={() => void createProjectFromPrompt(selectedPrompt, 'essay')} disabled={savingProject}>
-                  Essay Draft From Prompt
-                </button>
-              </div>
-            ) : null}
           </div>
-        ) : null}
 
-        {composerOpen ? (
-          <form className="writing-studio__composer" onSubmit={submitCreateForm}>
-            <div className="writing-studio__composerGrid">
-              <div>
-                <label>Title</label>
-                <input
-                  value={createForm.title}
-                  onChange={(event) => setCreateForm((prev) => ({ ...prev, title: event.target.value }))}
-                  placeholder="Project title"
-                />
-              </div>
-              <div>
-                <label>Kind</label>
-                <select
-                  value={createForm.kind}
-                  onChange={(event) => setCreateForm((prev) => ({ ...prev, kind: event.target.value as WritingProjectKind }))}
-                >
-                  <option value="journal">Journal</option>
-                  <option value="paper">Paper</option>
-                  <option value="substack">Substack</option>
-                  <option value="fiction">Fiction</option>
-                  <option value="essay">Essay</option>
-                  <option value="notes">Notes</option>
-                  <option value="other">Other</option>
-                </select>
-              </div>
-              <div>
-                <label>Target</label>
-                <select
-                  value={createForm.targetKind}
-                  onChange={(event) => setCreateForm((prev) => ({ ...prev, targetKind: event.target.value as WritingTargetKind }))}
-                >
-                  <option value="tws-doc">TWS Draft</option>
-                  <option value="google-doc">Google Doc</option>
-                  <option value="tana-node">Tana Node</option>
-                  <option value="external-link">External Link</option>
-                </select>
-              </div>
-              <div>
-                <label>Word Target (optional)</label>
-                <input
-                  inputMode="numeric"
-                  value={createForm.wordTarget}
-                  onChange={(event) => setCreateForm((prev) => ({ ...prev, wordTarget: event.target.value }))}
-                  placeholder="e.g. 1200"
-                />
-              </div>
-            </div>
-            {createForm.targetKind !== 'tws-doc' ? (
-              <div className="writing-studio__composerGrid">
-                <div>
-                  <label>Target URL / Deeplink</label>
-                  <input
-                    value={createForm.targetUrl}
-                    onChange={(event) => setCreateForm((prev) => ({ ...prev, targetUrl: event.target.value }))}
-                    placeholder="https://docs.google.com/... or tana://..."
-                  />
-                </div>
-                <div>
-                  <label>Target ID (optional)</label>
-                  <input
-                    value={createForm.targetId}
-                    onChange={(event) => setCreateForm((prev) => ({ ...prev, targetId: event.target.value }))}
-                    placeholder="Tana node id / doc id"
-                  />
-                </div>
-              </div>
-            ) : null}
-            <div className="writing-studio__rowActions">
-              <button className="primary" type="submit" disabled={savingProject}>
-                {savingProject ? 'Creating…' : 'Create Writing Project'}
+          <div className="writing-studio__templates">
+            {templateActions.map((template) => (
+              <button
+                key={template.kind}
+                type="button"
+                onClick={() => void createTemplateProject(template.kind)}
+                disabled={savingProject}
+              >
+                <strong>{template.label}</strong>
+                <span>{template.detail}</span>
               </button>
-              {selectedPrompt ? <span className="pill ghost">Prompt ready</span> : null}
-            </div>
-          </form>
-        ) : null}
+            ))}
+          </div>
 
-        <div className="writing-studio__projects">
-          {dashboard?.projects?.length ? (
-            dashboard.projects.map((project) => {
-              const progressPct =
-                project.wordTarget && project.wordTarget > 0
-                  ? Math.max(0, Math.min(100, Math.round((project.currentWordCount / project.wordTarget) * 100)))
-                  : null;
-              return (
-                <article key={project.id} className={`writing-project-card status-${project.status}`}>
-                  <button
-                    type="button"
-                    className="writing-project-card__coverButton"
-                    onClick={() => void launchProjectSession(project, 10)}
-                    disabled={sessionBusy}
-                    aria-label={`Start writing on ${project.title}`}
-                  >
-                    <span className="writing-project-card__cover" style={{ background: projectGradient(project.kind, project.title) }}>
-                      <span className="writing-project-card__badge">{formatProjectKind(project.kind)}</span>
-                      <span className="writing-project-card__title">{project.title}</span>
-                      <span className="writing-project-card__meta">{formatTargetLabel(project.targetKind)}</span>
-                    </span>
-                  </button>
-                  <div className="writing-project-card__body">
-                    <div className="writing-project-card__titleRow">
-                      <strong>{project.title}</strong>
-                      <span className={`pill ghost ${project.status === 'done' ? 'success' : ''}`}>{project.status}</span>
-                    </div>
-                    <div className="writing-project-card__stats">
-                      <span>{project.currentWordCount.toLocaleString()} words</span>
-                      <span>{project.sessionCount} sessions</span>
-                      <span>{formatRelativeTime(project.lastTouchedAt ?? project.updatedAt)}</span>
-                    </div>
-                    {project.reentryNote ? <p className="writing-project-card__reentry">{project.reentryNote}</p> : null}
-                    {progressPct != null ? (
-                      <div className="writing-project-card__progress">
-                        <div><span>Goal</span><span>{project.currentWordCount}/{project.wordTarget}</span></div>
-                        <div className="writing-project-card__progressBar"><span style={{ width: `${progressPct}%` }} /></div>
-                      </div>
-                    ) : null}
+          {dashboard?.suggestions?.length ? (
+            <div className="writing-studio__suggestions">
+              {dashboard.suggestions.map((suggestion) => (
+                <article key={`suggestion-${suggestion.project.id}`} className="writing-suggestion-card">
+                  <div className="writing-suggestion-card__cover" style={{ background: projectGradient(suggestion.project.kind, suggestion.project.title) }}>
+                    <span className="writing-suggestion-card__badge">{formatProjectKind(suggestion.project.kind)}</span>
+                    <strong>{suggestion.project.title}</strong>
+                    <small>{formatTargetLabel(suggestion.project.targetKind)}</small>
+                  </div>
+                  <div className="writing-suggestion-card__body">
+                    <p className="writing-studio__subtle">{suggestion.reason}</p>
+                    <p className="writing-suggestion-card__nextStep">{suggestion.smallNextStep}</p>
                     <div className="writing-studio__rowActions">
-                      <button type="button" onClick={() => void launchProjectSession(project, 10)} disabled={sessionBusy}>
+                      <button type="button" onClick={() => void launchProjectSession(suggestion.project, 10)} disabled={sessionBusy}>
                         Write 10m
                       </button>
-                      <button type="button" onClick={() => void launchProjectSession(project, 25)} disabled={sessionBusy}>
+                      <button type="button" onClick={() => void launchProjectSession(suggestion.project, 25)} disabled={sessionBusy}>
                         Write 25m
                       </button>
-                      {project.targetUrl ? (
+                      {suggestion.project.targetUrl ? (
                         <button
                           type="button"
-                          onClick={() => void (variant === 'extension' && project.targetKind !== 'tws-doc'
-                            ? startExternalTrackedSession(project, 12)
-                            : openProjectTarget(project))}
+                          onClick={() => void (variant === 'extension' && suggestion.project.targetKind !== 'tws-doc'
+                            ? startExternalTrackedSession(suggestion.project, 12)
+                            : openProjectTarget(suggestion.project))}
                         >
-                          {variant === 'extension' && project.targetKind !== 'tws-doc' ? 'Open + Track' : 'Open Target'}
+                          {variant === 'extension' && suggestion.project.targetKind !== 'tws-doc' ? 'Open + Track' : 'Open Target'}
                         </button>
                       ) : null}
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            await patchProject(project.id, {
-                              status: project.status === 'done' ? 'active' : 'done',
-                              lastTouchedAt: new Date().toISOString()
-                            });
-                            await loadDashboard(true);
-                          } catch (markError) {
-                            setError((markError as Error).message ?? 'Unable to update project status.');
-                          }
-                        }}
-                      >
-                        {project.status === 'done' ? 'Reopen' : 'Done'}
-                      </button>
                     </div>
                   </div>
                 </article>
-              );
-            })
-          ) : loading ? (
-            <p className="writing-studio__subtle">Loading writing projects…</p>
-          ) : (
-            <p className="writing-studio__subtle">
-              No writing projects yet. Create a journal, paper, Substack, or fiction project and start a timed sprint.
-            </p>
-          )}
-        </div>
+              ))}
+            </div>
+          ) : null}
 
-        {dashboard?.overview ? (
-          <div className="writing-studio__metrics">
-            <div className="writing-studio__metric">
-              <span>Writing Time Today</span>
-              <strong>{formatDuration(dashboard.overview.today.activeSeconds)}</strong>
+          {dashboard?.prompts?.length ? (
+            <div className="writing-studio__prompts">
+              <div className="writing-studio__promptsHeader">
+                <strong>Prompt Capsule</strong>
+                <span className="writing-studio__subtle">Use these to reduce start friction.</span>
+              </div>
+              <div className="writing-studio__promptList">
+                {dashboard.prompts.map((prompt) => (
+                  <button
+                    type="button"
+                    key={prompt.id}
+                    className={`writing-prompt-chip ${selectedPrompt?.id === prompt.id ? 'active' : ''}`}
+                    onClick={() => setSelectedPromptId(prompt.id)}
+                  >
+                    <span>{prompt.kind === 'any' ? 'Any' : formatProjectKind(prompt.kind)}</span>
+                    <small>{prompt.text}</small>
+                  </button>
+                ))}
+              </div>
+              {selectedPrompt ? (
+                <div className="writing-studio__promptActions">
+                  <button type="button" onClick={() => void createProjectFromPrompt(selectedPrompt, 'journal')} disabled={savingProject}>
+                    Journal From Prompt
+                  </button>
+                  <button type="button" onClick={() => void createProjectFromPrompt(selectedPrompt, 'essay')} disabled={savingProject}>
+                    Essay Draft From Prompt
+                  </button>
+                </div>
+              ) : null}
             </div>
-            <div className="writing-studio__metric">
-              <span>Net Words Today</span>
-              <strong>{dashboard.overview.today.netWords >= 0 ? '+' : ''}{dashboard.overview.today.netWords}</strong>
-            </div>
-            <div className="writing-studio__metric">
-              <span>Keys / Min</span>
-              <strong>{dashboard.overview.pace.keystrokesPerMinute.toFixed(1)}</strong>
-            </div>
-            <div className="writing-studio__metric">
-              <span>Projects Touched</span>
-              <strong>{dashboard.overview.today.projects}</strong>
+          ) : null}
+
+          {composerOpen ? (
+            <form className="writing-studio__composer" onSubmit={submitCreateForm}>
+              <div className="writing-studio__composerGrid">
+                <div>
+                  <label>Title</label>
+                  <input
+                    value={createForm.title}
+                    onChange={(event) => setCreateForm((prev) => ({ ...prev, title: event.target.value }))}
+                    placeholder="Project title"
+                  />
+                </div>
+                <div>
+                  <label>Kind</label>
+                  <select
+                    value={createForm.kind}
+                    onChange={(event) => setCreateForm((prev) => ({ ...prev, kind: event.target.value as WritingProjectKind }))}
+                  >
+                    <option value="journal">Journal</option>
+                    <option value="paper">Paper</option>
+                    <option value="substack">Substack</option>
+                    <option value="fiction">Fiction</option>
+                    <option value="essay">Essay</option>
+                    <option value="notes">Notes</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+                <div>
+                  <label>Target</label>
+                  <select
+                    value={createForm.targetKind}
+                    onChange={(event) => setCreateForm((prev) => ({ ...prev, targetKind: event.target.value as WritingTargetKind }))}
+                  >
+                    <option value="tws-doc">TWS Draft</option>
+                    <option value="google-doc">Google Doc</option>
+                    <option value="tana-node">Tana Node</option>
+                    <option value="external-link">External Link</option>
+                  </select>
+                </div>
+                <div>
+                  <label>Word Target (optional)</label>
+                  <input
+                    inputMode="numeric"
+                    value={createForm.wordTarget}
+                    onChange={(event) => setCreateForm((prev) => ({ ...prev, wordTarget: event.target.value }))}
+                    placeholder="e.g. 1200"
+                  />
+                </div>
+              </div>
+
+              {createForm.targetKind !== 'tws-doc' ? (
+                <div className="writing-studio__composerGrid">
+                  <div>
+                    <label>Target URL / Deeplink</label>
+                    <input
+                      value={createForm.targetUrl}
+                      onChange={(event) => setCreateForm((prev) => ({ ...prev, targetUrl: event.target.value }))}
+                      placeholder="https://docs.google.com/... or tana://..."
+                    />
+                  </div>
+                  <div>
+                    <label>Target ID (optional)</label>
+                    <input
+                      value={createForm.targetId}
+                      onChange={(event) => setCreateForm((prev) => ({ ...prev, targetId: event.target.value }))}
+                      placeholder="Tana node id / doc id"
+                    />
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="writing-studio__rowActions">
+                <button className="primary" type="submit" disabled={savingProject}>
+                  {savingProject ? 'Creating…' : 'Create Writing Project'}
+                </button>
+                {selectedPrompt ? <span className="pill ghost">Prompt ready</span> : null}
+              </div>
+            </form>
+          ) : null}
+        </section>
+
+        <section className="writing-studio__section">
+          <div className="writing-studio__sectionHeader">
+            <div>
+              <p className="eyebrow">Projects</p>
+              <h3>Keep the library active, not sprawling.</h3>
+              <p className="writing-studio__subtle">Every project should have a clear next sprint or a reason to be done.</p>
             </div>
           </div>
-        ) : null}
+
+          <div className="writing-studio__projects">
+            {dashboard?.projects?.length ? (
+              dashboard.projects.map((project) => {
+                const progressPct =
+                  project.wordTarget && project.wordTarget > 0
+                    ? Math.max(0, Math.min(100, Math.round((project.currentWordCount / project.wordTarget) * 100)))
+                    : null;
+                return (
+                  <article key={project.id} className={`writing-project-card status-${project.status}`}>
+                    <button
+                      type="button"
+                      className="writing-project-card__coverButton"
+                      onClick={() => void launchProjectSession(project, 10)}
+                      disabled={sessionBusy}
+                      aria-label={`Start writing on ${project.title}`}
+                    >
+                      <span className="writing-project-card__cover" style={{ background: projectGradient(project.kind, project.title) }}>
+                        <span className="writing-project-card__badge">{formatProjectKind(project.kind)}</span>
+                        <span className="writing-project-card__title">{project.title}</span>
+                        <span className="writing-project-card__meta">{formatTargetLabel(project.targetKind)}</span>
+                      </span>
+                    </button>
+                    <div className="writing-project-card__body">
+                      <div className="writing-project-card__titleRow">
+                        <strong>{project.title}</strong>
+                        <span className={`pill ghost ${project.status === 'done' ? 'success' : ''}`}>{project.status}</span>
+                      </div>
+                      <div className="writing-project-card__stats">
+                        <span>{project.currentWordCount.toLocaleString()} words</span>
+                        <span>{project.sessionCount} sessions</span>
+                        <span>{formatRelativeTime(project.lastTouchedAt ?? project.updatedAt)}</span>
+                      </div>
+                      {project.reentryNote ? <p className="writing-project-card__reentry">{project.reentryNote}</p> : null}
+                      {progressPct != null ? (
+                        <div className="writing-project-card__progress">
+                          <div><span>Goal</span><span>{project.currentWordCount}/{project.wordTarget}</span></div>
+                          <div className="writing-project-card__progressBar"><span style={{ width: `${progressPct}%` }} /></div>
+                        </div>
+                      ) : null}
+                      <div className="writing-studio__rowActions">
+                        <button type="button" onClick={() => void launchProjectSession(project, 10)} disabled={sessionBusy}>
+                          Write 10m
+                        </button>
+                        <button type="button" onClick={() => void launchProjectSession(project, 25)} disabled={sessionBusy}>
+                          Write 25m
+                        </button>
+                        {project.targetUrl ? (
+                          <button
+                            type="button"
+                            onClick={() => void (variant === 'extension' && project.targetKind !== 'tws-doc'
+                              ? startExternalTrackedSession(project, 12)
+                              : openProjectTarget(project))}
+                          >
+                            {variant === 'extension' && project.targetKind !== 'tws-doc' ? 'Open + Track' : 'Open Target'}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await patchProject(project.id, {
+                                status: project.status === 'done' ? 'active' : 'done',
+                                lastTouchedAt: new Date().toISOString()
+                              });
+                              await loadDashboard(true);
+                            } catch (markError) {
+                              setError((markError as Error).message ?? 'Unable to update project status.');
+                            }
+                          }}
+                        >
+                          {project.status === 'done' ? 'Reopen' : 'Done'}
+                        </button>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })
+            ) : loading ? (
+              <p className="writing-studio__subtle">Loading writing projects…</p>
+            ) : (
+              <p className="writing-studio__subtle">
+                No writing projects yet. Create a journal, paper, Substack, or fiction project and start a timed sprint.
+              </p>
+            )}
+          </div>
+        </section>
 
         {dashboard?.overview?.insights?.length ? (
           <ul className="writing-studio__insights">
@@ -1076,12 +1439,12 @@ export function WritingStudioPanel({ apiBase, surface, variant = 'web' }: Props)
         ) : null}
       </article>
 
-      {activeSession ? (
+      {activeSession?.mode === 'editor' ? (
         <div className="writing-overlay" role="dialog" aria-modal="true" aria-label={`Writing ${activeSession.project.title}`}>
           <div className="writing-overlay__panel" onClick={(event) => event.stopPropagation()}>
             <header className="writing-overlay__header">
               <div>
-                <p className={variant === 'web' ? 'eyebrow' : 'newtab-eyebrow'}>Writing Sprint</p>
+                <p className={variant === 'extension' ? 'newtab-eyebrow' : 'eyebrow'}>Writing Sprint</p>
                 <h2>{activeSession.project.title}</h2>
                 <p className="writing-studio__subtle">
                   {formatProjectKind(activeSession.project.kind)} · {formatTargetLabel(activeSession.project.targetKind)} · Started{' '}

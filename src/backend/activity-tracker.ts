@@ -3,6 +3,7 @@ import type { Database } from './storage';
 import type { ActivityRecord, ActivityCategory, ActivityJourney, ActivitySummary, ActivitySource } from '@shared/types';
 import { logger } from '@shared/logger';
 import { HOUR_MS, buildHourBuckets, clampWindowHours, overlapMs } from './activityTime';
+import { canonicalizeDomain } from '@shared/domainCanonicalization';
 
 export type ActivityEvent = {
   timestamp: Date;
@@ -27,11 +28,7 @@ type CurrentActivity = {
 };
 
 function canonicalDomain(domain: string) {
-  const cleaned = domain.trim().toLowerCase().replace(/^www\./, '');
-  const aliasMap: Record<string, string> = {
-    'x.com': 'twitter.com'
-  };
-  return aliasMap[cleaned] ?? cleaned;
+  return canonicalizeDomain(domain) ?? domain.trim().toLowerCase().replace(/^www\./, '');
 }
 
 function canonicalAppName(appName: string | null | undefined) {

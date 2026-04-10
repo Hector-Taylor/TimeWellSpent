@@ -85,6 +85,8 @@ create table if not exists activity_rollups (
   productive integer not null,
   neutral integer not null,
   frivolity integer not null,
+  draining integer not null default 0,
+  emergency integer not null default 0,
   idle integer not null,
   updated_at timestamptz not null,
   primary key (device_id, hour_start)

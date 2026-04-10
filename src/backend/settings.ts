@@ -1,12 +1,13 @@
 import type { Statement } from 'better-sqlite3';
 import type { Database } from './storage';
-import type { CategorisationConfig } from '@shared/types';
+import type { AppTheme, CategorisationConfig } from '@shared/types';
 import type { DailyOnboardingState, DailyOnboardingNote, EmergencyPolicyId, PeekConfig } from '@shared/types';
 import type { GuardrailColorFilter } from '@shared/types';
-import { DEFAULT_CATEGORISATION, DEFAULT_IDLE_THRESHOLD_SECONDS } from './defaults';
+import { DEFAULT_CATEGORISATION, DEFAULT_FRIVOLOUS_IDLE_THRESHOLD_SECONDS, DEFAULT_IDLE_THRESHOLD_SECONDS } from './defaults';
 import type { FriendEntry, FriendIdentity, FriendFeedSummary } from '@shared/types';
 import type { ZoteroIntegrationConfig } from '@shared/types';
 import type { JournalConfig } from '@shared/types';
+import { DAY_START_HOUR, getLocalDayStartMs } from '@shared/time';
 
 type EmergencyUsageState = {
   day: string; // YYYY-MM-DD
@@ -51,6 +52,14 @@ export class SettingsService {
     if (typeof value !== 'string') return null;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
     return value;
+  }
+
+  private currentDayKey() {
+    const dayStart = new Date(getLocalDayStartMs(Date.now(), DAY_START_HOUR));
+    const year = dayStart.getFullYear();
+    const month = String(dayStart.getMonth() + 1).padStart(2, '0');
+    const day = String(dayStart.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 
   private normalizeDailyNote(value: unknown): DailyOnboardingNote | null {
@@ -125,6 +134,15 @@ export class SettingsService {
     return this.normaliseCategorisation(raw);
   }
 
+  getTheme(): AppTheme {
+    const value = this.getJson<AppTheme>('theme');
+    return value === 'olive' ? 'olive' : 'lavender';
+  }
+
+  setTheme(value: AppTheme) {
+    this.setJson('theme', value === 'olive' ? 'olive' : 'lavender');
+  }
+
   setCategorisation(value: CategorisationConfig) {
     this.setJson('categorisation', this.normaliseCategorisation(value));
   }
@@ -148,7 +166,7 @@ export class SettingsService {
 
   getFrivolousIdleThreshold(): number {
     const val = this.getJson<number>('frivolousIdleThreshold');
-    return typeof val === 'number' ? val : DEFAULT_IDLE_THRESHOLD_SECONDS;
+    return typeof val === 'number' ? val : DEFAULT_FRIVOLOUS_IDLE_THRESHOLD_SECONDS;
   }
 
   setFrivolousIdleThreshold(value: number) {
@@ -274,6 +292,18 @@ export class SettingsService {
       throw new Error('Invalid day format for daily reset');
     }
     this.setJson('lastDailyWalletResetDay', day);
+  }
+
+  getLastDailySessionResetDay(): string | null {
+    const val = this.getJson<string>('lastDailySessionResetDay');
+    return typeof val === 'string' ? val : null;
+  }
+
+  setLastDailySessionResetDay(day: string) {
+    if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+      throw new Error('Invalid day format for daily session reset');
+    }
+    this.setJson('lastDailySessionResetDay', day);
   }
 
   getJournalConfig(): JournalConfig {
@@ -433,10 +463,11 @@ export class SettingsService {
 
   getEmergencyUsageState(): EmergencyUsageState {
     const raw = this.getJson<EmergencyUsageState>('emergencyUsage');
+    const today = this.currentDayKey();
     if (!raw || typeof raw !== 'object') {
-      return { day: new Date().toISOString().slice(0, 10), tokensUsed: 0, cooldownUntil: null };
+      return { day: today, tokensUsed: 0, cooldownUntil: null };
     }
-    const day = typeof raw.day === 'string' ? raw.day : new Date().toISOString().slice(0, 10);
+    const day = typeof raw.day === 'string' ? raw.day : today;
     const tokensUsed = typeof raw.tokensUsed === 'number' && Number.isFinite(raw.tokensUsed) ? raw.tokensUsed : 0;
     const cooldownUntil =
       raw.cooldownUntil === null

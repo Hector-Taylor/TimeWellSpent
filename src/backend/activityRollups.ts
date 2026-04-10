@@ -10,6 +10,7 @@ export type ActivityRollup = {
   neutral: number;
   frivolity: number;
   draining: number;
+  emergency: number;
   idle: number;
   updatedAt: string;
 };
@@ -29,6 +30,7 @@ type RollupRow = {
   neutral: number;
   frivolity: number;
   draining: number;
+  emergency: number;
   idle: number;
   updated_at: string;
 };
@@ -43,17 +45,18 @@ export class ActivityRollupService {
 
   constructor(private database: Database) {
     this.listSinceStmt = this.db.prepare(
-      `SELECT device_id, hour_start, productive, neutral, frivolity, draining, idle, updated_at
+      `SELECT device_id, hour_start, productive, neutral, frivolity, draining, emergency, idle, updated_at
        FROM activity_rollups WHERE device_id = ? AND updated_at >= ? ORDER BY hour_start ASC`
     );
     this.upsertStmt = this.db.prepare(
-      `INSERT INTO activity_rollups(device_id, hour_start, productive, neutral, frivolity, draining, idle, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO activity_rollups(device_id, hour_start, productive, neutral, frivolity, draining, emergency, idle, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(device_id, hour_start) DO UPDATE SET
          productive = excluded.productive,
          neutral = excluded.neutral,
          frivolity = excluded.frivolity,
          draining = excluded.draining,
+         emergency = excluded.emergency,
          idle = excluded.idle,
          updated_at = excluded.updated_at`
     );
@@ -62,11 +65,11 @@ export class ActivityRollupService {
        FROM activities WHERE started_at <= ? AND (ended_at IS NULL OR ended_at >= ?)`
     );
     this.listForWindowStmt = this.db.prepare(
-      `SELECT device_id, hour_start, productive, neutral, frivolity, draining, idle, updated_at
+      `SELECT device_id, hour_start, productive, neutral, frivolity, draining, emergency, idle, updated_at
        FROM activity_rollups WHERE device_id = ? AND hour_start >= ? ORDER BY hour_start ASC`
     );
     this.listForWindowAllStmt = this.db.prepare(
-      `SELECT device_id, hour_start, productive, neutral, frivolity, draining, idle, updated_at
+      `SELECT device_id, hour_start, productive, neutral, frivolity, draining, emergency, idle, updated_at
        FROM activity_rollups WHERE hour_start >= ? ORDER BY hour_start ASC`
     );
   }
@@ -119,6 +122,7 @@ export class ActivityRollupService {
             neutral: 0,
             frivolity: 0,
             draining: 0,
+            emergency: 0,
             idle: 0,
             updatedAt: new Date().toISOString()
           });
@@ -127,7 +131,7 @@ export class ActivityRollupService {
         const activeSlice = active * fraction;
         const idleSlice = idle * fraction;
 
-        if (category === 'productive' || category === 'neutral' || category === 'frivolity' || category === 'draining') {
+        if (category === 'productive' || category === 'neutral' || category === 'frivolity' || category === 'draining' || category === 'emergency') {
           bucket[category] += activeSlice;
         } else {
           bucket.neutral += activeSlice;
@@ -141,6 +145,7 @@ export class ActivityRollupService {
       neutral: Math.round(rollup.neutral),
       frivolity: Math.round(rollup.frivolity),
       draining: Math.round(rollup.draining),
+      emergency: Math.round(rollup.emergency),
       idle: Math.round(rollup.idle)
     }));
   }
@@ -155,6 +160,7 @@ export class ActivityRollupService {
           rollup.neutral,
           rollup.frivolity,
           rollup.draining,
+          rollup.emergency,
           rollup.idle,
           rollup.updatedAt
         );
@@ -171,6 +177,7 @@ export class ActivityRollupService {
       neutral: row.neutral,
       frivolity: row.frivolity,
       draining: row.draining,
+      emergency: row.emergency ?? 0,
       idle: row.idle,
       updatedAt: row.updated_at
     }));
@@ -223,7 +230,7 @@ export class ActivityRollupService {
       const overlapSpanMs = overlapEndMs - overlapStartMs;
       if (overlapSpanMs <= 0) continue;
 
-      const activeTotal = row.productive + row.neutral + row.frivolity + row.draining;
+      const activeTotal = row.productive + row.neutral + row.frivolity + row.draining + (row.emergency ?? 0);
       const idleTotal = row.idle;
       const clipRatio = Math.min(1, overlapTotalMs / HOUR_MS);
       const active = activeTotal * clipRatio;
@@ -233,6 +240,7 @@ export class ActivityRollupService {
       totalsByCategory.neutral += row.neutral * clipRatio;
       totalsByCategory.frivolity += row.frivolity * clipRatio;
       totalsByCategory.draining += row.draining * clipRatio;
+      totalsByCategory.emergency += (row.emergency ?? 0) * clipRatio;
       totalsByCategory.idle += row.idle * clipRatio;
       totalSeconds += active;
 
@@ -247,6 +255,7 @@ export class ActivityRollupService {
         timeline[idx].neutral += row.neutral * clipRatio * fraction;
         timeline[idx].frivolity += row.frivolity * clipRatio * fraction;
         timeline[idx].draining += row.draining * clipRatio * fraction;
+        timeline[idx].emergency += (row.emergency ?? 0) * clipRatio * fraction;
         timeline[idx].idle += row.idle * clipRatio * fraction;
       }
     }
@@ -338,7 +347,7 @@ export class ActivityRollupService {
       const overlapSpanMs = overlapEndMs - overlapStartMs;
       if (overlapSpanMs <= 0) continue;
 
-      const activeTotal = row.productive + row.neutral + row.frivolity + row.draining;
+      const activeTotal = row.productive + row.neutral + row.frivolity + row.draining + (row.emergency ?? 0);
       const clipRatio = Math.min(1, overlapTotalMs / HOUR_MS);
       const active = activeTotal * clipRatio;
       totalSeconds += active;
@@ -347,6 +356,7 @@ export class ActivityRollupService {
       totalsByCategory.neutral += row.neutral * clipRatio;
       totalsByCategory.frivolity += row.frivolity * clipRatio;
       totalsByCategory.draining += row.draining * clipRatio;
+      totalsByCategory.emergency += (row.emergency ?? 0) * clipRatio;
       totalsByCategory.idle += row.idle * clipRatio;
 
       const startIdx = Math.max(0, Math.floor((overlapStartMs - windowStartMs) / HOUR_MS));
@@ -360,6 +370,7 @@ export class ActivityRollupService {
         timeline[idx].neutral += row.neutral * clipRatio * fraction;
         timeline[idx].frivolity += row.frivolity * clipRatio * fraction;
         timeline[idx].draining += row.draining * clipRatio * fraction;
+        timeline[idx].emergency += (row.emergency ?? 0) * clipRatio * fraction;
         timeline[idx].idle += row.idle * clipRatio * fraction;
       }
     }

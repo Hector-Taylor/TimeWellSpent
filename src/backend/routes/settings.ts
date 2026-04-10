@@ -6,6 +6,7 @@ import type { PaywallManager } from '../paywall';
 import type { LibraryService } from '../library';
 import type { ConsumptionLogService } from '../consumption';
 import type { ConsumptionLogKind, MarketRate } from '@shared/types';
+import { createExtensionSyncEnvelope } from '@shared/extensionSyncContract';
 
 export type SettingsRoutesContext = {
     settings: SettingsService;
@@ -17,6 +18,23 @@ export function createSettingsRoutes(ctx: SettingsRoutesContext): Router {
 
     router.get('/idle-threshold', (_req, res) => {
         res.json({ threshold: settings.getIdleThreshold() });
+    });
+
+    router.get('/theme', (_req, res) => {
+        res.json({ theme: settings.getTheme() });
+    });
+
+    router.post('/theme', (req, res) => {
+        try {
+            const { theme } = req.body as { theme?: string };
+            if (theme !== 'lavender' && theme !== 'olive') {
+                throw new Error('Invalid theme');
+            }
+            settings.setTheme(theme);
+            res.json({ ok: true });
+        } catch (error) {
+            res.status(400).json({ error: (error as Error).message });
+        }
     });
 
     router.post('/idle-threshold', (req, res) => {
@@ -251,6 +269,7 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
                 lastTick?: number;
                 spendRemainder?: number;
                 paused?: boolean;
+                manualPaused?: boolean;
                 purchasePrice?: number;
                 purchasedSeconds?: number;
                 packChainCount?: number;
@@ -269,6 +288,7 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
                     lastTick: session.lastTick,
                     spendRemainder: session.spendRemainder,
                     paused: session.paused,
+                    manualPaused: session.manualPaused,
                     purchasePrice: session.purchasePrice,
                     purchasedSeconds: session.purchasedSeconds,
                     packChainCount: session.packChainCount,
@@ -280,7 +300,7 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
                 return acc;
             }, {});
 
-            res.json({
+            const state = {
                 wallet: {
                     balance: wallet.getSnapshot().balance,
                     lastSynced: Date.now()
@@ -296,6 +316,7 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
                 })(),
                 pomodoro: pomodoro ? pomodoro.status() : null,
                 settings: {
+                    theme: settings.getTheme(),
                     frivolityDomains: categorisation.frivolity,
                     productiveDomains: categorisation.productive,
                     neutralDomains: categorisation.neutral,
@@ -316,7 +337,9 @@ export function createExtensionSyncRoutes(ctx: ExtensionSyncContext): Router {
                     alwaysGreyscale: settings.getAlwaysGreyscale()
                 },
                 sessions: sessionsRecord
-            });
+            };
+
+            res.json(createExtensionSyncEnvelope(state));
         } catch (error) {
             res.status(500).json({ error: (error as Error).message });
         }

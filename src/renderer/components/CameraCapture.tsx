@@ -5,8 +5,10 @@ const api: RendererApi = window.twsp;
 const MIN_CAPTURE_WIDTH = 160;
 const MIN_CAPTURE_HEIGHT = 120;
 const FRAME_WAIT_TIMEOUT_MS = 4000;
-const FACE_TARGET_LUMA = 104;
-const MAX_EXPOSURE_STRENGTH = 0.78;
+const FACE_TARGET_LUMA = 90;
+const MAX_EXPOSURE_STRENGTH = 0.44;
+const MIN_BACKLIGHT_DELTA = 18;
+const MIN_SCENE_LUMA_FOR_BACKLIGHT = 70;
 
 type CapturePayload = {
   subject?: string | null;
@@ -95,14 +97,15 @@ function compensateBacklight(ctx: CanvasRenderingContext2D, width: number, heigh
   );
   const backlightDelta = Math.max(0, fullLuma - centerLuma);
   const subjectUnderexposed = centerLuma < FACE_TARGET_LUMA;
-  if (!subjectUnderexposed) return;
+  // Only apply correction for genuine bright-background backlight scenes.
+  if (!subjectUnderexposed || backlightDelta < MIN_BACKLIGHT_DELTA || fullLuma < MIN_SCENE_LUMA_FOR_BACKLIGHT) return;
 
   const liftNeed = (FACE_TARGET_LUMA - centerLuma) / FACE_TARGET_LUMA;
   const backlightNeed = backlightDelta / 92;
-  const strength = Math.min(MAX_EXPOSURE_STRENGTH, Math.max(0.18, liftNeed * 0.9 + backlightNeed * 0.45));
+  const strength = Math.min(MAX_EXPOSURE_STRENGTH, Math.max(0.08, liftNeed * 0.55 + backlightNeed * 0.3));
   const gamma = 1 - strength * 0.38;
-  const contrast = 1 + strength * 0.08;
-  const highlightPreserve = 0.38 + strength * 0.3;
+  const contrast = 1 + strength * 0.04;
+  const highlightPreserve = 0.48 + strength * 0.24;
 
   for (let i = 0; i < data.length; i += 4) {
     const r = (data[i] ?? 0) / 255;
@@ -110,11 +113,13 @@ function compensateBacklight(ctx: CanvasRenderingContext2D, width: number, heigh
     const b = (data[i + 2] ?? 0) / 255;
     const srcLuma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     const brightMix = highlightPreserve * Math.max(0, (srcLuma - 0.68) / 0.32);
+    const shadowPreserve = 0.45 * Math.max(0, (0.4 - srcLuma) / 0.4);
 
     const map = (v: number) => {
-      const lifted = clamp01(v + strength * (1 - v) * 0.72);
+      const lifted = clamp01(v + strength * (1 - v) * 0.48);
       const curved = clamp01((Math.pow(lifted, gamma) - 0.5) * contrast + 0.5);
-      return clamp01(curved * (1 - brightMix) + v * brightMix);
+      const highlightSafe = clamp01(curved * (1 - brightMix) + v * brightMix);
+      return clamp01(highlightSafe * (1 - shadowPreserve) + v * shadowPreserve);
     };
 
     data[i] = Math.round(map(r) * 255);
@@ -181,6 +186,8 @@ async function captureFrame(payload: CapturePayload) {
     video.playsInline = true;
     video.muted = true;
     await video.play();
+    // Give auto-exposure a moment to settle after stream start.
+    await sleep(140);
     const { width, height } = await waitForUsableFrame(video);
     const maxWidth = 640;
     const scale = Math.min(1, maxWidth / width);

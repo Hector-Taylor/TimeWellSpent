@@ -23,9 +23,12 @@ import {
   isPomodoroSiteAllowed,
   normalizePomodoroDomain
 } from '@shared/pomodoroMatcher';
+import { normalizeOriginPathUrl } from '@shared/domainCanonicalization';
+import { DAY_START_HOUR, getLocalDayStartMs } from '@shared/time';
 import { AnalyticsService } from './analytics';
 import { LiteraryAnalyticsService } from './literaryAnalytics';
 import { WritingAnalyticsService } from './writingAnalytics';
+import { AnkiService } from './anki';
 import { EmergencyService } from './emergency';
 import { LibraryService } from './library';
 import { ConsumptionLogService } from './consumption';
@@ -33,6 +36,7 @@ import { FriendsService } from './friends';
 import { ReadingService } from './reading';
 import { TrophyService } from './trophies';
 import { CameraService } from './camera';
+import { PaywallCommandService } from './paywallCommands';
 
 // Route modules
 import {
@@ -47,6 +51,7 @@ import {
   createLiteraryAnalyticsRoutes,
   createWritingAnalyticsRoutes,
   createWritingRoutes,
+  createAnkiRoutes,
   createSettingsRoutes,
   createExtensionSyncRoutes,
   createFriendsRoutes,
@@ -72,6 +77,7 @@ export type BackendServices = {
   analytics: AnalyticsService;
   literaryAnalytics: LiteraryAnalyticsService;
   writingAnalytics: WritingAnalyticsService;
+  anki: AnkiService;
   intentions: IntentionService;
   budgets: BudgetService;
   library: LibraryService;
@@ -80,6 +86,7 @@ export type BackendServices = {
   reading: ReadingService;
   friends: FriendsService;
   camera: CameraService;
+  paywallCommands: PaywallCommandService;
   ui: {
     onNavigate: (cb: (payload: { view: string }) => void) => void;
   };
@@ -97,6 +104,7 @@ const PORT = 17600;
 
 type BackendOptions = {
   onAuthCallback?: (url: string) => void;
+  pickAnkiDeckFile?: () => Promise<string | null> | string | null;
   friendsProvider?: {
     profile: () => Promise<FriendProfile | null>;
     meSummary?: (windowHours?: number) => Promise<FriendSummary | null>;
@@ -112,9 +120,10 @@ export async function createBackend(
   options?: BackendOptions
 ): Promise<BackendServices> {
   const dayKey = (date: Date) => {
-    const year = date.getFullYear();
-    const month = `${date.getMonth() + 1}`.padStart(2, '0');
-    const day = `${date.getDate()}`.padStart(2, '0');
+    const start = new Date(getLocalDayStartMs(date.getTime(), DAY_START_HOUR));
+    const year = start.getFullYear();
+    const month = `${start.getMonth() + 1}`.padStart(2, '0');
+    const day = `${start.getDate()}`.padStart(2, '0');
     return `${year}-${month}-${day}`;
   };
 
@@ -137,22 +146,18 @@ export async function createBackend(
   const emergency = new EmergencyService(settings, wallet, paywall, consumption);
   const literaryAnalytics = new LiteraryAnalyticsService(database);
   const writingAnalytics = new WritingAnalyticsService(database);
+  const anki = new AnkiService(database, wallet);
   const productiveOverrides = { urls: new Set<string>(), apps: new Set<string>() };
 
   // Helpers for productive overrides
   const normaliseProductiveUrl = (value: string) => {
-    try {
-      const parsed = new URL(value);
-      parsed.hash = '';
-      parsed.search = '';
-      let path = parsed.pathname;
-      if (path.length > 1 && path.endsWith('/')) {
-        path = path.slice(0, -1);
-      }
-      return `${parsed.origin}${path}`;
-    } catch {
-      return null;
+    const normalized = normalizeOriginPathUrl(value);
+    if (!normalized) return null;
+    let path = normalized;
+    if (path.length > 1 && path.endsWith('/')) {
+      path = path.slice(0, -1);
     }
+    return path;
   };
 
   const rebuildProductiveOverrides = () => {
@@ -190,8 +195,24 @@ export async function createBackend(
     settings.setLastDailyWalletResetDay(today);
   };
 
-  applyDailyWalletReset();
-  const dailyResetTimer = setInterval(applyDailyWalletReset, 60_000);
+  const applyDailySessionReset = () => {
+    const today = dayKey(new Date());
+    const last = settings.getLastDailySessionResetDay();
+    if (last === today) return;
+    const expired = paywall.expireAllSessions('day-rollover');
+    settings.setLastDailySessionResetDay(today);
+    if (expired > 0) {
+      logger.info(`Expired ${expired} paywall session(s) at day rollover (${today})`);
+    }
+  };
+
+  const applyDailyHousekeeping = () => {
+    applyDailySessionReset();
+    applyDailyWalletReset();
+  };
+
+  applyDailyHousekeeping();
+  const dailyHousekeepingTimer = setInterval(applyDailyHousekeeping, 60_000);
 
   const isAllowedByPomodoro = (session: ReturnType<PomodoroService['status']> | null, event: ActivityEvent & { idleSeconds?: number }) => {
     if (!session || session.state !== 'active') return true;
@@ -316,9 +337,18 @@ export async function createBackend(
   const intentions = new IntentionService(database);
   const budgets = new BudgetService(database);
   const analytics = new AnalyticsService(database, () => settings.getExcludedKeywords());
-  const reading = new ReadingService(settings);
+  const reading = new ReadingService(settings, database);
   const friends = new FriendsService(settings, analytics);
   const trophies = new TrophyService(database, analytics, consumption, library, wallet, settings);
+  const paywallCommands = new PaywallCommandService({
+    economy,
+    paywall,
+    wallet,
+    market,
+    emergency,
+    settings,
+    consumption
+  });
 
   // Consumption logging
   library.on('consumed', ({ item, consumedAt }) => {
@@ -350,6 +380,7 @@ export async function createBackend(
   });
 
   paywall.on('session-ended', (payload: { domain: string; reason: string; durationSeconds?: number | null }) => {
+    if (payload.reason === 'day-rollover') return;
     if (payload.durationSeconds != null && payload.durationSeconds <= 60) {
       consumption.record({
         kind: 'paywall-exit',
@@ -430,12 +461,11 @@ export async function createBackend(
   // WebSocket broadcaster
   broadcaster = new WebSocketBroadcaster({
     economy,
-    paywall,
     wallet,
     focus,
     pomodoro,
     library,
-    emergency,
+    paywallCommands,
     handleActivity
   });
 
@@ -443,7 +473,7 @@ export async function createBackend(
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
   app.use('/wallet', createWalletRoutes(wallet));
   app.use('/market', createMarketRoutes({ market, paywall, broadcastMarketRates }));
-  app.use('/paywall', createPaywallRoutes({ economy, paywall, wallet, market, emergency, settings, consumption }));
+  app.use('/paywall', createPaywallRoutes({ commands: paywallCommands }));
   app.use('/activities', createActivitiesRoutes(activityTracker));
   app.use('/intentions', createIntentionsRoutes(intentions));
   app.use('/budgets', createBudgetsRoutes(budgets));
@@ -452,6 +482,7 @@ export async function createBackend(
   app.use('/analytics/literary', createLiteraryAnalyticsRoutes(literaryAnalytics));
   app.use('/analytics/writing', createWritingAnalyticsRoutes(writingAnalytics));
   app.use('/writing', createWritingRoutes(writingAnalytics));
+  app.use('/anki', createAnkiRoutes({ anki, economy, settings, pickDeckFile: options?.pickAnkiDeckFile }));
   app.use('/settings', createSettingsRoutes({ settings }));
   app.use('/extension', createExtensionSyncRoutes({ settings, market, wallet, paywall, library, consumption, pomodoro }));
   app.use('/trophies', createTrophyRoutes({ trophies, profile: options?.friendsProvider?.profile }));
@@ -483,7 +514,7 @@ export async function createBackend(
   });
 
   const stop = async () => {
-    clearInterval(dailyResetTimer);
+    clearInterval(dailyHousekeepingTimer);
     economy.destroy();
     focus.dispose();
     pomodoro.dispose();
@@ -523,9 +554,11 @@ export async function createBackend(
     analytics,
     literaryAnalytics,
     writingAnalytics,
+    anki,
     reading,
     friends,
     camera,
+    paywallCommands,
     ui: {
       onNavigate: (cb) => {
         uiEvents.on('navigate', cb);

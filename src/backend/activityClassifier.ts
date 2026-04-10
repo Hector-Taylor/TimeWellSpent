@@ -1,6 +1,7 @@
 import type { ActivityCategory, CategorisationConfig } from '@shared/types';
 import { DEFAULT_CATEGORISATION, DEFAULT_IDLE_THRESHOLD_SECONDS } from './defaults';
 import type { ActivityEvent } from './activity-tracker';
+import { canonicalizeDomain } from '@shared/domainCanonicalization';
 
 export type ClassifiedActivity = ActivityEvent & {
   category: ActivityCategory;
@@ -90,16 +91,6 @@ export class ActivityClassifier {
   }
 
   private expandDomainCandidates(domain: string | null, appName?: string | null): string[] {
-    // Aliases map subdomains/variants to their canonical domain for consistent matching
-    const aliasMap: Record<string, string> = {
-      'x.com': 'twitter.com',
-      'web.whatsapp.com': 'whatsapp.com',
-      'wa.me': 'whatsapp.com',
-      'web.telegram.org': 'telegram.org',
-      'm.facebook.com': 'facebook.com',
-      'mobile.twitter.com': 'twitter.com',
-      'm.youtube.com': 'youtube.com'
-    };
     const appAliasMap: Array<{ needle: string; domain: string }> = [
       { needle: 'whatsapp', domain: 'whatsapp.com' },
       { needle: 'telegram', domain: 'telegram.org' },
@@ -108,9 +99,9 @@ export class ActivityClassifier {
       { needle: 'messenger', domain: 'messenger.com' },
       { needle: 'wechat', domain: 'wechat.com' }
     ];
-    const normalizedDomain = domain?.toLowerCase() ?? '';
-    const expandedDomain = aliasMap[normalizedDomain] ?? normalizedDomain;
-    const candidates = new Set<string>([normalizedDomain, expandedDomain].filter(Boolean));
+    const rawDomain = canonicalizeDomain(domain ?? '', { applyAliases: false }) ?? '';
+    const normalizedDomain = canonicalizeDomain(domain ?? '') ?? '';
+    const candidates = new Set<string>([rawDomain, normalizedDomain].filter(Boolean));
     const normalizedApp = (appName ?? '').toLowerCase();
     if (normalizedApp) {
       for (const entry of appAliasMap) {

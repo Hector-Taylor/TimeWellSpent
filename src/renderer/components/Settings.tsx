@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import type {
+  AppTheme,
+  AnkiStatusSnapshot,
   CameraPhoto,
   EmergencyPolicyId,
   GuardrailColorFilter,
@@ -17,8 +19,8 @@ import EconomyTuner from './EconomyTuner';
 
 interface SettingsProps {
   api: RendererApi;
-  theme: 'lavender' | 'olive';
-  onThemeChange(theme: 'lavender' | 'olive'): void;
+  theme: AppTheme;
+  onThemeChange(theme: AppTheme): void;
 }
 
 const SETTINGS_PANES = [
@@ -90,6 +92,12 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
     collectionId: null,
     includeSubcollections: true
   });
+  const [ankiStatus, setAnkiStatus] = useState<AnkiStatusSnapshot | null>(null);
+  const [ankiLoading, setAnkiLoading] = useState(false);
+  const [ankiBusy, setAnkiBusy] = useState(false);
+  const [ankiImportPath, setAnkiImportPath] = useState('');
+  const [ankiMessage, setAnkiMessage] = useState<string | null>(null);
+  const [ankiError, setAnkiError] = useState<string | null>(null);
   const [zoteroCollections, setZoteroCollections] = useState<ZoteroCollection[]>([]);
   const [zoteroCollectionsLoading, setZoteroCollectionsLoading] = useState(false);
   const [resetScope, setResetScope] = useState<'trophies' | 'wallet' | 'all'>('trophies');
@@ -130,6 +138,7 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
     api.settings.guardrailColorFilter().then(setGuardrailColorFilter).catch(() => { });
     api.settings.alwaysGreyscale().then(setAlwaysGreyscale).catch(() => { });
     api.integrations.zotero.config().then(setZoteroConfig).catch(() => { });
+    api.anki.status().then(setAnkiStatus).catch(() => { });
   }, [api.settings, api.integrations.zotero]);
 
   const refreshCameraPhotos = async () => {
@@ -215,6 +224,61 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
       setError('Failed to load Zotero collections. Is Zotero installed and opened at least once?');
     } finally {
       setZoteroCollectionsLoading(false);
+    }
+  }
+
+  async function refreshAnkiStatus(showLoader = true) {
+    if (showLoader) setAnkiLoading(true);
+    setAnkiError(null);
+    try {
+      const status = await api.anki.status();
+      setAnkiStatus(status);
+      return status;
+    } catch (err) {
+      const message = (err as Error).message || 'Failed to load Anki decks.';
+      setAnkiError(message);
+      throw err;
+    } finally {
+      if (showLoader) setAnkiLoading(false);
+    }
+  }
+
+  async function handlePickAnkiDeck() {
+    if (ankiBusy) return;
+    setAnkiBusy(true);
+    setAnkiError(null);
+    setAnkiMessage(null);
+    try {
+      const picked = await api.anki.pickDeckFile();
+      if (picked) setAnkiImportPath(picked);
+    } catch (err) {
+      setAnkiError((err as Error).message || 'Deck picker unavailable.');
+    } finally {
+      setAnkiBusy(false);
+    }
+  }
+
+  async function handleImportAnkiDeck() {
+    if (ankiBusy) return;
+    const path = ankiImportPath.trim();
+    if (!path) {
+      setAnkiError('Choose an Anki deck package first.');
+      return;
+    }
+    setAnkiBusy(true);
+    setAnkiError(null);
+    setAnkiMessage(null);
+    try {
+      const response = await api.anki.importDeck(path);
+      setAnkiStatus(response.status);
+      setAnkiImportPath('');
+      setAnkiMessage(
+        `Imported ${response.result.cardsImported + response.result.cardsUpdated} cards across ${response.result.decksImported} deck${response.result.decksImported === 1 ? '' : 's'}.`
+      );
+    } catch (err) {
+      setAnkiError((err as Error).message || 'Deck import failed.');
+    } finally {
+      setAnkiBusy(false);
     }
   }
 
@@ -308,8 +372,9 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
     <section className="panel">
       <header className="panel-header">
         <div>
+          <p className="eyebrow">System tuning</p>
           <h1>Settings</h1>
-          <p className="subtle">Tune policies, domains, economy, and sync.</p>
+          <p className="subtle">Tune policies, domains, sync, and guardrails without hunting through scattered menus.</p>
         </div>
       </header>
 
@@ -796,6 +861,68 @@ export default function Settings({ api, theme, onThemeChange }: SettingsProps) {
                       {selectedZoteroCollection ? `Selected: ${selectedZoteroCollection.path}` : 'No collection selected.'}
                     </p>
                   </div>
+                )}
+              </div>
+
+              <div className="card settings-section">
+                <div className="settings-section-header">
+                  <h3>Anki decks</h3>
+                  <p className="subtle">Import desktop deck packages and verify what the paywall study queue can see.</p>
+                </div>
+                <div className="settings-row">
+                  <label style={{ gridColumn: '1 / -1' }}>
+                    Deck package path
+                    <input
+                      type="text"
+                      placeholder="/Users/you/Downloads/german.apkg"
+                      value={ankiImportPath}
+                      onChange={(e) => setAnkiImportPath(e.target.value)}
+                      disabled={ankiBusy}
+                    />
+                  </label>
+                </div>
+                <div className="settings-actions">
+                  <button type="button" className="secondary" onClick={handlePickAnkiDeck} disabled={ankiBusy}>
+                    {ankiBusy ? 'Working…' : 'Choose deck…'}
+                  </button>
+                  <button type="button" className="primary" onClick={handleImportAnkiDeck} disabled={ankiBusy || !ankiImportPath.trim()}>
+                    {ankiBusy ? 'Importing…' : 'Import deck'}
+                  </button>
+                  <button type="button" className="ghost" onClick={() => { void refreshAnkiStatus(); }} disabled={ankiLoading || ankiBusy}>
+                    {ankiLoading ? 'Refreshing…' : 'Refresh decks'}
+                  </button>
+                </div>
+                {ankiMessage ? <p className="subtle" style={{ margin: 0 }}>{ankiMessage}</p> : null}
+                {ankiError ? <p className="error-text">{ankiError}</p> : null}
+                <div className="settings-pills">
+                  <span className="pill ghost">{ankiStatus?.decks.length ?? 0} decks</span>
+                  <span className="pill ghost">{ankiStatus?.totalDue ?? 0} due now</span>
+                  <span className="pill ghost">{ankiStatus?.reviewedToday ?? 0} reviewed today</span>
+                  <span className="pill ghost">{ankiStatus?.unlocksAvailable ?? 0} unlocks available</span>
+                </div>
+                {ankiStatus?.decks?.length ? (
+                  <div className="devices-list">
+                    {ankiStatus.decks.map((deck) => (
+                      <div key={deck.id} className="device-row">
+                        <div>
+                          <strong>{deck.name}</strong>
+                          <span className="subtle">
+                            {deck.cardCount} cards · {deck.dueCount} due · {deck.reviewedToday} reviewed today
+                          </span>
+                          <span className="subtle">
+                            {deck.sourcePath ?? 'Imported package path unavailable'}
+                          </span>
+                        </div>
+                        <span className="subtle">
+                          {deck.lastImportedAt ? `Imported ${new Date(deck.lastImportedAt).toLocaleString()}` : 'Not imported yet'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="subtle" style={{ margin: 0 }}>
+                    No imported decks yet. Choose an `.apkg` or `.colpkg` file to add it to TimeWellSpent.
+                  </p>
                 )}
               </div>
 

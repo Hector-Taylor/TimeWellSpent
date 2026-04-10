@@ -47,9 +47,22 @@ type SessionFadeMessage = {
   payload: { active: boolean; remainingSeconds?: number; fadeSeconds?: number };
 };
 
+type SessionHomeTransitionMessage = {
+  type: 'SESSION_HOME_TRANSITION';
+  payload: { fadeOutMs?: number };
+};
+
 type EncouragementMessage = {
   type: 'ENCOURAGEMENT_OVERLAY';
   payload: { message: string };
+};
+
+type EmergencyIntentCheckMessage = {
+  type: 'EMERGENCY_INTENT_CHECK';
+  payload: {
+    domain: string;
+    justification?: string;
+  };
 };
 
 type ReadingItem = {
@@ -62,6 +75,41 @@ type ReadingItem = {
   action: { kind: 'deeplink' | 'file'; url?: string; path?: string; app?: string };
   thumbDataUrl?: string;
   iconDataUrl?: string;
+};
+
+type AnkiStatusPayload = {
+  decks: Array<{
+    id: number;
+    name: string;
+    sourcePath: string | null;
+    cardCount: number;
+    dueCount: number;
+    reviewedToday: number;
+    lastImportedAt: string | null;
+    lastReviewedAt: string | null;
+  }>;
+  dueCards: Array<{
+    id: number;
+    deckId: number;
+    deckName: string;
+    front: string;
+    back: string;
+    tags: string[];
+    noteType: string | null;
+    dueAt: string;
+    intervalDays: number;
+    easeFactor: number;
+    repetitions: number;
+    lapses: number;
+    suspended: boolean;
+    lastReviewedAt: string | null;
+  }>;
+  totalDue: number;
+  reviewedToday: number;
+  totalReviewMsToday: number;
+  availableUnlockReviews: number;
+  unlockThreshold: number;
+  unlocksAvailable: number;
 };
 
 type LibraryItem = {
@@ -140,6 +188,7 @@ type StatusResponse = {
     lastEnded: { domain: string; justification?: string; endedAt: number } | null;
     reviewStats: { total: number; kept: number; notKept: number };
   };
+  anki?: AnkiStatusPayload;
 };
 
 // console.info('TimeWellSpent content script booted');
@@ -149,14 +198,16 @@ let heartbeatTimer: number | null = null;
 let contextInvalidated = false;
 const ACTIVITY_PULSE_MIN_MS = 3000;
 let lastActivityPulse = 0;
-let pageHideRefCount = 0;
 const COLOR_FILTER_STYLE_ID = 'tws-color-filter-style';
 const HUD_HOST_ID = 'tws-hud-host';
+const SHADOW_HOST_ID = 'tws-shadow-host';
+const EMERGENCY_INTENT_HOST_ID = 'tws-emergency-intent-host';
 let hudHost: HTMLDivElement | null = null;
 let hudRoot: ReturnType<typeof createRoot> | null = null;
 let hudKey: string | null = null;
 let hudKind: 'glance' | 'pomodoro' | 'writing' | null = null;
 let pomodoroOverlayCleanup: (() => void) | null = null;
+let emergencyIntentCleanup: (() => void) | null = null;
 let ambientWritingHudSession: WritingHudSessionState | null = null;
 let hiddenAmbientWritingCanonicalKey: string | null = null;
 
@@ -286,7 +337,7 @@ function findActiveSessionForDomain(state: ContentSyncState, domain: string | nu
     const sessionDomain = session?.domain ?? key;
     if (!matchesDomain(sessionDomain, domain)) continue;
     if (session?.paused) continue;
-    if (session?.allowedUrl) {
+    if (session?.allowedUrl && session.mode !== 'emergency') {
       const expected = toBaseUrl(session.allowedUrl);
       const current = toBaseUrl(window.location.href);
       if (!expected || !current || expected !== current) continue;
@@ -323,6 +374,116 @@ function unmountGlanceHud() {
   }
 }
 
+function clearBlockingArtifacts() {
+  const host = document.getElementById(SHADOW_HOST_ID);
+  host?.remove();
+  const styleTag = document.getElementById('tws-page-hide');
+  styleTag?.remove();
+}
+
+function dismissEmergencyIntentPrompt() {
+  const cleanup = emergencyIntentCleanup;
+  emergencyIntentCleanup = null;
+  if (cleanup) {
+    cleanup();
+    return;
+  }
+  const host = document.getElementById(EMERGENCY_INTENT_HOST_ID);
+  host?.remove();
+}
+
+function mountEmergencyIntentPrompt(payload: EmergencyIntentCheckMessage['payload']) {
+  dismissEmergencyIntentPrompt();
+  if (!document.body) {
+    document.addEventListener('DOMContentLoaded', () => {
+      mountEmergencyIntentPrompt(payload);
+    }, { once: true });
+    return;
+  }
+
+  const host = document.createElement('div');
+  host.id = EMERGENCY_INTENT_HOST_ID;
+  host.style.position = 'fixed';
+  host.style.zIndex = '2147483646';
+  host.style.inset = '0';
+  host.style.pointerEvents = 'auto';
+  document.body.appendChild(host);
+
+  const shadow = host.attachShadow({ mode: 'open' });
+  const styleSheet = document.createElement('style');
+  styleSheet.textContent = styles;
+  shadow.appendChild(styleSheet);
+
+  const mountPoint = document.createElement('div');
+  mountPoint.className = 'tws-emergency-intent-shell';
+  shadow.appendChild(mountPoint);
+
+  const root = createRoot(mountPoint);
+  let closed = false;
+  let decisionInFlight = false;
+
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    emergencyIntentCleanup = null;
+    try {
+      root.unmount();
+    } catch {
+      // ignore
+    }
+    host.remove();
+  };
+
+  const submitDecision = async (outcome: 'intentional' | 'accident') => {
+    if (decisionInFlight) return;
+    decisionInFlight = true;
+    try {
+      await chrome.runtime.sendMessage({
+        type: 'EMERGENCY_INTENT_DECISION',
+        payload: {
+          domain: payload.domain,
+          outcome
+        }
+      });
+    } catch {
+      // Best effort only.
+    } finally {
+      close();
+    }
+  };
+
+  const escapedJustification = payload.justification?.trim() ? payload.justification.trim() : null;
+  root.render(
+    <div className="tws-emergency-intent-wrap">
+      <div className="tws-emergency-intent-card" role="dialog" aria-live="polite" aria-label="Emergency intent check">
+        <p className="tws-emergency-intent-eyebrow">Emergency check-in</p>
+        <h3>Do you mean to be here?</h3>
+        <p className="tws-subtle" style={{ margin: 0 }}>
+          Emergency mode is active for <strong>{payload.domain}</strong>.
+        </p>
+        <p className="tws-subtle" style={{ margin: 0 }}>
+          If yes, you keep full access until you end it. If no, you get a discouraged 5-minute window before blocking resumes.
+        </p>
+        {escapedJustification && (
+          <p className="tws-subtle tws-emergency-intent-reason">
+            Reason saved: “{escapedJustification}”
+          </p>
+        )}
+        <div className="tws-emergency-intent-actions">
+          <button type="button" className="tws-secondary" onClick={() => { void submitDecision('intentional'); }}>
+            I mean to be here
+          </button>
+          <button type="button" className="tws-primary" onClick={() => { void submitDecision('accident'); }}>
+            I don’t mean to be here
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  emergencyIntentCleanup = close;
+}
+
 function unmountPomodoroOverlay() {
   const cleanup = pomodoroOverlayCleanup;
   pomodoroOverlayCleanup = null;
@@ -330,14 +491,7 @@ function unmountPomodoroOverlay() {
     cleanup();
     return;
   }
-  const host = document.getElementById('tws-shadow-host');
-  host?.remove();
-  if (document.body) {
-    document.body.style.overflow = '';
-  }
-  const styleTag = document.getElementById('tws-page-hide');
-  styleTag?.remove();
-  pageHideRefCount = 0;
+  clearBlockingArtifacts();
 }
 
 function ensureHudHost() {
@@ -496,7 +650,7 @@ async function syncHudWithState() {
     unmountGlanceHud();
     return;
   }
-  if (document.getElementById('tws-shadow-host')) {
+  if (document.getElementById(SHADOW_HOST_ID)) {
     unmountGlanceHud();
     return;
   }
@@ -565,17 +719,27 @@ async function refreshGuardrailFilter() {
   try {
     const result = await chrome.storage.local.get('state');
     const state = (result?.state ?? {}) as ContentSyncState;
+    const domain = getCurrentDomain();
+    const session = findActiveSessionForDomain(state, domain);
+
+    // Emergency mode should keep sites fully usable and readable.
+    if (session?.mode === 'emergency') {
+      if (document.getElementById(SHADOW_HOST_ID)) {
+        clearBlockingArtifacts();
+      }
+      applyGuardrailFilter('full-color');
+      return;
+    }
+
     const alwaysGreyscale = Boolean(state.settings?.alwaysGreyscale);
     if (alwaysGreyscale) {
       applyGuardrailFilter('greyscale');
       return;
     }
-    const domain = getCurrentDomain();
     if (!isFrivolousDomain(state, domain)) {
       applyGuardrailFilter('full-color');
       return;
     }
-    const session = findActiveSessionForDomain(state, domain);
     if (!session) {
       applyGuardrailFilter('full-color');
       return;
@@ -608,7 +772,7 @@ function sendHeartbeat() {
       payload: { url: window.location.href, title: document.title, mediaPlaying }
     })
     .catch(() => {
-      contextInvalidated = true;
+      // Ignore transient background wake-up failures.
     });
 }
 
@@ -620,6 +784,8 @@ function startHeartbeat() {
 }
 
 startHeartbeat();
+clearBlockingArtifacts();
+dismissEmergencyIntentPrompt();
 void refreshGuardrailFilter();
 void syncHudWithState();
 document.addEventListener('visibilitychange', () => {
@@ -687,7 +853,7 @@ function sendUserActivity(kind: string) {
       }
     })
     .catch(() => {
-      contextInvalidated = true;
+      // Ignore transient background wake-up failures.
     });
 }
 
@@ -701,24 +867,35 @@ window.addEventListener('focus', () => sendUserActivity('focus'));
 
 try {
   chrome.runtime.onMessage.addListener((
-    message: BlockMessage | PomodoroBlockMessage | PomodoroUnblockMessage | DailyOnboardingMessage | SessionFadeMessage | EncouragementMessage | { type: 'TWS_PING' },
+    message:
+      | BlockMessage
+      | PomodoroBlockMessage
+      | PomodoroUnblockMessage
+      | DailyOnboardingMessage
+      | SessionFadeMessage
+      | SessionHomeTransitionMessage
+      | EncouragementMessage
+      | EmergencyIntentCheckMessage
+      | { type: 'TWS_PING' },
     _sender,
     sendResponse
   ) => {
-    if (contextInvalidated) return;
+    if (!isContextValid()) return;
     if (message.type === 'TWS_PING') {
       sendResponse?.({ ok: true });
-      return;
+      return false;
     }
-      if (message.type === 'BLOCK_SCREEN') {
-        unmountPomodoroOverlay();
-        unmountGlanceHud();
-        mountOverlay(message.payload.domain, message.payload.reason, message.payload.peek, {
-          keepPageVisible: message.payload.keepPageVisible
-        });
-        void refreshGuardrailFilter();
-      }
+    if (message.type === 'BLOCK_SCREEN') {
+      dismissEmergencyIntentPrompt();
+      unmountPomodoroOverlay();
+      unmountGlanceHud();
+      mountOverlay(message.payload.domain, message.payload.reason, message.payload.peek, {
+        keepPageVisible: message.payload.keepPageVisible
+      });
+      void refreshGuardrailFilter();
+    }
     if (message.type === 'POMODORO_BLOCK') {
+      dismissEmergencyIntentPrompt();
       unmountPomodoroOverlay();
       unmountGlanceHud();
       mountPomodoroOverlay(message.payload);
@@ -730,6 +907,7 @@ try {
       void syncHudWithState();
     }
     if (message.type === 'DAILY_ONBOARDING') {
+      dismissEmergencyIntentPrompt();
       unmountPomodoroOverlay();
       unmountGlanceHud();
       mountDailyOnboarding(message.payload.domain, message.payload.forced);
@@ -738,10 +916,18 @@ try {
     if (message.type === 'SESSION_FADE') {
       handleSessionFade(message.payload);
     }
+    if (message.type === 'SESSION_HOME_TRANSITION') {
+      handleSessionHomeTransition(message.payload);
+    }
     if (message.type === 'ENCOURAGEMENT_OVERLAY') {
       showEncouragementOverlay(message.payload.message);
     }
-    return true;
+    if (message.type === 'EMERGENCY_INTENT_CHECK') {
+      mountEmergencyIntentPrompt(message.payload);
+      sendResponse?.({ ok: true });
+      return false;
+    }
+    return false;
   });
 } catch {
   contextInvalidated = true;
@@ -762,18 +948,18 @@ async function mountOverlay(
   domain: string,
   reason?: string,
   peek?: { allowed: boolean; isNewPage: boolean },
-  options?: { keepPageVisible?: boolean }
+  _options?: { keepPageVisible?: boolean }
 ) {
+  dismissEmergencyIntentPrompt();
   unmountPomodoroOverlay();
   unmountGlanceHud();
-  const removePageHide = options?.keepPageVisible ? () => undefined : hidePage();
   // Check for existing shadow host
-  const existingHost = document.getElementById('tws-shadow-host');
+  const existingHost = document.getElementById(SHADOW_HOST_ID);
   if (existingHost) existingHost.remove();
 
   // Create host element
   const host = document.createElement('div');
-  host.id = 'tws-shadow-host';
+  host.id = SHADOW_HOST_ID;
   // Ensure the host itself is on top of everything but doesn't block clicks if empty (though it won't be)
   host.style.position = 'fixed';
   host.style.zIndex = '2147483647';
@@ -781,6 +967,7 @@ async function mountOverlay(
   host.style.width = '100%';
   host.style.height = '100%';
   host.style.background = 'transparent';
+  host.style.pointerEvents = 'none';
 
   document.body.appendChild(host);
 
@@ -795,10 +982,8 @@ async function mountOverlay(
   // Create mount point inside shadow DOM
   const mountPoint = document.createElement('div');
   mountPoint.id = 'tws-mount-point';
+  mountPoint.style.pointerEvents = 'auto';
   shadow.appendChild(mountPoint);
-
-  // Prevent scrolling on the body
-  document.body.style.overflow = 'hidden';
 
   const placeholderStatus: StatusResponse = {
     balance: 0,
@@ -816,6 +1001,16 @@ async function mountOverlay(
       reviewStats: { total: 0, kept: 0, notKept: 0 }
     },
     journal: { url: null, minutes: 10 },
+    anki: {
+      decks: [],
+      dueCards: [],
+      totalDue: 0,
+      reviewedToday: 0,
+      totalReviewMsToday: 0,
+      availableUnlockReviews: 0,
+      unlockThreshold: 6,
+      unlocksAvailable: 0
+    },
     library: {
       items: [],
       replaceItems: [],
@@ -836,8 +1031,6 @@ async function mountOverlay(
       // ignore
     }
     host.remove();
-    document.body.style.overflow = '';
-    removePageHide();
     void refreshGuardrailFilter();
     void syncHudWithState();
   };
@@ -870,20 +1063,21 @@ async function mountOverlay(
 }
 
 async function mountDailyOnboarding(domain: string, forced?: boolean) {
+  dismissEmergencyIntentPrompt();
   unmountPomodoroOverlay();
   unmountGlanceHud();
-  const removePageHide = hidePage();
-  const existingHost = document.getElementById('tws-shadow-host');
+  const existingHost = document.getElementById(SHADOW_HOST_ID);
   if (existingHost) existingHost.remove();
 
   const host = document.createElement('div');
-  host.id = 'tws-shadow-host';
+  host.id = SHADOW_HOST_ID;
   host.style.position = 'fixed';
   host.style.zIndex = '2147483647';
   host.style.inset = '0';
   host.style.width = '100%';
   host.style.height = '100%';
   host.style.background = 'transparent';
+  host.style.pointerEvents = 'none';
 
   document.body.appendChild(host);
 
@@ -894,9 +1088,8 @@ async function mountDailyOnboarding(domain: string, forced?: boolean) {
 
   const mountPoint = document.createElement('div');
   mountPoint.id = 'tws-mount-point';
+  mountPoint.style.pointerEvents = 'auto';
   shadow.appendChild(mountPoint);
-
-  document.body.style.overflow = 'hidden';
 
   const placeholderStatus: StatusResponse = {
     balance: 0,
@@ -914,6 +1107,16 @@ async function mountDailyOnboarding(domain: string, forced?: boolean) {
       reviewStats: { total: 0, kept: 0, notKept: 0 }
     },
     journal: { url: null, minutes: 10 },
+    anki: {
+      decks: [],
+      dueCards: [],
+      totalDue: 0,
+      reviewedToday: 0,
+      totalReviewMsToday: 0,
+      availableUnlockReviews: 0,
+      unlockThreshold: 6,
+      unlocksAvailable: 0
+    },
     library: {
       items: [],
       replaceItems: [],
@@ -948,8 +1151,6 @@ async function mountDailyOnboarding(domain: string, forced?: boolean) {
       // ignore
     }
     host.remove();
-    document.body.style.overflow = '';
-    removePageHide();
     void refreshGuardrailFilter();
     void syncHudWithState();
   };
@@ -983,28 +1184,29 @@ async function mountDailyOnboarding(domain: string, forced?: boolean) {
 }
 
 function mountPomodoroOverlay(payload: PomodoroBlockMessage['payload']) {
+  dismissEmergencyIntentPrompt();
   unmountPomodoroOverlay();
   unmountGlanceHud();
-  const removePageHide = hidePage();
   // Remove existing host
-  const existingHost = document.getElementById('tws-shadow-host');
+  const existingHost = document.getElementById(SHADOW_HOST_ID);
   if (existingHost) existingHost.remove();
 
   const host = document.createElement('div');
-  host.id = 'tws-shadow-host';
+  host.id = SHADOW_HOST_ID;
   host.style.position = 'fixed';
   host.style.zIndex = '2147483647';
   host.style.inset = '0';
   host.style.width = '100%';
   host.style.height = '100%';
   host.style.background = 'transparent';
+  host.style.pointerEvents = 'none';
   document.body.appendChild(host);
 
   const shadow = host.attachShadow({ mode: 'open' });
   const mountPoint = document.createElement('div');
   mountPoint.id = 'tws-mount-point';
+  mountPoint.style.pointerEvents = 'auto';
   shadow.appendChild(mountPoint);
-  document.body.style.overflow = 'hidden';
 
   const root = createRoot(mountPoint);
   root.render(
@@ -1031,8 +1233,6 @@ function mountPomodoroOverlay(payload: PomodoroBlockMessage['payload']) {
   );
   const cleanup = () => {
     host.remove();
-    document.body.style.overflow = '';
-    removePageHide();
     void refreshGuardrailFilter();
     void syncHudWithState();
   };
@@ -1040,33 +1240,33 @@ function mountPomodoroOverlay(payload: PomodoroBlockMessage['payload']) {
   return cleanup;
 }
 
-function hidePage() {
-  const STYLE_ID = 'tws-page-hide';
-  pageHideRefCount += 1;
-  let styleTag = document.getElementById(STYLE_ID) as HTMLStyleElement | null;
-  if (!styleTag) {
-    styleTag = document.createElement('style');
-    styleTag.id = STYLE_ID;
-    styleTag.textContent = `
-      html, body { background: #000 !important; }
-      body > :not(#tws-shadow-host) { display: none !important; }
-    `;
-    document.documentElement.prepend(styleTag);
-  }
-  return () => {
-    pageHideRefCount = Math.max(0, pageHideRefCount - 1);
-    if (pageHideRefCount === 0) {
-      styleTag?.remove();
-    }
-    document.documentElement.style.visibility = '';
-    document.body.style.visibility = '';
-  };
-}
-
 // Fade-to-black overlay for gentle session ending
 let fadeHost: HTMLElement | null = null;
 let fadeShadow: ShadowRoot | null = null;
 let fadeOverlay: HTMLDivElement | null = null;
+
+function ensureFadeOverlay() {
+  if (fadeHost && fadeOverlay) return fadeOverlay;
+
+  fadeHost = document.createElement('div');
+  fadeHost.id = 'tws-fade-host';
+  fadeHost.style.position = 'fixed';
+  fadeHost.style.inset = '0';
+  fadeHost.style.pointerEvents = 'none';
+  fadeHost.style.zIndex = '2147483646';
+  document.body.appendChild(fadeHost);
+  fadeShadow = fadeHost.attachShadow({ mode: 'open' });
+  fadeOverlay = document.createElement('div');
+  fadeOverlay.style.position = 'fixed';
+  fadeOverlay.style.inset = '0';
+  fadeOverlay.style.background = 'radial-gradient(circle at 50% 20%, rgba(10, 14, 24, 0.22), rgba(0, 0, 0, 0.98) 72%)';
+  fadeOverlay.style.backdropFilter = 'blur(1.5px) brightness(0.8)';
+  fadeOverlay.style.setProperty('-webkit-backdrop-filter', 'blur(1.5px) brightness(0.8)');
+  fadeOverlay.style.opacity = '0';
+  fadeOverlay.style.transition = 'opacity 0.6s ease, backdrop-filter 0.6s ease, -webkit-backdrop-filter 0.6s ease';
+  fadeShadow.appendChild(fadeOverlay);
+  return fadeOverlay;
+}
 
 function handleSessionFade(payload: SessionFadeMessage['payload']) {
   if (!payload.active) {
@@ -1082,28 +1282,24 @@ function handleSessionFade(payload: SessionFadeMessage['payload']) {
   const remaining = payload.remainingSeconds ?? 0;
   const fadeSeconds = payload.fadeSeconds ?? 30;
   const ratio = Math.min(1, Math.max(0, 1 - remaining / Math.max(1, fadeSeconds)));
+  const overlay = ensureFadeOverlay();
 
-  if (!fadeHost) {
-    fadeHost = document.createElement('div');
-    fadeHost.id = 'tws-fade-host';
-    fadeHost.style.position = 'fixed';
-    fadeHost.style.inset = '0';
-    fadeHost.style.pointerEvents = 'none';
-    fadeHost.style.zIndex = '2147483646';
-    document.body.appendChild(fadeHost);
-    fadeShadow = fadeHost.attachShadow({ mode: 'open' });
-    fadeOverlay = document.createElement('div');
-    fadeOverlay.style.position = 'fixed';
-    fadeOverlay.style.inset = '0';
-    fadeOverlay.style.background = '#000';
-    fadeOverlay.style.opacity = '0';
-    fadeOverlay.style.transition = 'opacity 0.6s ease';
-    fadeShadow.appendChild(fadeOverlay);
+  if (overlay) {
+    overlay.style.transition = 'opacity 0.6s ease, backdrop-filter 0.6s ease, -webkit-backdrop-filter 0.6s ease';
+    overlay.style.backdropFilter = 'blur(1.5px) brightness(0.8)';
+    overlay.style.setProperty('-webkit-backdrop-filter', 'blur(1.5px) brightness(0.8)');
+    overlay.style.opacity = ratio.toString();
   }
+}
 
-  if (fadeOverlay) {
-    fadeOverlay.style.opacity = ratio.toString();
-  }
+function handleSessionHomeTransition(payload: SessionHomeTransitionMessage['payload']) {
+  const overlay = ensureFadeOverlay();
+  if (!overlay) return;
+  const fadeOutMs = Math.max(300, Math.min(4000, Math.round(payload.fadeOutMs ?? 1400)));
+  overlay.style.transition = `opacity ${fadeOutMs}ms cubic-bezier(0.22, 1, 0.36, 1), backdrop-filter ${fadeOutMs}ms cubic-bezier(0.22, 1, 0.36, 1), -webkit-backdrop-filter ${fadeOutMs}ms cubic-bezier(0.22, 1, 0.36, 1)`;
+  overlay.style.backdropFilter = 'blur(4px) brightness(0.3)';
+  overlay.style.setProperty('-webkit-backdrop-filter', 'blur(4px) brightness(0.3)');
+  overlay.style.opacity = '1';
 }
 
 let encourageHost: HTMLDivElement | null = null;

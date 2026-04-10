@@ -3,6 +3,7 @@ import type { Statement } from 'better-sqlite3';
 import type { MarketRate } from '@shared/types';
 import type { Database } from './storage';
 import { DEFAULT_MARKET_RATES } from './defaults';
+import { canonicalizeDomain } from '@shared/domainCanonicalization';
 
 export class MarketService extends EventEmitter {
   private db = this.database.connection;
@@ -32,6 +33,10 @@ export class MarketService extends EventEmitter {
     tx(DEFAULT_MARKET_RATES);
   }
 
+  private normalizeRateDomain(domain: string) {
+    return canonicalizeDomain(domain ?? '') ?? domain.trim().toLowerCase();
+  }
+
   listRates(): MarketRate[] {
     const rows = this.listStmt.all() as Array<{
       domain: string;
@@ -48,19 +53,26 @@ export class MarketService extends EventEmitter {
   }
 
   upsertRate(rate: MarketRate) {
-    this.upsertStmt.run(rate.domain, rate.ratePerMin, JSON.stringify(rate.packs), JSON.stringify(rate.hourlyModifiers));
-    this.emit('update', rate);
+    const domain = this.normalizeRateDomain(rate.domain);
+    const normalized: MarketRate = { ...rate, domain };
+    this.upsertStmt.run(domain, normalized.ratePerMin, JSON.stringify(normalized.packs), JSON.stringify(normalized.hourlyModifiers));
+    this.emit('update', normalized);
   }
 
   deleteRate(domain: string) {
-    this.db.prepare('DELETE FROM market_rates WHERE domain = ?').run(domain);
-    this.emit('update', { domain, deleted: true });
+    const normalizedDomain = this.normalizeRateDomain(domain);
+    this.db.prepare('DELETE FROM market_rates WHERE domain = ?').run(normalizedDomain);
+    this.emit('update', { domain: normalizedDomain, deleted: true });
   }
 
   getRate(domain: string): MarketRate | null {
-    const aliasMap: Record<string, string> = { 'x.com': 'twitter.com' };
-    const lookup = domain in aliasMap ? aliasMap[domain] : domain;
-    const row = this.getStmt.get(lookup) as { rate_per_min: number; packs_json: string; hourly_modifiers_json: string; domain: string } | undefined;
+    const canonical = canonicalizeDomain(domain ?? '');
+    const lookups = [domain, canonical].filter((value, idx, arr): value is string => Boolean(value) && arr.indexOf(value) === idx);
+    let row: { rate_per_min: number; packs_json: string; hourly_modifiers_json: string; domain: string } | undefined;
+    for (const lookup of lookups) {
+      row = this.getStmt.get(lookup) as { rate_per_min: number; packs_json: string; hourly_modifiers_json: string; domain: string } | undefined;
+      if (row) break;
+    }
     if (!row) return null;
     return {
       domain: row.domain,

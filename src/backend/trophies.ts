@@ -6,6 +6,7 @@ import type { ConsumptionLogService } from './consumption';
 import type { LibraryService } from './library';
 import type { WalletManager } from './wallet';
 import type { SettingsService } from './settings';
+import { canonicalizeDomain } from '@shared/domainCanonicalization';
 import type {
   ActivityCategory,
   AnalyticsOverview,
@@ -26,11 +27,7 @@ type ActivityRow = {
 };
 
 function canonicalDomain(domain: string) {
-  const cleaned = domain.trim().toLowerCase().replace(/^www\./, '');
-  const aliasMap: Record<string, string> = {
-    'x.com': 'twitter.com'
-  };
-  return aliasMap[cleaned] ?? cleaned;
+  return canonicalizeDomain(domain) ?? domain.trim().toLowerCase().replace(/^www\./, '');
 }
 
 type TrophyStatsState = {

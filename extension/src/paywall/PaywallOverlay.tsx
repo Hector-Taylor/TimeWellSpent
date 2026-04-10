@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import SudokuChallenge from './SudokuChallenge';
 import ReflectionSlideshow from './ReflectionSlideshow';
+import { useExtensionTheme } from '../theme';
+import { getEmergencyPolicyConfig } from '../../../src/shared/emergencyPolicy';
 
 type LinkPreview = {
   url: string;
@@ -22,6 +23,156 @@ type ReadingItem = {
   thumbDataUrl?: string;
   iconDataUrl?: string;
 };
+
+type AnkiDeckSummary = {
+  id: number;
+  name: string;
+  sourcePath: string | null;
+  cardCount: number;
+  dueCount: number;
+  reviewedToday: number;
+  lastImportedAt: string | null;
+  lastReviewedAt: string | null;
+};
+
+type AnkiDueCard = {
+  id: number;
+  deckId: number;
+  deckName: string;
+  front: string;
+  back: string;
+  tags: string[];
+  noteType: string | null;
+  dueAt: string;
+  intervalDays: number;
+  easeFactor: number;
+  repetitions: number;
+  lapses: number;
+  suspended: boolean;
+  lastReviewedAt: string | null;
+};
+
+type AnkiStatusPayload = {
+  decks: AnkiDeckSummary[];
+  dueCards: AnkiDueCard[];
+  totalDue: number;
+  reviewedToday: number;
+  totalReviewMsToday: number;
+  availableUnlockReviews: number;
+  unlockThreshold: number;
+  unlocksAvailable: number;
+};
+type AnkiAnalyticsPayload = {
+  windowDays: number;
+  generatedAt: string;
+  desiredRetention: number;
+  snapshot: {
+    cardsTotal: number;
+    cardsActive: number;
+    cardsLearned: number;
+    cardsMature: number;
+    cardsSuspended: number;
+    dueNow: number;
+    dueIn7Days: number;
+    dueIn30Days: number;
+    reviews: number;
+    successfulReviews: number;
+    successRate: number | null;
+    trueRetention: number | null;
+    matureRetention: number | null;
+    youngRetention: number | null;
+    averageResponseMs: number | null;
+    reviewMinutes: number;
+    currentStreakDays: number;
+    availableUnlockReviews: number;
+  };
+  ratings: {
+    again: number;
+    hard: number;
+    good: number;
+    easy: number;
+  };
+  daily: Array<{
+    day: string;
+    reviews: number;
+    successfulReviews: number;
+    successRate: number | null;
+    again: number;
+    hard: number;
+    good: number;
+    easy: number;
+    reviewMinutes: number;
+  }>;
+  hourly: Array<{
+    hour: number;
+    reviews: number;
+    successRate: number | null;
+    averageResponseMs: number | null;
+  }>;
+  heatmap: {
+    startDay: string;
+    endDay: string;
+    maxReviews: number;
+    cells: Array<{ day: string; reviews: number; level: 0 | 1 | 2 | 3 | 4 }>;
+  };
+  decks: Array<{
+    id: number;
+    name: string;
+    cardsTotal: number;
+    dueNow: number;
+    reviews: number;
+    retention: number | null;
+  }>;
+  risks: Array<{
+    id: string;
+    level: 'info' | 'warning';
+    title: string;
+    detail: string;
+  }>;
+  encouragement: string[];
+};
+type ZoteroProgressItem = {
+  itemKey: string;
+  attachmentKey?: string | null;
+  title: string;
+  subtitle?: string | null;
+  collectionPath?: string | null;
+  progress?: number | null;
+  currentPage?: number | null;
+  totalPages?: number | null;
+  lastSeenAt: string;
+  lastProgressChangeAt?: string | null;
+  pagesAdvancedWindow: number;
+  checkpointsWindow: number;
+  stalledDays?: number | null;
+};
+type ZoteroAnalyticsPayload = {
+  windowDays: number;
+  generatedAt: string;
+  snapshot: {
+    trackedItems: number;
+    activeItems: number;
+    completedItems: number;
+    progressedItemsWindow: number;
+    checkpointsWindow: number;
+    pagesAdvancedWindow: number;
+    averageProgress: number | null;
+    medianProgress: number | null;
+    lastSyncAt?: string | null;
+  };
+  progressBuckets: Array<{ id: string; label: string; count: number }>;
+  daily: Array<{
+    day: string;
+    checkpoints: number;
+    progressedEvents: number;
+    itemsTouched: number;
+    pagesAdvanced: number;
+  }>;
+  topProgressed: ZoteroProgressItem[];
+  recentlyOpened: ZoteroProgressItem[];
+  insights: string[];
+};
+type AnkiReviewRating = 'again' | 'hard' | 'good' | 'easy';
 
 type WritingProjectKind = 'journal' | 'paper' | 'substack' | 'fiction' | 'essay' | 'notes' | 'other';
 type WritingTargetKind = 'tws-doc' | 'google-doc' | 'tana-node' | 'external-link';
@@ -154,6 +305,7 @@ type StatusResponse = {
     lastEnded: { domain: string; justification?: string; endedAt: number } | null;
     reviewStats: { total: number; kept: number; notKept: number };
   };
+  anki?: AnkiStatusPayload;
 };
 
 type FriendConnection = {
@@ -294,17 +446,7 @@ function getColorFilterPriceMultiplier(filter: GuardrailColorFilter) {
   return COLOR_FILTER_PRICE_MULTIPLIER[filter] ?? 1;
 }
 
-type EmergencyPolicyConfig = {
-  id: 'off' | 'gentle' | 'balanced' | 'strict';
-  label: string;
-  tokensPerDay: number | null;
-  cooldownMinutes: number;
-  urlLocked: boolean;
-  debtCoins: number;
-};
 const METERED_PREMIUM_MULTIPLIER = 3.5;
-const SUDOKU_REQUIRED_SQUARES = 12;
-const SUDOKU_PASS_MINUTES = 12;
 const EMERGENCY_REFLECTION_GATE_MS = 10_000;
 
 type Suggestion =
@@ -484,11 +626,192 @@ function formatCount(value?: number | null) {
   return String(value);
 }
 
+function formatPercent(value?: number | null) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+  return `${Math.round(value * 100)}%`;
+}
+
 function formatFriendAddedAt(iso?: string) {
   if (!iso) return '';
   const parsed = new Date(iso);
   if (Number.isNaN(parsed.getTime())) return '';
   return parsed.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+function emptyAnkiStatus(): AnkiStatusPayload {
+  return {
+    decks: [],
+    dueCards: [],
+    totalDue: 0,
+    reviewedToday: 0,
+    totalReviewMsToday: 0,
+    availableUnlockReviews: 0,
+    unlockThreshold: 6,
+    unlocksAvailable: 0
+  };
+}
+
+function normalizeAnkiStatus(status?: Partial<AnkiStatusPayload> | null): AnkiStatusPayload {
+  const fallback = emptyAnkiStatus();
+  if (!status) return fallback;
+  return {
+    decks: Array.isArray(status.decks) ? status.decks : fallback.decks,
+    dueCards: Array.isArray(status.dueCards) ? status.dueCards : fallback.dueCards,
+    totalDue: Number.isFinite(status.totalDue as number) ? Number(status.totalDue) : fallback.totalDue,
+    reviewedToday: Number.isFinite(status.reviewedToday as number) ? Number(status.reviewedToday) : fallback.reviewedToday,
+    totalReviewMsToday: Number.isFinite(status.totalReviewMsToday as number) ? Number(status.totalReviewMsToday) : fallback.totalReviewMsToday,
+    availableUnlockReviews: Number.isFinite(status.availableUnlockReviews as number) ? Number(status.availableUnlockReviews) : fallback.availableUnlockReviews,
+    unlockThreshold: Number.isFinite(status.unlockThreshold as number) ? Math.max(1, Math.round(Number(status.unlockThreshold))) : fallback.unlockThreshold,
+    unlocksAvailable: Number.isFinite(status.unlocksAvailable as number) ? Number(status.unlocksAvailable) : fallback.unlocksAvailable
+  };
+}
+
+function emptyAnkiAnalytics(): AnkiAnalyticsPayload {
+  return {
+    windowDays: 30,
+    generatedAt: new Date(0).toISOString(),
+    desiredRetention: 0.9,
+    snapshot: {
+      cardsTotal: 0,
+      cardsActive: 0,
+      cardsLearned: 0,
+      cardsMature: 0,
+      cardsSuspended: 0,
+      dueNow: 0,
+      dueIn7Days: 0,
+      dueIn30Days: 0,
+      reviews: 0,
+      successfulReviews: 0,
+      successRate: null,
+      trueRetention: null,
+      matureRetention: null,
+      youngRetention: null,
+      averageResponseMs: null,
+      reviewMinutes: 0,
+      currentStreakDays: 0,
+      availableUnlockReviews: 0
+    },
+    ratings: {
+      again: 0,
+      hard: 0,
+      good: 0,
+      easy: 0
+    },
+    daily: [],
+    hourly: [],
+    heatmap: {
+      startDay: '',
+      endDay: '',
+      maxReviews: 0,
+      cells: []
+    },
+    decks: [],
+    risks: [],
+    encouragement: []
+  };
+}
+
+function normalizeAnkiAnalytics(payload?: Partial<AnkiAnalyticsPayload> | null): AnkiAnalyticsPayload {
+  const fallback = emptyAnkiAnalytics();
+  if (!payload) return fallback;
+  return {
+    windowDays: Number.isFinite(payload.windowDays as number) ? Math.max(1, Math.round(Number(payload.windowDays))) : fallback.windowDays,
+    generatedAt: typeof payload.generatedAt === 'string' && payload.generatedAt ? payload.generatedAt : fallback.generatedAt,
+    desiredRetention: Number.isFinite(payload.desiredRetention as number) ? Number(payload.desiredRetention) : fallback.desiredRetention,
+    snapshot: payload.snapshot
+      ? {
+        cardsTotal: Number(payload.snapshot.cardsTotal ?? 0),
+        cardsActive: Number(payload.snapshot.cardsActive ?? 0),
+        cardsLearned: Number(payload.snapshot.cardsLearned ?? 0),
+        cardsMature: Number(payload.snapshot.cardsMature ?? 0),
+        cardsSuspended: Number(payload.snapshot.cardsSuspended ?? 0),
+        dueNow: Number(payload.snapshot.dueNow ?? 0),
+        dueIn7Days: Number(payload.snapshot.dueIn7Days ?? 0),
+        dueIn30Days: Number(payload.snapshot.dueIn30Days ?? 0),
+        reviews: Number(payload.snapshot.reviews ?? 0),
+        successfulReviews: Number(payload.snapshot.successfulReviews ?? 0),
+        successRate: Number.isFinite(payload.snapshot.successRate as number) ? Number(payload.snapshot.successRate) : null,
+        trueRetention: Number.isFinite(payload.snapshot.trueRetention as number) ? Number(payload.snapshot.trueRetention) : null,
+        matureRetention: Number.isFinite(payload.snapshot.matureRetention as number) ? Number(payload.snapshot.matureRetention) : null,
+        youngRetention: Number.isFinite(payload.snapshot.youngRetention as number) ? Number(payload.snapshot.youngRetention) : null,
+        averageResponseMs: Number.isFinite(payload.snapshot.averageResponseMs as number) ? Number(payload.snapshot.averageResponseMs) : null,
+        reviewMinutes: Number(payload.snapshot.reviewMinutes ?? 0),
+        currentStreakDays: Number(payload.snapshot.currentStreakDays ?? 0),
+        availableUnlockReviews: Number(payload.snapshot.availableUnlockReviews ?? 0)
+      }
+      : fallback.snapshot,
+    ratings: payload.ratings
+      ? {
+        again: Number(payload.ratings.again ?? 0),
+        hard: Number(payload.ratings.hard ?? 0),
+        good: Number(payload.ratings.good ?? 0),
+        easy: Number(payload.ratings.easy ?? 0)
+      }
+      : fallback.ratings,
+    daily: Array.isArray(payload.daily) ? payload.daily : fallback.daily,
+    hourly: Array.isArray(payload.hourly) ? payload.hourly : fallback.hourly,
+    heatmap: payload.heatmap
+      ? {
+        startDay: typeof payload.heatmap.startDay === 'string' ? payload.heatmap.startDay : fallback.heatmap.startDay,
+        endDay: typeof payload.heatmap.endDay === 'string' ? payload.heatmap.endDay : fallback.heatmap.endDay,
+        maxReviews: Number(payload.heatmap.maxReviews ?? 0),
+        cells: Array.isArray(payload.heatmap.cells) ? payload.heatmap.cells : fallback.heatmap.cells
+      }
+      : fallback.heatmap,
+    decks: Array.isArray(payload.decks) ? payload.decks : fallback.decks,
+    risks: Array.isArray(payload.risks) ? payload.risks : fallback.risks,
+    encouragement: Array.isArray(payload.encouragement) ? payload.encouragement : fallback.encouragement
+  };
+}
+
+function emptyZoteroAnalytics(): ZoteroAnalyticsPayload {
+  return {
+    windowDays: 30,
+    generatedAt: new Date(0).toISOString(),
+    snapshot: {
+      trackedItems: 0,
+      activeItems: 0,
+      completedItems: 0,
+      progressedItemsWindow: 0,
+      checkpointsWindow: 0,
+      pagesAdvancedWindow: 0,
+      averageProgress: null,
+      medianProgress: null,
+      lastSyncAt: null
+    },
+    progressBuckets: [],
+    daily: [],
+    topProgressed: [],
+    recentlyOpened: [],
+    insights: []
+  };
+}
+
+function normalizeZoteroAnalytics(payload?: Partial<ZoteroAnalyticsPayload> | null): ZoteroAnalyticsPayload {
+  const fallback = emptyZoteroAnalytics();
+  if (!payload) return fallback;
+  return {
+    windowDays: Number.isFinite(payload.windowDays as number) ? Math.max(1, Math.round(Number(payload.windowDays))) : fallback.windowDays,
+    generatedAt: typeof payload.generatedAt === 'string' && payload.generatedAt ? payload.generatedAt : fallback.generatedAt,
+    snapshot: payload.snapshot
+      ? {
+        trackedItems: Number(payload.snapshot.trackedItems ?? 0),
+        activeItems: Number(payload.snapshot.activeItems ?? 0),
+        completedItems: Number(payload.snapshot.completedItems ?? 0),
+        progressedItemsWindow: Number(payload.snapshot.progressedItemsWindow ?? 0),
+        checkpointsWindow: Number(payload.snapshot.checkpointsWindow ?? 0),
+        pagesAdvancedWindow: Number(payload.snapshot.pagesAdvancedWindow ?? 0),
+        averageProgress: Number.isFinite(payload.snapshot.averageProgress as number) ? Number(payload.snapshot.averageProgress) : null,
+        medianProgress: Number.isFinite(payload.snapshot.medianProgress as number) ? Number(payload.snapshot.medianProgress) : null,
+        lastSyncAt: typeof payload.snapshot.lastSyncAt === 'string' ? payload.snapshot.lastSyncAt : null
+      }
+      : fallback.snapshot,
+    progressBuckets: Array.isArray(payload.progressBuckets) ? payload.progressBuckets : fallback.progressBuckets,
+    daily: Array.isArray(payload.daily) ? payload.daily : fallback.daily,
+    topProgressed: Array.isArray(payload.topProgressed) ? payload.topProgressed : fallback.topProgressed,
+    recentlyOpened: Array.isArray(payload.recentlyOpened) ? payload.recentlyOpened : fallback.recentlyOpened,
+    insights: Array.isArray(payload.insights) ? payload.insights : fallback.insights
+  };
 }
 
 function maxPopupTimeline(timeline: FriendTimeline | null) {
@@ -541,6 +864,7 @@ function playSoftChime() {
 const PEEK_EXIT_DISTANCE = 120;
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard' },
+  { id: 'study', label: 'Study' },
   { id: 'library', label: 'Library' },
   { id: 'domains', label: 'Domains' },
   { id: 'settings', label: 'Settings' },
@@ -551,15 +875,16 @@ const NAV_ITEMS = [
 ];
 
 const DASH_SCENES = [
-  { id: 'focus', label: 'Focus' },
+  { id: 'focus', label: 'Instead' },
   { id: 'signals', label: 'Signals' },
-  { id: 'library', label: 'Library' },
+  { id: 'study', label: 'Study' },
   { id: 'social', label: 'Social' }
 ] as const;
 
 type DashboardScene = (typeof DASH_SCENES)[number]['id'];
 
 export default function PaywallOverlay({ domain, status, reason, peek, onClose }: Props) {
+  const theme = useExtensionTheme();
   const [selectedMinutes, setSelectedMinutes] = useState(15);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showEmergencyForm, setShowEmergencyForm] = useState(false);
@@ -627,14 +952,6 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const [reflectionBusy, setReflectionBusy] = useState(false);
   const [emergencyReflectionGateUnlocked, setEmergencyReflectionGateUnlocked] = useState(!cameraModeEnabled);
   const [emergencyReflectionGateKey, setEmergencyReflectionGateKey] = useState(0);
-  const [theme, setTheme] = useState<'lavender' | 'olive'>(() => {
-    try {
-      const saved = localStorage.getItem('tws-theme');
-      return saved === 'olive' ? 'olive' : 'lavender';
-    } catch {
-      return 'lavender';
-    }
-  });
   const [sinisterIndex, setSinisterIndex] = useState(() =>
     SINISTER_PHRASES.length ? Math.floor(Math.random() * SINISTER_PHRASES.length) : 0
   );
@@ -653,6 +970,22 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const [trophies, setTrophies] = useState<TrophyStatus[]>([]);
   const [trophyProfile, setTrophyProfile] = useState<TrophyProfileSummary | null>(null);
   const [writingRedirects, setWritingRedirects] = useState<WritingRedirectData | null>(null);
+  const [anki, setAnki] = useState<AnkiStatusPayload>(() => normalizeAnkiStatus(status.anki));
+  const [ankiAnalytics, setAnkiAnalytics] = useState<AnkiAnalyticsPayload>(() => emptyAnkiAnalytics());
+  const [ankiDeckFilter, setAnkiDeckFilter] = useState<number | 'all'>('all');
+  const [ankiRevealAnswer, setAnkiRevealAnswer] = useState(false);
+  const [ankiReviewStartedAt, setAnkiReviewStartedAt] = useState<number | null>(null);
+  const [ankiBusy, setAnkiBusy] = useState(false);
+  const [ankiImportPath, setAnkiImportPath] = useState('');
+  const [ankiImportBusy, setAnkiImportBusy] = useState(false);
+  const [ankiPickerBusy, setAnkiPickerBusy] = useState(false);
+  const [ankiAnalyticsBusy, setAnkiAnalyticsBusy] = useState(false);
+  const [ankiInsightsOpen, setAnkiInsightsOpen] = useState(false);
+  const [ankiSessionReviews, setAnkiSessionReviews] = useState(0);
+  const [ankiLastReviewReward, setAnkiLastReviewReward] = useState<number | null>(null);
+  const [zoteroAnalytics, setZoteroAnalytics] = useState<ZoteroAnalyticsPayload>(() => emptyZoteroAnalytics());
+  const [zoteroAnalyticsBusy, setZoteroAnalyticsBusy] = useState(false);
+  const [zoteroInsightsOpen, setZoteroInsightsOpen] = useState(false);
 
   const sessionMeteredMultiplier = status.session?.meteredMultiplier ?? METERED_PREMIUM_MULTIPLIER;
   const baseRatePerMin = status.rate?.ratePerMin
@@ -700,19 +1033,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     }
   }, [dashScene]);
 
-  const emergencyPolicyConfig = useMemo<EmergencyPolicyConfig>(() => {
-    switch (emergencyPolicy) {
-      case 'off':
-        return { id: 'off', label: 'Off', tokensPerDay: 0, cooldownMinutes: 0, urlLocked: false, debtCoins: 0 };
-      case 'gentle':
-        return { id: 'gentle', label: 'Gentle', tokensPerDay: null, cooldownMinutes: 0, urlLocked: false, debtCoins: 0 };
-      case 'strict':
-        return { id: 'strict', label: 'Strict', tokensPerDay: 1, cooldownMinutes: 60, urlLocked: false, debtCoins: 15 };
-      case 'balanced':
-      default:
-        return { id: 'balanced', label: 'Balanced', tokensPerDay: 2, cooldownMinutes: 30, urlLocked: false, debtCoins: 8 };
-    }
-  }, [emergencyPolicy]);
+  const emergencyPolicyConfig = useMemo(() => getEmergencyPolicyConfig(emergencyPolicy), [emergencyPolicy]);
 
   const faviconUrl = (url: string) => `chrome://favicon2/?size=64&url=${encodeURIComponent(url)}`;
 
@@ -730,6 +1051,20 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     const normalized = normalizePreviewUrl(url);
     if (!normalized) return null;
     return linkPreviews[normalized] ?? null;
+  };
+
+  const urlKindLabel = (rawUrl: string) => {
+    try {
+      const url = new URL(rawUrl);
+      const host = url.hostname.replace(/^www\./, '').toLowerCase();
+      const path = url.pathname.toLowerCase();
+      if (host.includes('youtube.com') || host === 'youtu.be' || host.includes('vimeo.com') || host.includes('tiktok.com')) return 'Video';
+      if (path.endsWith('.pdf') || path.includes('/pdf')) return 'Paper';
+      if (host.includes('substack.com') || host.includes('medium.com') || host.includes('dev.to')) return 'Article';
+    } catch {
+      // ignore parse errors
+    }
+    return 'Read';
   };
 
   const youtubeThumbFromUrl = (rawUrl: string) => {
@@ -839,14 +1174,6 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       if (timer) window.clearTimeout(timer);
     };
   }, [showDiscouragement]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('tws-theme', theme);
-    } catch {
-      // ignore
-    }
-  }, [theme]);
 
   const refreshFriends = async () => {
     try {
@@ -964,6 +1291,211 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       window.clearInterval(intervalId);
     };
   }, [domain, status.desktopConnected]);
+
+  useEffect(() => {
+    setAnki(normalizeAnkiStatus(status.anki));
+  }, [status.anki]);
+
+  const refreshAnkiStatus = async (deckFilter?: number | 'all') => {
+    try {
+      const selected = deckFilter ?? ankiDeckFilter;
+      const payload: { deckId?: number; limit?: number } = { limit: 24 };
+      if (selected !== 'all') payload.deckId = selected;
+      const response = await chrome.runtime.sendMessage({
+        type: 'GET_ANKI_STATUS',
+        payload
+      }) as { success?: boolean; data?: AnkiStatusPayload };
+      if (response?.success && response.data) {
+        setAnki(normalizeAnkiStatus(response.data));
+      }
+    } catch {
+      // ignore; keep last known state
+    }
+  };
+
+  const refreshAnkiAnalytics = async (days = 30) => {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'GET_ANKI_ANALYTICS',
+        payload: { days }
+      }) as { success?: boolean; data?: AnkiAnalyticsPayload };
+      if (response?.success && response.data) {
+        setAnkiAnalytics(normalizeAnkiAnalytics(response.data));
+      }
+    } catch {
+      // ignore; keep last known analytics
+    }
+  };
+
+  const refreshZoteroAnalytics = async (days = 30, sync = true) => {
+    setZoteroAnalyticsBusy(true);
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'GET_ZOTERO_ANALYTICS',
+        payload: { days, limit: 8, sync }
+      }) as { success?: boolean; data?: ZoteroAnalyticsPayload };
+      if (response?.success && response.data) {
+        setZoteroAnalytics(normalizeZoteroAnalytics(response.data));
+      }
+    } catch {
+      // ignore; keep last known analytics
+    } finally {
+      setZoteroAnalyticsBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!status.desktopConnected) return;
+    void refreshAnkiStatus(ankiDeckFilter);
+    void refreshAnkiAnalytics(30);
+    void refreshZoteroAnalytics(30, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ankiDeckFilter, status.desktopConnected]);
+
+  useEffect(() => {
+    if (!status.desktopConnected) {
+      setZoteroAnalytics(emptyZoteroAnalytics());
+      return;
+    }
+    const id = window.setInterval(() => {
+      void refreshZoteroAnalytics(30, false);
+    }, 90_000);
+    return () => window.clearInterval(id);
+  }, [status.desktopConnected]);
+
+  const importAnkiDeckFromPath = async (deckPath: string) => {
+    const path = deckPath.trim();
+    if (!path) throw new Error('Deck path is required');
+    const response = await chrome.runtime.sendMessage({
+      type: 'IMPORT_ANKI_DECK',
+      payload: { path }
+    }) as { success?: boolean; error?: string; status?: AnkiStatusPayload };
+    if (!response?.success) throw new Error(response?.error ? String(response.error) : 'Deck import failed');
+    if (response.status) {
+      setAnki(normalizeAnkiStatus(response.status));
+    } else {
+      await refreshAnkiStatus('all');
+    }
+    setAnkiImportPath('');
+    setAnkiSessionReviews(0);
+    setAnkiLastReviewReward(null);
+  };
+
+  const handleImportAnkiDeck = async () => {
+    if (ankiImportBusy || ankiPickerBusy || ankiBusy || !ankiImportPath.trim()) return;
+    setAnkiImportBusy(true);
+    setError(null);
+    try {
+      await importAnkiDeckFromPath(ankiImportPath);
+      await refreshAnkiAnalytics(30);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setAnkiImportBusy(false);
+    }
+  };
+
+  const handlePickAnkiDeck = async () => {
+    if (ankiPickerBusy || ankiImportBusy || ankiBusy) return;
+    setAnkiPickerBusy(true);
+    setError(null);
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'PICK_ANKI_DECK'
+      }) as { success?: boolean; error?: string; path?: string | null; cancelled?: boolean };
+      if (!response?.success) throw new Error(response?.error ? String(response.error) : 'Deck picker unavailable');
+      const pickedPath = typeof response.path === 'string' ? response.path.trim() : '';
+      if (!pickedPath || response.cancelled) return;
+      setAnkiImportPath(pickedPath);
+      setAnkiImportBusy(true);
+      try {
+        await importAnkiDeckFromPath(pickedPath);
+        await refreshAnkiAnalytics(30);
+      } finally {
+        setAnkiImportBusy(false);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setAnkiPickerBusy(false);
+    }
+  };
+
+  const handleReviewAnkiCard = async (card: AnkiDueCard, rating: AnkiReviewRating) => {
+    if (ankiBusy || !card) return;
+    setAnkiBusy(true);
+    setError(null);
+    try {
+      const responseMs = ankiReviewStartedAt == null ? undefined : Math.max(50, Date.now() - ankiReviewStartedAt);
+      const response = await chrome.runtime.sendMessage({
+        type: 'REVIEW_ANKI_CARD',
+        payload: { cardId: card.id, rating, responseMs }
+      }) as {
+        success?: boolean;
+        error?: string;
+        result?: { rewardCoins?: number };
+        status?: AnkiStatusPayload;
+      };
+      if (!response?.success) throw new Error(response?.error ? String(response.error) : 'Review failed');
+      if (response.status) {
+        setAnki(normalizeAnkiStatus(response.status));
+      } else {
+        await refreshAnkiStatus(ankiDeckFilter);
+      }
+      setAnkiSessionReviews((count) => count + 1);
+      setAnkiLastReviewReward(
+        typeof response.result?.rewardCoins === 'number' ? response.result.rewardCoins : null
+      );
+      await refreshAnkiAnalytics(30);
+      setAnkiRevealAnswer(false);
+      setAnkiReviewStartedAt(Date.now());
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setAnkiBusy(false);
+    }
+  };
+
+  const handleUnlockWithReviews = async () => {
+    if (ankiBusy || anki.unlocksAvailable <= 0) return;
+    setAnkiBusy(true);
+    setError(null);
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'START_ANKI_UNLOCK',
+        payload: {
+          domain,
+          minutes: 10,
+          requiredReviews: anki.unlockThreshold
+        }
+      }) as { success?: boolean; error?: string; status?: AnkiStatusPayload };
+      if (!response?.success) throw new Error(response?.error ? String(response.error) : 'Unlock failed');
+      if (response.status) setAnki(normalizeAnkiStatus(response.status));
+      await refreshAnkiAnalytics(30);
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setAnkiBusy(false);
+    }
+  };
+
+  const handleOpenAnkiInsights = async () => {
+    if (ankiAnalyticsBusy) {
+      setAnkiInsightsOpen(true);
+      return;
+    }
+    setAnkiAnalyticsBusy(true);
+    setError(null);
+    try {
+      await refreshAnkiAnalytics(30);
+      setAnkiInsightsOpen(true);
+    } catch {
+      setAnkiInsightsOpen(true);
+    } finally {
+      setAnkiAnalyticsBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (!peekAllowed && peekActive) {
@@ -1437,6 +1969,9 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
         }
         const result = await chrome.runtime.sendMessage({ type: 'OPEN_DESKTOP_ACTION', payload: item.action });
         if (!result?.success) throw new Error(result?.error ? String(result.error) : 'Failed to open in desktop app');
+        if (item.source === 'zotero') {
+          void refreshZoteroAnalytics(30, false);
+        }
         onClose();
         return;
       }
@@ -1562,31 +2097,6 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
       onClose();
     } catch (e) {
       setError((e as Error).message);
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  const handleStartChallengePass = async (payload: { correctSquares: number; requiredSquares: number; elapsedSeconds: number }) => {
-    if (isProcessing) return;
-    setIsProcessing(true);
-    setError(null);
-    try {
-      const result = await chrome.runtime.sendMessage({
-        type: 'START_CHALLENGE_PASS',
-        payload: {
-          domain,
-          durationSeconds: SUDOKU_PASS_MINUTES * 60,
-          solvedSquares: payload.correctSquares,
-          requiredSquares: payload.requiredSquares,
-          elapsedSeconds: payload.elapsedSeconds
-        }
-      });
-      if (!result?.success) throw new Error(result?.error ? String(result.error) : 'Failed to start challenge pass');
-      onClose();
-    } catch (e) {
-      setError((e as Error).message);
-      throw e;
     } finally {
       setIsProcessing(false);
     }
@@ -1792,7 +2302,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                     {' '}
                     • no auto-expiry
                     {typeof emergencyPolicyConfig.tokensPerDay === 'number' ? ` • ${emergencyPolicyConfig.tokensPerDay}/day` : ' • unlimited/day'}
-                    {emergencyPolicyConfig.cooldownMinutes > 0 ? ` • ${emergencyPolicyConfig.cooldownMinutes}m cooldown` : ''}
+                    {emergencyPolicyConfig.cooldownSeconds > 0 ? ` • ${Math.round(emergencyPolicyConfig.cooldownSeconds / 60)}m cooldown` : ''}
                     {emergencyPolicyConfig.debtCoins > 0 ? ` • ${emergencyPolicyConfig.debtCoins} coin debt` : ''}
                   </>
                 )}
@@ -1863,13 +2373,6 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const unlockPreview = unlock?.kind === 'url' && unlock.url ? previewFor(unlock.url) : null;
   const unlockThumb = unlockPreview?.imageUrl ?? null;
   const unlockIcon = unlock?.kind === 'url' && unlock.url ? unlockPreview?.iconUrl ?? faviconUrl(unlock.url) : null;
-  const productiveItems = useMemo(() => {
-    const items = status.library?.productiveItems ?? [];
-    return items.filter((item) => {
-      if (!item || item.kind !== 'url' || !item.url) return false;
-      return !dismissedIds[`productive:${item.id}`];
-    });
-  }, [dismissedIds, status.library?.productiveItems]);
   const replaceItems = status.library?.replaceItems ?? [];
   const activeMinutes = mySummary ? Math.round(mySummary.totalActiveSeconds / 60) : null;
   const productivityScore = mySummary ? mySummary.productivityScore : null;
@@ -1878,13 +2381,6 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     status.session && Number.isFinite(status.session.remainingSeconds)
       ? Math.max(0, Math.ceil(status.session.remainingSeconds / 60))
       : null;
-  const sessionRemainingLabel = !status.session
-    ? '--'
-    : sessionMinutesLeft != null
-      ? `${sessionMinutesLeft}m`
-      : status.session.mode === 'emergency'
-        ? 'ongoing'
-        : '—';
   const lastSyncAgo = status.lastSync ? formatDuration(Date.now() - status.lastSync) : null;
   const rawCategoryBreakdown = mySummary?.categoryBreakdown;
   const categoryBreakdown = {
@@ -1929,29 +2425,42 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
   const ringOffset = ringCircumference * (1 - ringProgress);
   const replaceList = replaceItems.filter((item) => item.kind === 'url' && item.url);
 
-  const openProductiveItem = (item: LibraryItem) => {
-    if (!item || item.kind !== 'url' || !item.url) return;
-    handleOpenSuggestion({
-      type: 'url',
-      id: `productive:${item.id}`,
-      title: item.title ?? item.domain,
-      subtitle: item.note ?? undefined,
-      url: item.url,
-      libraryId: item.id
-    });
-  };
+  const filteredDueCards = useMemo(() => {
+    if (ankiDeckFilter === 'all') return anki.dueCards;
+    return anki.dueCards.filter((card) => card.deckId === ankiDeckFilter);
+  }, [anki.dueCards, ankiDeckFilter]);
 
-  const markProductiveConsumed = (item: LibraryItem) => {
-    if (!item || item.kind !== 'url' || !item.url) return;
-    handleMarkConsumed({
-      type: 'url',
-      id: `productive:${item.id}`,
-      title: item.title ?? item.domain,
-      subtitle: item.note ?? undefined,
-      url: item.url,
-      libraryId: item.id
-    });
-  };
+  const currentDueCard = filteredDueCards[0] ?? null;
+  const hasAnkiDecks = anki.decks.length > 0;
+  const selectedDeckSummary = ankiDeckFilter === 'all'
+    ? null
+    : anki.decks.find((deck) => deck.id === ankiDeckFilter) ?? null;
+  const reviewMinutesToday = Math.max(0, Math.round(anki.totalReviewMsToday / 60000));
+  const ankiSnapshot = ankiAnalytics.snapshot;
+  const ankiPeakHour = useMemo(() => {
+    if (!ankiAnalytics.hourly.length) return null;
+    return ankiAnalytics.hourly.reduce((best, point) => (point.reviews > best.reviews ? point : best), ankiAnalytics.hourly[0]);
+  }, [ankiAnalytics.hourly]);
+  const ankiHeatmapCells = ankiAnalytics.heatmap.cells.slice(-84);
+  const ankiHourlyMax = useMemo(() => {
+    if (!ankiAnalytics.hourly.length) return 1;
+    return Math.max(...ankiAnalytics.hourly.map((point) => point.reviews), 1);
+  }, [ankiAnalytics.hourly]);
+  const ankiRatingsTotal = Math.max(
+    0,
+    ankiAnalytics.ratings.again + ankiAnalytics.ratings.hard + ankiAnalytics.ratings.good + ankiAnalytics.ratings.easy
+  );
+  const zoteroSnapshot = zoteroAnalytics.snapshot;
+  const zoteroTopProgressed = zoteroAnalytics.topProgressed.slice(0, 6);
+  const zoteroDailyMax = useMemo(() => {
+    if (!zoteroAnalytics.daily.length) return 1;
+    return Math.max(...zoteroAnalytics.daily.map((point) => point.pagesAdvanced), 1);
+  }, [zoteroAnalytics.daily]);
+
+  useEffect(() => {
+    setAnkiRevealAnswer(false);
+    setAnkiReviewStartedAt(currentDueCard ? Date.now() : null);
+  }, [currentDueCard?.id]);
 
   const feedEntries = useMemo<FeedEntry[]>(() => {
     const entries: FeedEntry[] = [];
@@ -2420,14 +2929,6 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     }
   };
 
-  const cycleDashScene = () => {
-    setDashScene((current) => {
-      const idx = DASH_SCENES.findIndex((scene) => scene.id === current);
-      const next = DASH_SCENES[(idx + 1) % DASH_SCENES.length];
-      return (next?.id ?? 'focus') as DashboardScene;
-    });
-  };
-
   useEffect(() => {
     if (!navOpen) return;
     const handleKey = (event: KeyboardEvent) => {
@@ -2436,6 +2937,304 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
   }, [navOpen]);
+
+  const studyLeadCard = currentDueCard ? (
+    <section className="tws-paywall-option tws-instead-study-card">
+      <div className="tws-option-header tws-instead-study-header">
+        <div>
+          <h3>Flashcard instead</h3>
+          <p className="tws-subtle">One due card is a cleaner next move than this tab.</p>
+        </div>
+        <div className="tws-instead-study-meta">
+          <span className="tws-pill">{currentDueCard.deckName}</span>
+          <span className="tws-subtle">
+            {selectedDeckSummary ? `${selectedDeckSummary.dueCount} due` : `${filteredDueCards.length} due ready`}
+          </span>
+        </div>
+      </div>
+      <div className="tws-instead-study-faces">
+        <div className="tws-study-face">
+          <strong>Front</strong>
+          <p>{currentDueCard.front || 'No front text.'}</p>
+        </div>
+        <div className="tws-study-face">
+          <strong>Back</strong>
+          {ankiRevealAnswer ? <p>{currentDueCard.back || 'No back text.'}</p> : <p className="tws-subtle">Reveal the answer, then grade it.</p>}
+        </div>
+      </div>
+      <div className="tws-feed-actions">
+        <button
+          type="button"
+          className="tws-secondary"
+          onClick={() => setAnkiRevealAnswer((value) => !value)}
+          disabled={ankiBusy}
+        >
+          {ankiRevealAnswer ? 'Hide answer' : 'Reveal answer'}
+        </button>
+        <button type="button" className="tws-feed-react" onClick={() => void handleReviewAnkiCard(currentDueCard, 'again')} disabled={ankiBusy}>
+          Again
+        </button>
+        <button type="button" className="tws-feed-react" onClick={() => void handleReviewAnkiCard(currentDueCard, 'hard')} disabled={ankiBusy}>
+          Hard
+        </button>
+        <button type="button" className="tws-feed-react" onClick={() => void handleReviewAnkiCard(currentDueCard, 'good')} disabled={ankiBusy}>
+          Good
+        </button>
+        <button type="button" className="tws-feed-react" onClick={() => void handleReviewAnkiCard(currentDueCard, 'easy')} disabled={ankiBusy}>
+          Easy
+        </button>
+      </div>
+      {ankiLastReviewReward != null && (
+        <p className="tws-subtle" style={{ margin: 0 }}>
+          Last review reward: +{ankiLastReviewReward} f-coins.
+        </p>
+      )}
+    </section>
+  ) : (
+    <section className="tws-paywall-option tws-instead-study-card tws-instead-study-card-empty">
+      <div className="tws-option-header tws-instead-study-header">
+        <div>
+          <h3>{hasAnkiDecks ? 'No due flashcards right now' : 'Add a flashcard deck'}</h3>
+          <p className="tws-subtle">
+            {hasAnkiDecks
+              ? 'Upload another deck or switch filters in Study if you want reviews here.'
+              : 'The “Instead” slot can default to Anki once you import a deck.'}
+          </p>
+        </div>
+        <button className="tws-link" type="button" onClick={() => setOverlayView('study')}>
+          Open study
+        </button>
+      </div>
+      <div className="tws-instead-empty-actions">
+        <button
+          className="tws-secondary"
+          type="button"
+          onClick={handlePickAnkiDeck}
+          disabled={ankiImportBusy || ankiPickerBusy || ankiBusy}
+        >
+          {ankiPickerBusy ? 'Choosing…' : hasAnkiDecks ? 'Import another deck…' : 'Choose deck…'}
+        </button>
+        <button
+          className="tws-secondary"
+          type="button"
+          onClick={() => void refreshAnkiStatus(ankiDeckFilter)}
+          disabled={ankiBusy || ankiImportBusy}
+        >
+          Refresh study
+        </button>
+      </div>
+      <p className="tws-subtle" style={{ margin: 0 }}>
+        {hasAnkiDecks
+          ? `${anki.totalDue} due across ${anki.decks.length} deck${anki.decks.length === 1 ? '' : 's'}.`
+          : 'No imported decks yet.'}
+      </p>
+    </section>
+  );
+
+  const studyWorkbench = (
+    <section className="tws-paywall-option tws-study-workbench">
+      <div className="tws-option-header">
+        <div>
+          <h3>German Study Queue</h3>
+          <p className="tws-subtle">Import an Anki package, review due cards, then unlock 10m when you hit the threshold.</p>
+        </div>
+        <div className="tws-study-header-actions">
+          <button className="tws-link" type="button" onClick={() => void handleOpenAnkiInsights()} disabled={ankiAnalyticsBusy}>
+            {ankiAnalyticsBusy ? 'Loading insights…' : 'Insights'}
+          </button>
+          <button className="tws-link" type="button" onClick={() => setOverlayView('library')}>
+            Open library
+          </button>
+        </div>
+      </div>
+
+      <div className="tws-dashboard-metric-grid">
+        <div className="tws-dashboard-metric">
+          <span>Due now</span>
+          <strong>{anki.totalDue}</strong>
+          <small>all decks</small>
+        </div>
+        <div className="tws-dashboard-metric">
+          <span>Reviewed today</span>
+          <strong>{anki.reviewedToday}</strong>
+          <small>{reviewMinutesToday}m review time</small>
+        </div>
+        <div className="tws-dashboard-metric">
+          <span>Session</span>
+          <strong>{ankiSessionReviews}</strong>
+          <small>reviews this overlay</small>
+        </div>
+        <div className="tws-dashboard-metric">
+          <span>Unlocks</span>
+          <strong>{anki.unlocksAvailable}</strong>
+          <small>{anki.unlockThreshold} reviews each</small>
+        </div>
+      </div>
+
+      <div className="tws-study-insight-strip">
+        <div className="tws-study-insight-pill">
+          <strong>{formatPercent(ankiSnapshot.trueRetention)}</strong>
+          <span>True retention</span>
+        </div>
+        <div className="tws-study-insight-pill">
+          <strong>{ankiSnapshot.currentStreakDays}</strong>
+          <span>day streak</span>
+        </div>
+        <div className="tws-study-insight-pill">
+          <strong>{ankiSnapshot.dueIn7Days}</strong>
+          <span>due in 7d</span>
+        </div>
+        <div className="tws-study-insight-pill">
+          <strong>{ankiPeakHour ? `${(ankiPeakHour.hour % 12 || 12)}${ankiPeakHour.hour >= 12 ? 'pm' : 'am'}` : '—'}</strong>
+          <span>peak review hour</span>
+        </div>
+      </div>
+
+      <div className="tws-study-import">
+        <input
+          type="text"
+          placeholder="/Users/you/Downloads/german.apkg"
+          value={ankiImportPath}
+          onChange={(event) => setAnkiImportPath(event.target.value)}
+          disabled={ankiImportBusy || ankiPickerBusy || ankiBusy}
+        />
+        <button
+          className="tws-secondary"
+          type="button"
+          onClick={handlePickAnkiDeck}
+          disabled={ankiImportBusy || ankiPickerBusy || ankiBusy}
+        >
+          {ankiPickerBusy ? 'Choosing…' : 'Choose deck…'}
+        </button>
+        <button
+          className="tws-secondary"
+          type="button"
+          onClick={handleImportAnkiDeck}
+          disabled={ankiImportBusy || ankiPickerBusy || ankiBusy || !ankiImportPath.trim()}
+        >
+          {ankiImportBusy ? 'Importing…' : 'Import deck'}
+        </button>
+      </div>
+
+      <div className="tws-study-toolbar">
+        <label>
+          Deck
+          <select
+            className="tws-select"
+            value={ankiDeckFilter}
+            onChange={(event) => {
+              const value = event.target.value;
+              setAnkiDeckFilter(value === 'all' ? 'all' : Number(value));
+            }}
+            disabled={ankiBusy}
+          >
+            <option value="all">All decks</option>
+            {anki.decks.map((deck) => (
+              <option key={deck.id} value={deck.id}>
+                {deck.name} ({deck.dueCount})
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          className="tws-secondary tws-compact"
+          type="button"
+          onClick={() => void refreshAnkiStatus(ankiDeckFilter)}
+          disabled={ankiBusy || ankiImportBusy}
+        >
+          Refresh
+        </button>
+      </div>
+
+      {currentDueCard ? (
+        <div className="tws-study-card">
+          <div className="tws-study-card-meta">
+            <span className="tws-pill">{currentDueCard.deckName}</span>
+            <span className="tws-subtle">
+              {selectedDeckSummary ? `${selectedDeckSummary.dueCount} due` : `${filteredDueCards.length} due in view`}
+            </span>
+          </div>
+          <div className="tws-study-face">
+            <strong>Front</strong>
+            <p>{currentDueCard.front || 'No front text.'}</p>
+          </div>
+          <div className="tws-study-face">
+            <strong>Back</strong>
+            {ankiRevealAnswer ? <p>{currentDueCard.back || 'No back text.'}</p> : <p className="tws-subtle">Reveal answer to grade yourself.</p>}
+          </div>
+          <div className="tws-feed-actions">
+            <button
+              type="button"
+              className="tws-secondary"
+              onClick={() => setAnkiRevealAnswer((value) => !value)}
+              disabled={ankiBusy}
+            >
+              {ankiRevealAnswer ? 'Hide answer' : 'Reveal answer'}
+            </button>
+            <button
+              type="button"
+              className="tws-feed-react"
+              onClick={() => void handleReviewAnkiCard(currentDueCard, 'again')}
+              disabled={ankiBusy}
+            >
+              Again
+            </button>
+            <button
+              type="button"
+              className="tws-feed-react"
+              onClick={() => void handleReviewAnkiCard(currentDueCard, 'hard')}
+              disabled={ankiBusy}
+            >
+              Hard
+            </button>
+            <button
+              type="button"
+              className="tws-feed-react"
+              onClick={() => void handleReviewAnkiCard(currentDueCard, 'good')}
+              disabled={ankiBusy}
+            >
+              Good
+            </button>
+            <button
+              type="button"
+              className="tws-feed-react"
+              onClick={() => void handleReviewAnkiCard(currentDueCard, 'easy')}
+              disabled={ankiBusy}
+            >
+              Easy
+            </button>
+          </div>
+          {ankiLastReviewReward != null && (
+            <p className="tws-subtle" style={{ margin: 0 }}>
+              Last review reward: +{ankiLastReviewReward} f-coins.
+            </p>
+          )}
+        </div>
+      ) : (
+        <p className="tws-subtle" style={{ margin: 0 }}>
+          No due cards in this filter. Import a deck or switch to a deck with due cards.
+        </p>
+      )}
+
+      <div className="tws-option-action">
+        <div className="tws-price-tag">
+          <strong>{anki.unlockThreshold}</strong>
+          <small>reviews</small>
+        </div>
+        <button
+          className="tws-primary"
+          type="button"
+          disabled={ankiBusy || anki.unlocksAvailable <= 0}
+          onClick={handleUnlockWithReviews}
+        >
+          Unlock 10m with reviews
+        </button>
+      </div>
+      <p className="tws-subtle" style={{ margin: 0 }}>
+        Available unlocks: {anki.unlocksAvailable} ({anki.availableUnlockReviews} unspent successful reviews).
+      </p>
+    </section>
+  );
 
   return (
     <div className={`tws-paywall-overlay ${peekActive ? 'tws-peek-active' : ''} ${theme === 'olive' ? 'tws-theme-olive' : ''}`}>
@@ -2563,19 +3362,6 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
               </div>
             )}
 
-            {overlayView === 'dashboard' && cameraModeEnabled && (
-              <ReflectionSlideshow
-                domain={domain}
-                enabled={reflectionSlideshowEnabled}
-                cameraModeEnabled={cameraModeEnabled}
-                lookbackDays={reflectionLookbackDays}
-                intervalMs={reflectionIntervalMs}
-                maxPhotos={reflectionMaxPhotos}
-                variant="corner"
-                onError={(message) => setError(message)}
-              />
-            )}
-
             {overlayView === 'dashboard' && feedView === 'for-you' ? (
               <div className="tws-dashboard">
                 <div className="tws-dashboard-controls">
@@ -2593,11 +3379,6 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                       </button>
                     ))}
                   </div>
-                  <div className="tws-dashboard-actions">
-                    <button className="tws-secondary tws-compact" type="button" onClick={cycleDashScene}>
-                      Cycle
-                    </button>
-                  </div>
                 </div>
 
                 {dashScene === 'focus' && (
@@ -2608,10 +3389,27 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                           <h3>Instead</h3>
                           <p className="tws-subtle">Pick the next best move.</p>
                         </div>
-                        <button className="tws-link" type="button" disabled={isProcessing} onClick={() => setSpinKey((k) => k + 1)}>
-                          Spin
-                        </button>
+                        <div className="tws-attractors-actions">
+                          <button className="tws-link" type="button" disabled={isProcessing} onClick={() => setSpinKey((k) => k + 1)}>
+                            Spin
+                          </button>
+                          <button
+                            className="tws-link"
+                            type="button"
+                            disabled={isProcessing || zoteroAnalyticsBusy}
+                            onClick={() => {
+                              setZoteroInsightsOpen(true);
+                              if (!zoteroAnalytics.snapshot.trackedItems) {
+                                void refreshZoteroAnalytics(30, true);
+                              }
+                            }}
+                          >
+                            {zoteroAnalyticsBusy ? 'Syncing...' : 'Reading insights'}
+                          </button>
+                        </div>
                       </div>
+
+                      {studyLeadCard}
 
                       {picks.length === 0 ? (
                         <p className="tws-subtle" style={{ margin: 0 }}>
@@ -2637,7 +3435,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                               return (
                                 <div
                                   key={item.id}
-                                  className="tws-attractor-card"
+                                  className="tws-attractor-card tws-attractor-card--url"
                                   onClick={() => {
                                     if (cardDisabled) return;
                                     handleOpenSuggestion(item);
@@ -2685,12 +3483,20 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                                         </button>
                                       </div>
                                     )}
+                                    <div className="tws-attractor-chip-row" aria-hidden="true">
+                                      <span className="tws-attractor-chip">Replace</span>
+                                      <span className="tws-attractor-chip">{urlKindLabel(item.url)}</span>
+                                    </div>
                                     <img className="tws-attractor-favicon" src={icon} alt="" loading="lazy" />
                                   </div>
                                   <div className="tws-attractor-meta">
                                     <strong>{preview?.title ?? item.title}</strong>
                                     <span>{preview?.description ?? item.subtitle ?? 'saved in your replace pool'}</span>
                                     <small>{new URL(item.url).hostname.replace(/^www\\./, '')}</small>
+                                    <div className="tws-attractor-cta">
+                                      <span>Swap the detour for this</span>
+                                      <strong>Open now →</strong>
+                                    </div>
                                   </div>
                                 </div>
                               );
@@ -2757,6 +3563,10 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                                         </button>
                                       </div>
                                     )}
+                                    <div className="tws-attractor-chip-row" aria-hidden="true">
+                                      <span className="tws-attractor-chip">{item.source === 'zotero' ? 'Zotero' : 'Books'}</span>
+                                      {progressPct !== null && <span className="tws-attractor-chip">{progressPct}%</span>}
+                                    </div>
                                     {item.iconDataUrl ? (
                                       <img className="tws-attractor-favicon" src={item.iconDataUrl} alt="" loading="lazy" />
                                     ) : (
@@ -2767,6 +3577,10 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                                     <strong>{item.title}</strong>
                                     <span>{item.subtitle ?? 'reading suggestion'}</span>
                                     <small>{item.source === 'zotero' ? 'Reading redirect · Zotero' : 'Reading redirect · Books'}</small>
+                                    <div className="tws-attractor-cta">
+                                      <span>{progressPct !== null ? `${Math.max(0, 100 - progressPct)}% left in this text` : 'Pick up your reading thread'}</span>
+                                      <strong>Continue reading →</strong>
+                                    </div>
                                   </div>
                                 </div>
                               );
@@ -2804,6 +3618,10 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                                   <div className="tws-attractor-thumb tws-attractor-thumb-app" style={thumbStyle}>
                                     <img className="tws-attractor-thumb-img" src={DOC_ICON} alt="" loading="lazy" />
                                     <div className="tws-attractor-app-badge">Write</div>
+                                    <div className="tws-attractor-chip-row" aria-hidden="true">
+                                      <span className="tws-attractor-chip">{formatWritingKind(item.projectKind)}</span>
+                                      <span className="tws-attractor-chip">{item.sprintMinutes}m</span>
+                                    </div>
                                     <div aria-hidden="true" className="tws-attractor-action-pill">
                                       {modeLabel} · {item.sprintMinutes}m
                                     </div>
@@ -2812,6 +3630,10 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                                     <strong>{item.title}</strong>
                                     <span>{item.nextStep ?? item.reason ?? item.subtitle ?? 'Start a short writing sprint'}</span>
                                     <small>{metaLabel}</small>
+                                    <div className="tws-attractor-cta">
+                                      <span>{item.nextStep ?? 'Start with one concrete paragraph'}</span>
+                                      <strong>{modeLabel} →</strong>
+                                    </div>
                                   </div>
                                 </div>
                               );
@@ -2821,7 +3643,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                               return (
                                 <div
                                   key={item.id}
-                                  className="tws-attractor-card"
+                                  className="tws-attractor-card tws-attractor-card--ritual"
                                   onClick={() => {
                                     if (cardDisabled) return;
                                     handleOpenSuggestion(item);
@@ -2845,6 +3667,10 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                                     <strong>{item.title}</strong>
                                     <span>{item.subtitle ?? 'a small reset'}</span>
                                     <small>{item.ritual === 'meditation' ? `${item.minutes}m` : 'journal'}</small>
+                                    <div className="tws-attractor-cta">
+                                      <span>{item.ritual === 'meditation' ? 'Short nervous-system reset' : 'Clear your head in writing'}</span>
+                                      <strong>Start ritual →</strong>
+                                    </div>
                                   </div>
                                 </div>
                               );
@@ -2853,7 +3679,7 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                             return (
                               <div
                                 key={item.id}
-                                className="tws-attractor-card"
+                                className="tws-attractor-card tws-attractor-card--app"
                                 onClick={() => {
                                   if (cardDisabled) return;
                                   handleOpenSuggestion(item);
@@ -2883,57 +3709,16 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                                   <strong>{item.title}</strong>
                                   <span>{item.subtitle ?? 'open an app'}</span>
                                   <small>desktop</small>
+                                  <div className="tws-attractor-cta">
+                                    <span>Jump to a productive app now</span>
+                                    <strong>Open app →</strong>
+                                  </div>
                                 </div>
                               </div>
                             );
                           })}
                         </div>
                       )}
-                    </section>
-
-                    <section className="tws-paywall-option tws-dashboard-brief">
-                      <div className="tws-option-header tws-dashboard-brief-header">
-                        <div>
-                          <h3>Focus snapshot</h3>
-                          <p className="tws-subtle">Live from the last {periodHours}h.</p>
-                        </div>
-                        {status.session && (
-                          <span className="tws-pill">{status.session.paused ? 'Paused' : status.session.mode}</span>
-                        )}
-                      </div>
-                      <div className="tws-dashboard-metric-grid">
-                        <div className="tws-dashboard-metric">
-                          <span>Active</span>
-                          <strong>{activeMinutes != null ? `${activeMinutes}m` : '--'}</strong>
-                          <small>{activeMinutes != null ? 'captured' : 'sync to update'}</small>
-                        </div>
-                        <div className="tws-dashboard-metric">
-                          <span>Productive</span>
-                          <strong>{productivityScore != null ? `${productivityScore}%` : '--'}</strong>
-                          <small>{productivityScore != null ? 'score' : 'sync to update'}</small>
-                        </div>
-                        <div className="tws-dashboard-metric">
-                          <span>Remaining</span>
-                          <strong>{sessionRemainingLabel}</strong>
-                          <small>{status.session ? 'this session' : 'no session'}</small>
-                        </div>
-                        <div className="tws-dashboard-metric">
-                          <span>Pack rate</span>
-                          <strong>{formatCoins(ratePerMin)} f/m</strong>
-                          <small>current domain</small>
-                        </div>
-                      </div>
-                      <div className="tws-dashboard-note">
-                        {lastSyncAgo ? (
-                          <p className="tws-subtle" style={{ margin: 0 }}>
-                            Last sync {lastSyncAgo} ago.
-                          </p>
-                        ) : (
-                          <p className="tws-subtle" style={{ margin: 0 }}>
-                            Open the desktop app for richer signals.
-                          </p>
-                        )}
-                      </div>
                     </section>
 
                     <section className="tws-paywall-option tws-goal-card">
@@ -2999,56 +3784,38 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                       </div>
                     </section>
 
-                    <section className="tws-paywall-option tws-library-shelf tws-dashboard-shelf">
+                    <section className="tws-paywall-option tws-dashboard-shelf tws-dashboard-shelf-lowkey">
                       <div className="tws-option-header">
                         <div>
-                          <h3>
-                            Productive library{' '}
-                            {productiveItems.length > 0 && <span className="tws-subtle">({productiveItems.length})</span>}
-                          </h3>
-                          <p className="tws-subtle">Your productive bookmarks</p>
+                          <h3>Study unlocks</h3>
+                          <p className="tws-subtle">Quiet progress toward more access time.</p>
                         </div>
-                        <button className="tws-link" type="button" onClick={() => setOverlayView('library')}>
-                          Open
+                        <button className="tws-link" type="button" onClick={() => setOverlayView('study')}>
+                          Open study
                         </button>
                       </div>
-                      {productiveItems.length === 0 ? (
-                        <p className="tws-subtle" style={{ margin: 0 }}>
-                          Empty. Right-click pages to add.
-                        </p>
-                      ) : (
-                        <div className="tws-library-scroll tws-library-scroll-compact">
-                          {productiveItems.slice(0, 4).map((item) => {
-                            const preview = previewFor(item.url ?? '');
-                            const title = preview?.title ?? item.title ?? item.domain;
-                            const subtitle = preview?.description ?? item.note ?? item.domain;
-                            const icon = item.url ? preview?.iconUrl ?? faviconUrl(item.url) : null;
-                            return (
-                              <div key={item.id} className="tws-library-item">
-                                <div className="tws-library-info">
-                                  {icon ? (
-                                    <img className="tws-library-favicon" src={icon} alt="" loading="lazy" />
-                                  ) : (
-                                    <div className="tws-library-favicon tws-library-favicon-placeholder" aria-hidden="true" />
-                                  )}
-                                  <div className="tws-library-meta">
-                                    <strong>{title}</strong>
-                                    <span>{subtitle}</span>
-                                  </div>
-                                </div>
-                                <div className="tws-library-actions">
-                                  <button className="tws-secondary" type="button" disabled={isProcessing} onClick={() => openProductiveItem(item)}>
-                                    Open
-                                  </button>
-                                  <button className="tws-link" type="button" disabled={isProcessing} onClick={() => markProductiveConsumed(item)}>
-                                    Done
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
+                      <div className="tws-dashboard-metric-grid">
+                        <div className="tws-dashboard-metric">
+                          <span>Due now</span>
+                          <strong>{anki.totalDue}</strong>
+                          <small>cards waiting</small>
                         </div>
-                      )}
+                        <div className="tws-dashboard-metric">
+                          <span>Reviewed today</span>
+                          <strong>{anki.reviewedToday}</strong>
+                          <small>{reviewMinutesToday}m</small>
+                        </div>
+                        <div className="tws-dashboard-metric">
+                          <span>Unlocks</span>
+                          <strong>{anki.unlocksAvailable}</strong>
+                          <small>ready</small>
+                        </div>
+                        <div className="tws-dashboard-metric">
+                          <span>Threshold</span>
+                          <strong>{anki.unlockThreshold}</strong>
+                          <small>reviews per unlock</small>
+                        </div>
+                      </div>
                     </section>
                   </div>
                 )}
@@ -3127,59 +3894,9 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                   </div>
                 )}
 
-                {dashScene === 'library' && (
+                {dashScene === 'study' && (
                   <div className="tws-dashboard-grid tws-dashboard-duo">
-                    <section className="tws-paywall-option tws-library-shelf">
-                      <div className="tws-option-header">
-                        <div>
-                          <h3>
-                            Productive library{' '}
-                            {productiveItems.length > 0 && <span className="tws-subtle">({productiveItems.length})</span>}
-                          </h3>
-                          <p className="tws-subtle">Your productive bookmarks</p>
-                        </div>
-                        <button className="tws-link" type="button" onClick={() => setOverlayView('library')}>
-                          Open
-                        </button>
-                      </div>
-                      {productiveItems.length === 0 ? (
-                        <p className="tws-subtle" style={{ margin: 0 }}>
-                          Empty. Right-click pages to add.
-                        </p>
-                      ) : (
-                        <div className="tws-library-scroll tws-library-scroll-compact">
-                          {productiveItems.slice(0, 6).map((item) => {
-                            const preview = previewFor(item.url ?? '');
-                            const title = preview?.title ?? item.title ?? item.domain;
-                            const subtitle = preview?.description ?? item.note ?? item.domain;
-                            const icon = item.url ? preview?.iconUrl ?? faviconUrl(item.url) : null;
-                            return (
-                              <div key={item.id} className="tws-library-item">
-                                <div className="tws-library-info">
-                                  {icon ? (
-                                    <img className="tws-library-favicon" src={icon} alt="" loading="lazy" />
-                                  ) : (
-                                    <div className="tws-library-favicon tws-library-favicon-placeholder" aria-hidden="true" />
-                                  )}
-                                  <div className="tws-library-meta">
-                                    <strong>{title}</strong>
-                                    <span>{subtitle}</span>
-                                  </div>
-                                </div>
-                                <div className="tws-library-actions">
-                                  <button className="tws-secondary" type="button" disabled={isProcessing} onClick={() => openProductiveItem(item)}>
-                                    Open
-                                  </button>
-                                  <button className="tws-link" type="button" disabled={isProcessing} onClick={() => markProductiveConsumed(item)}>
-                                    Done
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </section>
+                    {studyWorkbench}
 
                     <section className="tws-paywall-option">
                       <div className="tws-option-header">
@@ -3190,6 +3907,9 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                           </h3>
                           <p className="tws-subtle">Saved alternatives for detours.</p>
                         </div>
+                        <button className="tws-link" type="button" onClick={() => setOverlayView('library')}>
+                          Library
+                        </button>
                       </div>
                       {replaceList.length === 0 ? (
                         <p className="tws-subtle" style={{ margin: 0 }}>No replace items yet.</p>
@@ -3499,6 +4219,10 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                     </div>
                   </div>
                 )}
+              </div>
+            ) : overlayView === 'study' ? (
+              <div className="tws-bins">
+                {studyWorkbench}
               </div>
             ) : overlayView === 'friends' ? (
               <div className="tws-bins">
@@ -3879,17 +4603,9 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                     <div className="tws-toggle-row">
                       <div>
                         <span className="tws-toggle-title">Theme</span>
-                        <span className="tws-subtle">Lavender or Olive Garden.</span>
+                        <span className="tws-subtle">Desktop-controlled and synced into the extension.</span>
                       </div>
-                      <select
-                        className="tws-select"
-                        value={theme}
-                        onChange={(e) => setTheme(e.target.value === 'olive' ? 'olive' : 'lavender')}
-                        disabled={isProcessing}
-                      >
-                        <option value="lavender">Lavender (default)</option>
-                        <option value="olive">Olive Garden Feast</option>
-                      </select>
+                      <span className="tws-pill">{theme === 'olive' ? 'Olive Garden Feast' : 'Lavender'}</span>
                     </div>
                     <div className="tws-toggle-row">
                       <div>
@@ -4039,20 +4755,6 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
         </main>
 
         <aside className="tws-paywall-rail">
-          <div className="tws-rail-card">
-            <div className="tws-rail-row">
-              <span className="tws-rail-label">Pack rate</span>
-              <strong>{formatCoins(ratePerMin)} f-coins/min</strong>
-            </div>
-            <div className="tws-rail-row">
-              <span className="tws-rail-label">Metered</span>
-              <strong>{formatCoins(meteredRatePerMin)} f-coins/min</strong>
-            </div>
-            <p className="tws-subtle" style={{ margin: 0 }}>
-              Matches proceed pricing for this domain.
-            </p>
-          </div>
-
           <div className="tws-rail-card tws-friends-card">
             <div className="tws-rail-row">
               <strong>Head to head</strong>
@@ -4245,41 +4947,56 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                   </section>
                 )}
 
-                <section className="tws-paywall-option" style={{ margin: 0 }}>
-                  <div className="tws-option-header">
-                    <h3>Timebox</h3>
-                    <p className="tws-subtle">
-                      Fixed duration, auto-close.
-                      {status.session?.mode === 'pack' && (
-                        <> Chain pricing x{packChainMultiplier(status.session.packChainCount ?? 1).toFixed(2)}</>
-                      )}
-                    </p>
-                  </div>
-                  <div className="tws-option-action tws-pack-buttons">
-                    {quickPacks.map((pack) => {
-                      const affordable = status.balance >= pack.price;
-                      const disabled = isProcessing || !affordable;
-                      return (
-                        <button
-                          key={pack.minutes}
-                          className="tws-primary"
-                          onClick={async () => {
-                            setSelectedMinutes(pack.minutes);
-                            if (spendGuardEnabled) {
-                              setProceedConfirm({ kind: 'pack', minutes: pack.minutes });
-                            } else {
-                              await handleBuyPack(pack.minutes);
-                            }
-                          }}
-                          disabled={disabled}
-                          title={affordable ? undefined : 'Need more f-coins'}
-                        >
-                          {pack.minutes}m • {pack.price} f-coins
-                        </button>
-                      );
-                    })}
-                  </div>
-                </section>
+                <div className="tws-proceed-buy-row">
+                  <section className="tws-paywall-option tws-proceed-timebox" style={{ margin: 0 }}>
+                    <div className="tws-option-header">
+                      <h3>Timebox</h3>
+                      <p className="tws-subtle">
+                        Fixed duration, auto-close.
+                        {status.session?.mode === 'pack' && (
+                          <> Chain pricing x{packChainMultiplier(status.session.packChainCount ?? 1).toFixed(2)}</>
+                        )}
+                      </p>
+                    </div>
+                    <div className="tws-option-action tws-pack-buttons">
+                      {quickPacks.map((pack) => {
+                        const affordable = status.balance >= pack.price;
+                        const disabled = isProcessing || !affordable;
+                        return (
+                          <button
+                            key={pack.minutes}
+                            className="tws-primary"
+                            onClick={async () => {
+                              setSelectedMinutes(pack.minutes);
+                              if (spendGuardEnabled) {
+                                setProceedConfirm({ kind: 'pack', minutes: pack.minutes });
+                              } else {
+                                await handleBuyPack(pack.minutes);
+                              }
+                            }}
+                            disabled={disabled}
+                            title={affordable ? undefined : 'Need more f-coins'}
+                          >
+                            {pack.minutes}m • {pack.price} f-coins
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  {proceedOpen && cameraModeEnabled && reflectionSlideshowEnabled && (
+                    <ReflectionSlideshow
+                      domain={domain}
+                      enabled
+                      cameraModeEnabled={cameraModeEnabled}
+                      lookbackDays={reflectionLookbackDays}
+                      intervalMs={reflectionIntervalMs}
+                      maxPhotos={reflectionMaxPhotos}
+                      variant="card"
+                      onError={(message) => setError(message)}
+                    />
+                  )}
+                </div>
 
                 <section className="tws-paywall-option" style={{ margin: 0 }}>
                   <div className="tws-option-header">
@@ -4304,24 +5021,6 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
                   </div>
                 </section>
 
-                <section className="tws-paywall-option tws-sudoku-option" style={{ margin: 0 }}>
-                  <div className="tws-option-header">
-                    <h3>Free unlock game gate</h3>
-                    <p className="tws-subtle">
-                      Solve {SUDOKU_REQUIRED_SQUARES} squares to unlock {SUDOKU_PASS_MINUTES} minutes free.
-                    </p>
-                  </div>
-                  <SudokuChallenge
-                    puzzleKey={domain}
-                    title="Hard Sudoku checkpoint"
-                    subtitle="Type one digit per blank cell."
-                    requiredCorrect={SUDOKU_REQUIRED_SQUARES}
-                    unlockLabel={`Claim ${SUDOKU_PASS_MINUTES}m free pass`}
-                    disabled={isProcessing}
-                    onUnlock={handleStartChallengePass}
-                  />
-                </section>
-
                 <div className="tws-emergency-link">
                   {emergencyPolicy === 'off' ? (
                     <button type="button" disabled title="Emergency access is disabled in Settings.">
@@ -4337,6 +5036,280 @@ export default function PaywallOverlay({ domain, status, reason, peek, onClose }
             </details>
           </div>
         </aside>
+
+        {ankiInsightsOpen && (
+          <div className="tws-study-modal-overlay" onClick={() => setAnkiInsightsOpen(false)}>
+            <div className="tws-study-modal" onClick={(event) => event.stopPropagation()}>
+              <div className="tws-study-modal-header">
+                <div>
+                  <h3>Anki Learning Insights</h3>
+                  <p className="tws-subtle">A warm, honest snapshot of your spaced-repetition momentum.</p>
+                </div>
+                <button className="tws-secondary" type="button" onClick={() => setAnkiInsightsOpen(false)}>
+                  Close
+                </button>
+              </div>
+
+              <div className="tws-study-modal-metrics">
+                <div className="tws-study-modal-metric">
+                  <span>True retention</span>
+                  <strong>{formatPercent(ankiSnapshot.trueRetention)}</strong>
+                  <small>target {Math.round(ankiAnalytics.desiredRetention * 100)}%</small>
+                </div>
+                <div className="tws-study-modal-metric">
+                  <span>Mature retention</span>
+                  <strong>{formatPercent(ankiSnapshot.matureRetention)}</strong>
+                  <small>cards with interval 21d+</small>
+                </div>
+                <div className="tws-study-modal-metric">
+                  <span>Current streak</span>
+                  <strong>{ankiSnapshot.currentStreakDays}d</strong>
+                  <small>review consistency</small>
+                </div>
+                <div className="tws-study-modal-metric">
+                  <span>Due pressure</span>
+                  <strong>{ankiSnapshot.dueNow}</strong>
+                  <small>{ankiSnapshot.dueIn7Days} due in 7 days</small>
+                </div>
+                <div className="tws-study-modal-metric">
+                  <span>Review minutes</span>
+                  <strong>{Math.round(ankiSnapshot.reviewMinutes)}m</strong>
+                  <small>last {ankiAnalytics.windowDays} days</small>
+                </div>
+                <div className="tws-study-modal-metric">
+                  <span>Average response</span>
+                  <strong>{ankiSnapshot.averageResponseMs != null ? `${Math.round(ankiSnapshot.averageResponseMs)}ms` : '—'}</strong>
+                  <small>pace per answer</small>
+                </div>
+              </div>
+
+              <div className="tws-study-modal-sections">
+                <section className="tws-study-modal-card">
+                  <div className="tws-study-modal-card-header">
+                    <h4>Review heatmap</h4>
+                    <span className="tws-subtle">{ankiAnalytics.heatmap.startDay} → {ankiAnalytics.heatmap.endDay}</span>
+                  </div>
+                  <div className="tws-study-heatmap-grid">
+                    {ankiHeatmapCells.map((cell) => (
+                      <span
+                        key={cell.day}
+                        className={`tws-study-heatmap-cell level-${cell.level}`}
+                        title={`${cell.day}: ${cell.reviews} reviews`}
+                      />
+                    ))}
+                  </div>
+                </section>
+
+                <section className="tws-study-modal-card">
+                  <div className="tws-study-modal-card-header">
+                    <h4>Hourly rhythm</h4>
+                    <span className="tws-subtle">When you review best</span>
+                  </div>
+                  <div className="tws-study-hourly-chart">
+                    {ankiAnalytics.hourly.map((point) => (
+                      <div key={point.hour} className="tws-study-hour-col" title={`${point.hour}:00 · ${point.reviews} reviews`}>
+                        <span
+                          className="tws-study-hour-fill"
+                          style={{ height: `${Math.max(8, Math.round((point.reviews / ankiHourlyMax) * 100))}%` }}
+                        />
+                        <small>{point.hour % 6 === 0 ? `${point.hour}` : ''}</small>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </div>
+
+              <div className="tws-study-modal-sections">
+                <section className="tws-study-modal-card">
+                  <div className="tws-study-modal-card-header">
+                    <h4>Answer mix</h4>
+                    <span className="tws-subtle">{ankiRatingsTotal} reviews</span>
+                  </div>
+                  <div className="tws-study-rating-list">
+                    <div><span>Again</span><strong>{ankiAnalytics.ratings.again}</strong></div>
+                    <div><span>Hard</span><strong>{ankiAnalytics.ratings.hard}</strong></div>
+                    <div><span>Good</span><strong>{ankiAnalytics.ratings.good}</strong></div>
+                    <div><span>Easy</span><strong>{ankiAnalytics.ratings.easy}</strong></div>
+                  </div>
+                </section>
+
+                <section className="tws-study-modal-card">
+                  <div className="tws-study-modal-card-header">
+                    <h4>Signals</h4>
+                    <span className="tws-subtle">What to watch</span>
+                  </div>
+                  {ankiAnalytics.risks.length > 0 ? (
+                    <ul className="tws-study-risk-list">
+                      {ankiAnalytics.risks.map((risk) => (
+                        <li key={risk.id} className={risk.level === 'warning' ? 'warning' : 'info'}>
+                          <strong>{risk.title}</strong>
+                          <span>{risk.detail}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="tws-subtle" style={{ margin: 0 }}>
+                      No warning signs detected. Keep your current rhythm.
+                    </p>
+                  )}
+                </section>
+              </div>
+
+              {ankiAnalytics.encouragement.length > 0 && (
+                <section className="tws-study-modal-card tws-study-modal-encouragement">
+                  <div className="tws-study-modal-card-header">
+                    <h4>Encouragement</h4>
+                    <span className="tws-subtle">Built from your real data</span>
+                  </div>
+                  <ul>
+                    {ankiAnalytics.encouragement.slice(0, 3).map((message, idx) => (
+                      <li key={`${idx}-${message}`}>{message}</li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+            </div>
+          </div>
+        )}
+
+        {zoteroInsightsOpen && (
+          <div className="tws-study-modal-overlay" onClick={() => setZoteroInsightsOpen(false)}>
+            <div className="tws-study-modal tws-zotero-modal" onClick={(event) => event.stopPropagation()}>
+              <div className="tws-study-modal-header">
+                <div>
+                  <h3>Zotero Reading Stream</h3>
+                  <p className="tws-subtle">Visual checkpoints from your Zotero reading flow.</p>
+                </div>
+                <div className="tws-zotero-modal-actions">
+                  <button className="tws-secondary" type="button" disabled={zoteroAnalyticsBusy} onClick={() => void refreshZoteroAnalytics(30, true)}>
+                    {zoteroAnalyticsBusy ? 'Syncing...' : 'Refresh'}
+                  </button>
+                  <button className="tws-secondary" type="button" onClick={() => setZoteroInsightsOpen(false)}>
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="tws-study-modal-metrics">
+                <div className="tws-study-modal-metric">
+                  <span>Tracked titles</span>
+                  <strong>{zoteroSnapshot.trackedItems}</strong>
+                  <small>{zoteroSnapshot.activeItems} active</small>
+                </div>
+                <div className="tws-study-modal-metric">
+                  <span>Completed</span>
+                  <strong>{zoteroSnapshot.completedItems}</strong>
+                  <small>~98%+ progress</small>
+                </div>
+                <div className="tws-study-modal-metric">
+                  <span>Pages advanced</span>
+                  <strong>{zoteroSnapshot.pagesAdvancedWindow}</strong>
+                  <small>last {zoteroAnalytics.windowDays} days</small>
+                </div>
+                <div className="tws-study-modal-metric">
+                  <span>Titles moved</span>
+                  <strong>{zoteroSnapshot.progressedItemsWindow}</strong>
+                  <small>{zoteroSnapshot.checkpointsWindow} checkpoints</small>
+                </div>
+                <div className="tws-study-modal-metric">
+                  <span>Average progress</span>
+                  <strong>{formatPercent(zoteroSnapshot.averageProgress)}</strong>
+                  <small>median {formatPercent(zoteroSnapshot.medianProgress)}</small>
+                </div>
+                <div className="tws-study-modal-metric">
+                  <span>Last sync</span>
+                  <strong>{zoteroSnapshot.lastSyncAt ? new Date(zoteroSnapshot.lastSyncAt).toLocaleString() : '—'}</strong>
+                  <small>generated {new Date(zoteroAnalytics.generatedAt).toLocaleTimeString()}</small>
+                </div>
+              </div>
+
+              <div className="tws-study-modal-sections">
+                <section className="tws-study-modal-card">
+                  <div className="tws-study-modal-card-header">
+                    <h4>Daily page momentum</h4>
+                    <span className="tws-subtle">{zoteroAnalytics.windowDays} day window</span>
+                  </div>
+                  {zoteroAnalytics.daily.length ? (
+                    <div className="tws-zotero-daily-chart">
+                      {zoteroAnalytics.daily.map((point) => (
+                        <div
+                          key={point.day}
+                          className="tws-zotero-day-col"
+                          title={`${point.day} · +${point.pagesAdvanced} pages · ${point.itemsTouched} titles touched`}
+                        >
+                          <span
+                            className="tws-zotero-day-fill"
+                            style={{ height: `${Math.max(point.pagesAdvanced > 0 ? 8 : 0, Math.round((point.pagesAdvanced / zoteroDailyMax) * 100))}%` }}
+                          />
+                          <small>{point.day.slice(5)}</small>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="tws-subtle" style={{ margin: 0 }}>No checkpoints in this window yet.</p>
+                  )}
+                </section>
+
+                <section className="tws-study-modal-card">
+                  <div className="tws-study-modal-card-header">
+                    <h4>Progress buckets</h4>
+                    <span className="tws-subtle">Current distribution</span>
+                  </div>
+                  <div className="tws-zotero-buckets">
+                    {zoteroAnalytics.progressBuckets.map((bucket) => (
+                      <div key={bucket.id}>
+                        <span>{bucket.label}</span>
+                        <strong>{bucket.count}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </div>
+
+              <section className="tws-study-modal-card">
+                <div className="tws-study-modal-card-header">
+                  <h4>Top progressed titles</h4>
+                  <span className="tws-subtle">Most movement in this window</span>
+                </div>
+                {zoteroTopProgressed.length ? (
+                  <ul className="tws-zotero-top-list">
+                    {zoteroTopProgressed.map((item) => (
+                      <li key={item.itemKey}>
+                        <div>
+                          <strong>{item.title}</strong>
+                          <span>
+                            {item.totalPages && item.currentPage ? `${item.currentPage}/${item.totalPages}` : 'Page data unavailable'}
+                            {' · '}
+                            {formatPercent(item.progress)}
+                            {' · '}
+                            +{item.pagesAdvancedWindow}p
+                          </span>
+                        </div>
+                        <small>{item.stalledDays != null ? `${item.stalledDays}d since progress change` : 'Recent update'}</small>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="tws-subtle" style={{ margin: 0 }}>No progressed titles yet. Open a Zotero document and keep going.</p>
+                )}
+              </section>
+
+              {zoteroAnalytics.insights.length > 0 && (
+                <section className="tws-study-modal-card tws-zotero-insights">
+                  <div className="tws-study-modal-card-header">
+                    <h4>Reading signals</h4>
+                    <span className="tws-subtle">Actionable nudges</span>
+                  </div>
+                  <ul>
+                    {zoteroAnalytics.insights.map((insight) => (
+                      <li key={insight}>{insight}</li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+            </div>
+          </div>
+        )}
 
         {friendDetailOpen && friendDetail && (
           <div className="tws-friend-modal-overlay" onClick={() => setFriendDetailOpen(false)}>

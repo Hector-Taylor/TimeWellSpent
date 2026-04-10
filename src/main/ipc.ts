@@ -17,10 +17,11 @@ export type IpcContext = {
   backend: BackendServices;
   db: Database;
   sync?: SyncService | null;
+  pickAnkiDeckFile?: () => Promise<string | null> | string | null;
 };
 
 export function createIpc(context: IpcContext) {
-  const { backend, sync, db } = context;
+  const { backend, sync, db, pickAnkiDeckFile } = context;
 
   ipcMain.handle('wallet:get', async () => {
     return backend.wallet.getSnapshot();
@@ -133,40 +134,19 @@ export function createIpc(context: IpcContext) {
   });
 
   ipcMain.handle('paywall:start-metered', (_event, payload: { domain: string }) => {
-    const colorFilter = backend.settings.getAlwaysGreyscale() ? 'greyscale' : backend.settings.getGuardrailColorFilter();
-    return backend.economy.startPayAsYouGo(payload.domain, { colorFilter });
+    return backend.paywallCommands.startMetered(payload.domain);
   });
 
   ipcMain.handle('paywall:buy-pack', (_event, payload: { domain: string; minutes: number }) => {
-    const colorFilter = backend.settings.getAlwaysGreyscale() ? 'greyscale' : backend.settings.getGuardrailColorFilter();
-    return backend.economy.buyPack(payload.domain, payload.minutes, { colorFilter });
+    return backend.paywallCommands.buyPack(payload.domain, payload.minutes);
   });
   ipcMain.handle(
     'paywall:start-challenge-pass',
     (_event, payload: { domain: string; durationSeconds?: number; solvedSquares?: number }) => {
-      const domain = payload?.domain?.trim();
-      if (!domain) {
-        throw new Error('Domain is required');
-      }
-      const durationSeconds = Number.isFinite(payload.durationSeconds)
-        ? Math.max(60, Math.min(3600, Math.round(payload.durationSeconds as number)))
-        : 12 * 60;
-      const solvedSquares = Number.isFinite(payload.solvedSquares)
-        ? Math.max(1, Math.round(payload.solvedSquares as number))
-        : null;
-
-      const session = backend.paywall.startEmergency(domain, 'Sudoku challenge unlock', { durationSeconds });
-      backend.consumption.record({
-        kind: 'emergency-session',
-        title: domain,
-        domain,
-        meta: {
-          source: 'sudoku-challenge',
-          durationSeconds,
-          solvedSquares
-        }
+      return backend.paywallCommands.startChallengePass(payload.domain, {
+        durationSeconds: payload.durationSeconds,
+        solvedSquares: payload.solvedSquares
       });
-      return session;
     }
   );
 
@@ -174,18 +154,18 @@ export function createIpc(context: IpcContext) {
     await backend.declineDomain(payload.domain);
   });
   ipcMain.handle('paywall:cancel-pack', (_event, payload: { domain: string }) => {
-    return backend.paywall.cancelPack(payload.domain);
+    return backend.paywallCommands.cancelPack(payload.domain);
   });
   ipcMain.handle('paywall:end', (_event, payload: { domain: string; refundUnused?: boolean }) => {
-    const session = backend.paywall.endSession(payload.domain, 'manual-end', { refundUnused: payload.refundUnused ?? true });
+    const session = backend.paywallCommands.endSession(payload.domain, { refundUnused: payload.refundUnused ?? true });
     if (!session) {
       throw new Error('No active session for that domain');
     }
     return session;
   });
   ipcMain.handle('paywall:sessions', () => backend.paywall.listSessions());
-  ipcMain.handle('paywall:pause', (_event, payload: { domain: string }) => backend.paywall.pause(payload.domain));
-  ipcMain.handle('paywall:resume', (_event, payload: { domain: string }) => backend.paywall.resume(payload.domain));
+  ipcMain.handle('paywall:pause', (_event, payload: { domain: string }) => backend.paywallCommands.pause(payload.domain));
+  ipcMain.handle('paywall:resume', (_event, payload: { domain: string }) => backend.paywallCommands.resume(payload.domain));
 
   ipcMain.handle('settings:categorisation', () => backend.settings.getCategorisation());
   ipcMain.handle('settings:update-categorisation', (_event, payload) => backend.settings.setCategorisation(payload));
@@ -228,6 +208,17 @@ export function createIpc(context: IpcContext) {
   ipcMain.handle('integrations:zotero-config', () => backend.reading.getZoteroIntegrationConfig());
   ipcMain.handle('integrations:update-zotero-config', (_event, value: ZoteroIntegrationConfig) => backend.reading.setZoteroIntegrationConfig(value));
   ipcMain.handle('integrations:zotero-collections', async () => backend.reading.listZoteroCollections());
+  ipcMain.handle('integrations:zotero-analytics', async (_event, payload: { days?: number; limit?: number; sync?: boolean } = {}) => {
+    const days = Number.isFinite(payload.days) ? Number(payload.days) : 30;
+    const limit = Number.isFinite(payload.limit) ? Number(payload.limit) : 8;
+    if (payload.sync) {
+      await backend.reading.syncZoteroProgress(Math.max(24, Math.round(limit * 3)));
+    }
+    return backend.reading.getZoteroProgressAnalytics(days, limit);
+  });
+  ipcMain.handle('integrations:zotero-sync', async (_event, payload: { limit?: number } = {}) => {
+    return backend.reading.syncZoteroProgress(payload.limit ?? 24);
+  });
 
   // Library handlers
   ipcMain.handle('library:list', () => backend.library.list());
@@ -466,6 +457,45 @@ export function createIpc(context: IpcContext) {
   });
   ipcMain.handle('analytics:trends', (_event, payload: { granularity?: 'hour' | 'day' | 'week' }) => {
     return backend.analytics.getTrends(payload.granularity ?? 'day');
+  });
+  ipcMain.handle('analytics:episodes', (_event, payload: {
+    start?: string;
+    end?: string;
+    hours?: number;
+    gapMinutes?: number;
+    binSeconds?: number;
+    maxEpisodes?: number;
+  }) => {
+    return backend.analytics.getBehaviorEpisodes(payload ?? {});
+  });
+  ipcMain.handle('settings:theme', () => {
+    return backend.settings.getTheme();
+  });
+  ipcMain.handle('settings:update-theme', (_event, value: 'lavender' | 'olive') => {
+    backend.settings.setTheme(value === 'olive' ? 'olive' : 'lavender');
+  });
+  ipcMain.handle('anki:status', (_event, payload: { deckId?: number | null; limit?: number } = {}) => {
+    return backend.anki.getStatus({
+      deckId: payload?.deckId ?? null,
+      limit: payload?.limit ?? 24
+    });
+  });
+  ipcMain.handle('anki:analytics', (_event, payload: { days?: number } = {}) => {
+    return backend.anki.getAnalytics({ windowDays: payload?.days ?? 30 });
+  });
+  ipcMain.handle('anki:pick-file', async () => {
+    if (!pickAnkiDeckFile) return null;
+    return pickAnkiDeckFile();
+  });
+  ipcMain.handle('anki:import-file', async (_event, payload: { path?: string } = {}) => {
+    const filePath = String(payload?.path ?? '').trim();
+    if (!filePath) throw new Error('Deck path is required.');
+    const result = await backend.anki.importDeckPackage(filePath);
+    return {
+      ok: true as const,
+      result,
+      status: backend.anki.getStatus({ limit: 24 })
+    };
   });
 
   ipcMain.handle('sync:status', async () => {

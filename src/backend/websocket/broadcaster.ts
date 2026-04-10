@@ -1,24 +1,22 @@
 import type WebSocket from 'ws';
 import { EventEmitter } from 'node:events';
 import type { EconomyEngine } from '../economy';
-import type { PaywallManager } from '../paywall';
 import type { WalletManager } from '../wallet';
 import type { FocusService } from '../focus';
 import type { PomodoroService } from '../pomodoro';
 import type { LibraryService } from '../library';
-import type { EmergencyService } from '../emergency';
+import type { PaywallCommandService } from '../paywallCommands';
 import { logger } from '@shared/logger';
 import type { ActivityEvent } from '../activity-tracker';
 import type { ActivityOrigin } from '../activityPipeline';
 
 export type WebSocketBroadcasterContext = {
     economy: EconomyEngine;
-    paywall: PaywallManager;
     wallet: WalletManager;
     focus: FocusService;
     pomodoro: PomodoroService;
     library: LibraryService;
-    emergency: EmergencyService;
+    paywallCommands: PaywallCommandService;
     handleActivity: (event: ActivityEvent & { idleSeconds?: number }, origin?: ActivityOrigin) => void;
 };
 
@@ -108,7 +106,7 @@ export class WebSocketBroadcaster extends EventEmitter {
     }
 
     private handleMessage(data: any, socket: WebSocket) {
-        const { economy, paywall, handleActivity, emergency, pomodoro } = this.ctx;
+        const { paywallCommands, handleActivity, pomodoro } = this.ctx;
         this.touchExtensionPresence();
 
         if (data.type === 'extension:heartbeat') {
@@ -127,7 +125,10 @@ export class WebSocketBroadcaster extends EventEmitter {
             }, 'extension');
         } else if (data.type === 'paywall:start-metered' && data.payload?.domain) {
             try {
-                const session = economy.startPayAsYouGo(String(data.payload.domain));
+                const session = paywallCommands.startMetered(
+                    String(data.payload.domain),
+                    typeof data.payload.colorFilter === 'string' ? data.payload.colorFilter : undefined
+                );
                 this.broadcast({ type: 'paywall-session-started', payload: session });
             } catch (error) {
                 logger.error('Failed to start metered from extension', error);
@@ -135,26 +136,30 @@ export class WebSocketBroadcaster extends EventEmitter {
             }
         } else if (data.type === 'paywall:buy-pack' && data.payload?.domain && data.payload?.minutes) {
             try {
-                const session = economy.buyPack(String(data.payload.domain), Number(data.payload.minutes));
+                const session = paywallCommands.buyPack(
+                    String(data.payload.domain),
+                    Number(data.payload.minutes),
+                    typeof data.payload.colorFilter === 'string' ? data.payload.colorFilter : undefined
+                );
                 this.broadcast({ type: 'paywall-session-started', payload: session });
             } catch (error) {
                 logger.error('Failed to buy pack from extension', error);
                 socket.send(JSON.stringify({ type: 'error', payload: { message: (error as Error).message } }));
             }
         } else if (data.type === 'paywall:pause' && data.payload?.domain) {
-            paywall.pause(String(data.payload.domain));
+            paywallCommands.pause(String(data.payload.domain));
             this.broadcast({ type: 'paywall-session-paused', payload: { domain: data.payload.domain, reason: 'manual' } });
         } else if (data.type === 'paywall:resume' && data.payload?.domain) {
-            paywall.resume(String(data.payload.domain));
+            paywallCommands.resume(String(data.payload.domain));
             this.broadcast({ type: 'paywall-session-resumed', payload: { domain: data.payload.domain } });
         } else if (data.type === 'paywall:end' && data.payload?.domain) {
-            const session = paywall.endSession(String(data.payload.domain), 'manual-end', { refundUnused: true });
+            const session = paywallCommands.endSession(String(data.payload.domain), { refundUnused: true });
             if (!session) {
                 socket.send(JSON.stringify({ type: 'error', payload: { message: 'No active session to end' } }));
             }
         } else if (data.type === 'paywall:start-emergency' && data.payload?.domain && data.payload?.justification) {
             try {
-                const session = emergency.start(String(data.payload.domain), String(data.payload.justification), {
+                const session = paywallCommands.startEmergency(String(data.payload.domain), String(data.payload.justification), {
                     url: data.payload.url ? String(data.payload.url) : undefined
                 });
                 this.broadcast({ type: 'paywall-session-started', payload: session });
@@ -164,16 +169,14 @@ export class WebSocketBroadcaster extends EventEmitter {
             }
         } else if (data.type === 'paywall:emergency-review' && data.payload?.outcome) {
             try {
-                const outcome = String(data.payload.outcome);
-                if (outcome !== 'kept' && outcome !== 'not-kept') throw new Error('Invalid outcome');
-                const stats = emergency.recordReview(outcome);
+                const stats = paywallCommands.recordEmergencyReview(String(data.payload.outcome) as 'kept' | 'not-kept');
                 socket.send(JSON.stringify({ type: 'emergency-review-recorded', payload: stats }));
             } catch (error) {
                 socket.send(JSON.stringify({ type: 'error', payload: { message: (error as Error).message } }));
             }
         } else if (data.type === 'paywall:start-store' && data.payload?.domain && typeof data.payload?.price === 'number') {
             try {
-                const session = economy.startStore(
+                const session = paywallCommands.startStore(
                     String(data.payload.domain),
                     Number(data.payload.price),
                     data.payload.url ? String(data.payload.url) : undefined

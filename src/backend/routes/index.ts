@@ -9,6 +9,7 @@ export { createAnalyticsRoutes } from './analytics';
 export { createLiteraryAnalyticsRoutes } from './literary-analytics';
 export { createWritingAnalyticsRoutes } from './writing-analytics';
 export { createWritingRoutes } from './writing';
+export { createAnkiRoutes, type AnkiRoutesContext } from './anki';
 export { createSettingsRoutes, createExtensionSyncRoutes, type SettingsRoutesContext, type ExtensionSyncContext } from './settings';
 export { createActionsRoutes, createUiRoutes, createIntegrationsRoutes, type ActionsRoutesContext } from './actions';
 export { createFriendsRoutes } from './friends';

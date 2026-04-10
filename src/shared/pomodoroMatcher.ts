@@ -1,3 +1,5 @@
+import { canonicalizeDomain } from './domainCanonicalization';
+
 export type PomodoroMatcherAllowlistEntry = {
   kind: 'app' | 'site';
   value: string;
@@ -11,7 +13,7 @@ export type PomodoroMatcherOverride = {
 };
 
 export function normalizePomodoroDomain(domain: string) {
-  return domain.trim().toLowerCase().replace(/^www\./i, '').replace(/\.$/, '');
+  return canonicalizeDomain(domain) ?? domain.trim().toLowerCase().replace(/^www\./i, '').replace(/\.$/, '');
 }
 
 export function parsePomodoroSiteTarget(rawValue: string): { domain: string; pathPrefix: string | null } | null {

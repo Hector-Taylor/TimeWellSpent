@@ -69,6 +69,7 @@ export default function FriendDetailModal({ open, friend, summary, timeline, pub
               <span className="cat-neutral" style={{ width: `${percentOfTotal(totals, 'neutral')}%` }} />
               <span className="cat-frivolity" style={{ width: `${percentOfTotal(totals, 'frivolity')}%` }} />
               <span className="cat-draining" style={{ width: `${percentOfTotal(totals, 'draining')}%` }} />
+              <span className="cat-emergency" style={{ width: `${percentOfTotal(totals, 'emergency')}%` }} />
               <span className="cat-idle" style={{ width: `${percentOfTotal(totals, 'idle')}%` }} />
             </div>
             <div className="friend-modal-break-row">
@@ -82,6 +83,10 @@ export default function FriendDetailModal({ open, friend, summary, timeline, pub
             <div className="friend-modal-break-row">
               <span>Draining</span>
               <span>{formatHoursFromSeconds(totals.draining ?? 0)}</span>
+            </div>
+            <div className="friend-modal-break-row">
+              <span>Emergency</span>
+              <span>{formatHoursFromSeconds(totals.emergency ?? 0)}</span>
             </div>
             <div className="friend-modal-break-row">
               <span>Idle</span>
@@ -124,7 +129,7 @@ export default function FriendDetailModal({ open, friend, summary, timeline, pub
           </div>
           <div className="friend-modal-timeline-bars">
             {(timeline?.timeline ?? []).map((slot, idx) => {
-              const total = slot.productive + slot.neutral + slot.frivolity + slot.draining + slot.idle;
+              const total = slot.productive + slot.neutral + slot.frivolity + slot.draining + (slot.emergency ?? 0) + slot.idle;
               const height = total === 0 ? 8 : Math.max(12, Math.min(52, Math.round((total / maxTimeline(timeline)) * 52)));
               const dominant = slot.dominant;
               return (
@@ -142,9 +147,9 @@ export default function FriendDetailModal({ open, friend, summary, timeline, pub
 
 function percentOfTotal(
   totals: NonNullable<FriendTimeline['totalsByCategory']>,
-  key: 'productive' | 'neutral' | 'frivolity' | 'draining' | 'idle'
+  key: 'productive' | 'neutral' | 'frivolity' | 'draining' | 'emergency' | 'idle'
 ) {
-  const total = totals.productive + totals.neutral + totals.frivolity + (totals.draining ?? 0) + totals.idle;
+  const total = totals.productive + totals.neutral + totals.frivolity + (totals.draining ?? 0) + (totals.emergency ?? 0) + totals.idle;
   const value = totals[key] ?? 0;
   return total > 0 ? Math.round((value / total) * 100) : 0;
 }
@@ -156,7 +161,7 @@ function formatHoursFromSeconds(seconds: number) {
 
 function maxTimeline(timeline: FriendTimeline | null) {
   if (!timeline || timeline.timeline.length === 0) return 1;
-  return Math.max(...timeline.timeline.map((slot) => slot.productive + slot.neutral + slot.frivolity + slot.draining + slot.idle), 1);
+  return Math.max(...timeline.timeline.map((slot) => slot.productive + slot.neutral + slot.frivolity + slot.draining + (slot.emergency ?? 0) + slot.idle), 1);
 }
 
 function formatShortDate(value: string) {

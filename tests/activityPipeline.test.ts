@@ -135,6 +135,46 @@ describe('ActivityPipeline source arbitration', () => {
     expect(economy.events).toHaveLength(1);
   });
 
+  it('ignores system browser app events without URL/domain when extension feed is fresh', () => {
+    const tracker = new FakeTracker();
+    const economy = new FakeEconomy();
+    const classifier = new ActivityClassifier(
+      () => DEFAULT_CATEGORISATION,
+      () => 10,
+      () => 10
+    );
+    const pipeline = new ActivityPipeline(
+      tracker as any,
+      economy as any,
+      classifier,
+      () => 120,
+      undefined,
+      () => true
+    );
+
+    const base = Date.now();
+    pipeline.handle({
+      timestamp: new Date(base),
+      source: 'app',
+      appName: 'Google Chrome',
+      idleSeconds: 0
+    } as any, 'system');
+
+    expect(tracker.records).toHaveLength(0);
+    expect(economy.events).toHaveLength(0);
+
+    pipeline.handle({
+      timestamp: new Date(base + 2000),
+      source: 'url',
+      appName: 'Chrome',
+      domain: 'example.com',
+      idleSeconds: 0
+    } as any, 'extension');
+
+    expect(tracker.records).toHaveLength(1);
+    expect(economy.events).toHaveLength(1);
+  });
+
   it('drops stale extension activity events', () => {
     const tracker = new FakeTracker();
     const economy = new FakeEconomy();

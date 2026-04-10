@@ -73,6 +73,11 @@ export class ActivityPipeline {
     const browserNames = ['chrome', 'safari', 'edge', 'brave', 'arc', 'firefox'];
     const looksBrowser = browserNames.some((name) => appName.includes(name));
     if (!looksBrowser) return false;
+
+    // System app-level trackers often report browser foreground activity as
+    // source=app without URL/domain. When extension feed is fresh, we still
+    // treat these as browser context so extension URL events remain authoritative.
+    if (event.source === 'app') return true;
     return event.source === 'url' || Boolean(event.url) || Boolean(event.domain);
   }
 

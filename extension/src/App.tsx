@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import './App.css';
+import { useExtensionTheme } from './theme';
 
 type ConnectionState = {
   desktopConnected: boolean;
@@ -112,6 +113,7 @@ type FriendProfile = {
 };
 
 function App() {
+  useExtensionTheme();
   const [connection, setConnection] = useState<ConnectionState | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTabInfo | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -383,47 +385,267 @@ function App() {
   }
 
   return (
-    <div className="panel">
+    <div className="panel popup-shell">
       <header className="popup-header">
         <div>
           <p className="eyebrow">TimeWellSpent</p>
-          <h1>Quick actions</h1>
+          <h1>Current tab</h1>
         </div>
         <div className={`status-pill ${connection?.desktopConnected ? 'on' : 'off'}`}>
           {connection?.desktopConnected ? 'Desktop linked' : 'Offline'}
         </div>
       </header>
 
-      <div className="pill-row">
-        <span className="pill">{status?.balance ?? 0} f-coins</span>
-        <span className="pill ghost">Last sync {connection?.lastSync ? formatTimeSince(connection.lastSync) : 'never'}</span>
+      <div className="popup-topbar">
+        <div className="pill-row popup-meta-row">
+          <span className="pill">{status?.balance ?? 0} f-coins</span>
+          <span className="pill ghost">Last sync {connection?.lastSync ? formatTimeSince(connection.lastSync) : 'never'}</span>
+        </div>
         <button className="primary" onClick={openPomodoroView} disabled={working}>Lock in</button>
       </div>
 
-      <section
-        className={`card streak-card ${streakProgress >= 1 ? 'streak-max' : ''}`}
-        style={{
-          ['--streak-color' as string]: streakColor,
-          ['--streak-progress' as string]: `${Math.round(streakProgress * 100)}%`
-        }}
-      >
-        <div className="streak-header">
-          <span className="eyebrow">Recovery timer</span>
-          <span className="pill ghost">Goal: 3 days</span>
+      {notice && (
+        <div className={`notice ${notice.kind}`}>
+          {notice.text}
         </div>
-        <h2>Time since last frivolity</h2>
-        <div className="streak-time">
-          {streakLabel}
+      )}
+
+      {activeTab ? (
+        <section className="card page-card">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">This page</p>
+              <h2>{activeTab.domain}</h2>
+            </div>
+            {status?.domainCategory ? (
+              <span className={`pill ghost category-pill category-${status.domainCategory}`}>
+                {titleCaseWord(status.domainCategory)}
+              </span>
+            ) : null}
+          </div>
+          <div className="preview-card embedded">
+            <div className="preview-thumb">
+              {preview?.imageUrl ? (
+                <img src={preview.imageUrl} alt="" />
+              ) : (
+                <div className="preview-placeholder" aria-hidden="true" />
+              )}
+              {preview?.iconUrl && <img className="preview-favicon" src={preview.iconUrl} alt="" />}
+            </div>
+            <div className="preview-meta">
+              <strong>{preview?.title ?? activeTab.title}</strong>
+              <span>{preview?.description ?? activeTab.url}</span>
+              <small>{activeTab.url}</small>
+            </div>
+          </div>
+
+          <div className="compact-metrics">
+            <div className="mini-stat">
+              <span className="label">Session</span>
+              <strong>{session ? titleCaseWord(session.mode) : 'Blocked'}</strong>
+            </div>
+            <div className="mini-stat">
+              <span className="label">Remaining</span>
+              <strong>{session ? (session.mode === 'metered' || session.mode === 'emergency' ? '∞' : formatMinutes(remaining)) : '--'}</strong>
+            </div>
+            <div className="mini-stat">
+              <span className="label">Status</span>
+              <strong>{paused ? 'Paused' : session ? 'Running' : 'Idle'}</strong>
+            </div>
+          </div>
+
+          <div className="subsection-stack">
+            <div className="surface-card">
+              <div className="section-heading compact">
+                <div>
+                  <h3>Save to library</h3>
+                  <p className="hint">Set intent before this becomes clutter.</p>
+                </div>
+              </div>
+              <div className="chip-row">
+                {(['replace', 'productive', 'allow', 'temptation'] as const).map((purpose) => (
+                  <button
+                    key={purpose}
+                    type="button"
+                    className={`chip ${libraryPurpose === purpose ? 'active' : ''}`}
+                    onClick={() => {
+                      setLibraryPurpose(purpose);
+                      if (purpose !== 'allow') setPriceEnabled(false);
+                    }}
+                    disabled={working}
+                  >
+                    {purpose}
+                  </button>
+                ))}
+              </div>
+              {libraryPurpose === 'allow' && (
+                <div className="inline-row">
+                  <label className="field compact">
+                    <span className="toggle-row">
+                      <span>One-time unlock</span>
+                      <input
+                        type="checkbox"
+                        checked={priceEnabled}
+                        onChange={(e) => setPriceEnabled(e.target.checked)}
+                        disabled={working}
+                      />
+                    </span>
+                    <input
+                      type="number"
+                      min="1"
+                      value={priceInput}
+                      onChange={(e) => setPriceInput(Number(e.target.value))}
+                      disabled={working || !priceEnabled}
+                    />
+                  </label>
+                </div>
+              )}
+              <label className="field">
+                Title
+                <input
+                  type="text"
+                  value={titleInput}
+                  onChange={(e) => {
+                    setTitleInput(e.target.value);
+                    setTitleTouched(true);
+                  }}
+                  placeholder={activeTab.title}
+                />
+              </label>
+              <label className="field">
+                Note (optional)
+                <textarea
+                  value={noteInput}
+                  onChange={(e) => setNoteInput(e.target.value)}
+                  placeholder="Why do you want to see this later?"
+                  rows={2}
+                />
+              </label>
+              <button className="primary" disabled={working} onClick={addToLibrary}>
+                Add to Library
+              </button>
+            </div>
+
+            <div className="surface-card">
+              <div className="section-heading compact">
+                <div>
+                  <h3>Label the domain</h3>
+                  <p className="hint">Choose the default treatment for this site.</p>
+                </div>
+              </div>
+              <div className="chip-row">
+                {(['productive', 'neutral', 'frivolous'] as const).map((category) => (
+                  <button
+                    key={category}
+                    type="button"
+                    className={`chip ${domainCategory === category ? 'active' : ''}`}
+                    onClick={() => setDomainCategory(category)}
+                    disabled={working}
+                  >
+                    {category}
+                  </button>
+                ))}
+              </div>
+              <button className="secondary" disabled={working} onClick={applyDomainLabel}>
+                Apply label
+              </button>
+              <small className="hint">
+                Replace shows up in “Try this instead”. Productive items count as productive time. Priced Allow items appear under “Proceed anyway” when you land on that exact URL.
+              </small>
+            </div>
+          </div>
+        </section>
+      ) : (
+        <section className="card page-card empty-page-card">
+          <strong>No active page</strong>
+          <span>Open a web page to save it to your Library.</span>
+        </section>
+      )}
+
+      {friendDetailOpen && friendDetail && (
+        <div className="friend-modal-overlay" onClick={() => setFriendDetailOpen(false)}>
+          <div className="friend-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="friend-modal-header">
+              <div>
+                <h3>{friendDetail.displayName ?? friendDetail.handle ?? 'Friend'}</h3>
+                <p className="subtle">@{friendDetail.handle ?? 'no-handle'}</p>
+              </div>
+              <button className="ghost" onClick={() => setFriendDetailOpen(false)}>Close</button>
+            </div>
+            <div className="friend-modal-metrics">
+              <div>
+                <span className="label">Productivity</span>
+                <strong>{friendSummaries[friendDetail.userId] ? `${friendSummaries[friendDetail.userId].productivityScore}%` : '--'}</strong>
+              </div>
+              <div>
+                <span className="label">Active time</span>
+                <strong>{friendSummaries[friendDetail.userId] ? formatDuration(friendSummaries[friendDetail.userId].totalActiveSeconds * 1000) : '--'}</strong>
+              </div>
+              <div>
+                <span className="label">Updated</span>
+                <strong>{friendSummaries[friendDetail.userId] ? new Date(friendSummaries[friendDetail.userId].updatedAt).toLocaleTimeString() : '--'}</strong>
+              </div>
+            </div>
+            <div className="friend-modal-timeline">
+              <div className="friend-modal-timeline-header">
+                <span className="label">Last {friendTimeline?.windowHours ?? 24}h</span>
+                <span className="subtle">Dominant attention per hour</span>
+              </div>
+              <div className="friend-modal-timeline-bars">
+                {(friendTimeline?.timeline ?? []).map((slot, idx) => {
+                  const total = slot.productive + slot.neutral + slot.frivolity + slot.idle;
+                  const height = total === 0 ? 8 : Math.max(12, Math.min(52, Math.round((total / maxPopupTimeline(friendTimeline)) * 52)));
+                  return (
+                    <div key={`${slot.start}-${idx}`} className="friend-modal-bar-col" title={slot.hour}>
+                      <span className={`friend-modal-bar-fill cat-${slot.dominant}`} style={{ height: `${height}px` }} />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
         </div>
-        <div className="streak-meta">
-          <span className="hint">
-            {lastFrivolityAt ? `Last spend ${new Date(lastFrivolityAt).toLocaleString()}` : 'No paid sessions yet.'}
-          </span>
-        </div>
-        <div className="streak-bar" aria-hidden>
-          <span />
-        </div>
-      </section>
+      )}
+
+      <div className="popup-secondary-grid">
+        <section
+          className={`card streak-card ${streakProgress >= 1 ? 'streak-max' : ''}`}
+          style={{
+            ['--streak-color' as string]: streakColor,
+            ['--streak-progress' as string]: `${Math.round(streakProgress * 100)}%`
+          }}
+        >
+          <div className="streak-header">
+            <span className="eyebrow">Recovery timer</span>
+            <span className="pill ghost">Goal: 3 days</span>
+          </div>
+          <h2>Time since last frivolity</h2>
+          <div className="streak-time">
+            {streakLabel}
+          </div>
+          <div className="streak-meta">
+            <span className="hint">
+              {lastFrivolityAt ? `Last spend ${new Date(lastFrivolityAt).toLocaleString()}` : 'No paid sessions yet.'}
+            </span>
+          </div>
+          <div className="streak-bar" aria-hidden>
+            <span />
+          </div>
+        </section>
+
+        <section className="card utility-card">
+          <div className="card-header">
+            <div>
+              <p className="eyebrow">Rot mode</p>
+              <h2>Auto-start metered</h2>
+              <p className="subtle">If enabled, frivolous domains auto-start metered sessions instead of hard blocking.</p>
+            </div>
+            <button className={rotEnabled ? 'primary' : 'secondary'} onClick={toggleRotMode} disabled={rotBusy}>
+              {rotBusy ? 'Working…' : rotEnabled ? 'Disable' : 'Enable'}
+            </button>
+          </div>
+        </section>
+      </div>
 
       <section className="card friends-card">
         <div className="card-header">
@@ -493,186 +715,6 @@ function App() {
         )}
       </section>
 
-      {activeTab ? (
-        <section className="card preview-card">
-          <div className="preview-thumb">
-            {preview?.imageUrl ? (
-              <img src={preview.imageUrl} alt="" />
-            ) : (
-              <div className="preview-placeholder" aria-hidden="true" />
-            )}
-            {preview?.iconUrl && <img className="preview-favicon" src={preview.iconUrl} alt="" />}
-          </div>
-          <div className="preview-meta">
-            <strong>{preview?.title ?? activeTab.title}</strong>
-            <span>{preview?.description ?? activeTab.url}</span>
-            <small>{activeTab.domain}</small>
-          </div>
-        </section>
-      ) : (
-        <section className="card">
-          <strong>No active page</strong>
-          <span>Open a web page to save it to your Library.</span>
-        </section>
-      )}
-
-      {friendDetailOpen && friendDetail && (
-        <div className="friend-modal-overlay" onClick={() => setFriendDetailOpen(false)}>
-          <div className="friend-modal" onClick={(event) => event.stopPropagation()}>
-            <div className="friend-modal-header">
-              <div>
-                <h3>{friendDetail.displayName ?? friendDetail.handle ?? 'Friend'}</h3>
-                <p className="subtle">@{friendDetail.handle ?? 'no-handle'}</p>
-              </div>
-              <button className="ghost" onClick={() => setFriendDetailOpen(false)}>Close</button>
-            </div>
-            <div className="friend-modal-metrics">
-              <div>
-                <span className="label">Productivity</span>
-                <strong>{friendSummaries[friendDetail.userId] ? `${friendSummaries[friendDetail.userId].productivityScore}%` : '--'}</strong>
-              </div>
-              <div>
-                <span className="label">Active time</span>
-                <strong>{friendSummaries[friendDetail.userId] ? formatDuration(friendSummaries[friendDetail.userId].totalActiveSeconds * 1000) : '--'}</strong>
-              </div>
-              <div>
-                <span className="label">Updated</span>
-                <strong>{friendSummaries[friendDetail.userId] ? new Date(friendSummaries[friendDetail.userId].updatedAt).toLocaleTimeString() : '--'}</strong>
-              </div>
-            </div>
-            <div className="friend-modal-timeline">
-              <div className="friend-modal-timeline-header">
-                <span className="label">Last {friendTimeline?.windowHours ?? 24}h</span>
-                <span className="subtle">Dominant attention per hour</span>
-              </div>
-              <div className="friend-modal-timeline-bars">
-                {(friendTimeline?.timeline ?? []).map((slot, idx) => {
-                  const total = slot.productive + slot.neutral + slot.frivolity + slot.idle;
-                  const height = total === 0 ? 8 : Math.max(12, Math.min(52, Math.round((total / maxPopupTimeline(friendTimeline)) * 52)));
-                  return (
-                    <div key={`${slot.start}-${idx}`} className="friend-modal-bar-col" title={slot.hour}>
-                      <span className={`friend-modal-bar-fill cat-${slot.dominant}`} style={{ height: `${height}px` }} />
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {notice && (
-        <div className={`notice ${notice.kind}`}>
-          {notice.text}
-        </div>
-      )}
-
-      {activeTab && (
-        <section className="card">
-          <h2>Save this page</h2>
-          <div className="chip-row">
-            {(['replace', 'productive', 'allow', 'temptation'] as const).map((purpose) => (
-              <button
-                key={purpose}
-                type="button"
-                className={`chip ${libraryPurpose === purpose ? 'active' : ''}`}
-                onClick={() => {
-                  setLibraryPurpose(purpose);
-                  if (purpose !== 'allow') setPriceEnabled(false);
-                }}
-                disabled={working}
-              >
-                {purpose}
-              </button>
-            ))}
-          </div>
-          {libraryPurpose === 'allow' && (
-            <div className="inline-row">
-              <label className="field compact">
-                <span style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
-                  <span>One-time unlock</span>
-                  <input
-                    type="checkbox"
-                    checked={priceEnabled}
-                    onChange={(e) => setPriceEnabled(e.target.checked)}
-                    disabled={working}
-                  />
-                </span>
-                <input
-                  type="number"
-                  min="1"
-                  value={priceInput}
-                  onChange={(e) => setPriceInput(Number(e.target.value))}
-                  disabled={working || !priceEnabled}
-                />
-              </label>
-            </div>
-          )}
-          <label className="field">
-            Title
-            <input
-              type="text"
-              value={titleInput}
-              onChange={(e) => {
-                setTitleInput(e.target.value);
-                setTitleTouched(true);
-              }}
-              placeholder={activeTab.title}
-            />
-          </label>
-          <label className="field">
-            Note (optional)
-            <textarea
-              value={noteInput}
-              onChange={(e) => setNoteInput(e.target.value)}
-              placeholder="Why do you want to see this later?"
-              rows={2}
-            />
-          </label>
-          <button className="primary" disabled={working} onClick={addToLibrary}>
-            Add to Library
-          </button>
-          <small className="hint">
-            Replace shows up in “Try this instead”. Productive items count as productive time. Priced Allow items appear under “Proceed anyway” when you land on that exact URL.
-          </small>
-        </section>
-      )}
-
-      {activeTab && (
-        <section className="card">
-          <h2>Label this domain</h2>
-          <div className="chip-row">
-            {(['productive', 'neutral', 'frivolous'] as const).map((category) => (
-              <button
-                key={category}
-                type="button"
-                className={`chip ${domainCategory === category ? 'active' : ''}`}
-                onClick={() => setDomainCategory(category)}
-                disabled={working}
-              >
-                {category}
-              </button>
-            ))}
-          </div>
-          <button className="secondary" disabled={working} onClick={applyDomainLabel}>
-            Apply label
-          </button>
-        </section>
-      )}
-
-      <section className="card">
-        <div className="card-header">
-          <div>
-            <p className="eyebrow">Rot mode</p>
-            <h2>Auto-start metered</h2>
-            <p className="subtle">If enabled, frivolous domains auto-start metered sessions instead of hard blocking.</p>
-          </div>
-          <button className={rotEnabled ? 'primary' : 'secondary'} onClick={toggleRotMode} disabled={rotBusy}>
-            {rotBusy ? 'Working…' : rotEnabled ? 'Disable' : 'Enable'}
-          </button>
-        </div>
-      </section>
-
       {activeTab && (
         <details className="card collapse">
           <summary>Session controls</summary>
@@ -680,7 +722,7 @@ function App() {
             <div className="session-body">
               <div className="row">
                 <span>Mode</span>
-                <span className="pill ghost">{session.mode}</span>
+                <span className="pill ghost">{titleCaseWord(session.mode)}</span>
               </div>
               <div className="row">
                 <span>Status</span>
@@ -781,6 +823,11 @@ function headToHeadPercent(me: FriendSummary | null, friend: FriendSummary | nul
   const total = myProductive + friendProductive;
   if (total === 0) return 50;
   return Math.round((myProductive / total) * 100);
+}
+
+function titleCaseWord(value: string) {
+  if (!value) return value;
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 export default App;

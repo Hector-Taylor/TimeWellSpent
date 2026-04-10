@@ -1,5 +1,30 @@
 :root {
   color-scheme: dark;
+  --bg-base: #262040;
+  --bg-raised: #312a4a;
+  --bg-surface: #3c3558;
+  --fg: #ebe5f5;
+  --fg-muted: #b5adc8;
+  --border: rgba(212, 196, 255, 0.15);
+  --accent: #d4c4ff;
+  --accent-strong: #e8e0ff;
+  --accent-rose: #ffb8e0;
+  --accent-mint: #b8ffe0;
+  --accent-sky: #b8e0ff;
+}
+
+:root[data-tws-theme='olive'] {
+  --bg-base: #283618;
+  --bg-raised: #303f1f;
+  --bg-surface: #384727;
+  --fg: #fefae0;
+  --fg-muted: #d9d3b5;
+  --border: rgba(254, 250, 224, 0.14);
+  --accent: #dda15e;
+  --accent-strong: #f1c78b;
+  --accent-rose: #bc6c25;
+  --accent-mint: #606c38;
+  --accent-sky: #606c38;
 }
 
 * {
@@ -12,29 +37,146 @@ body,
   margin: 0;
   min-height: 100%;
   font-family: "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
-  color: #f4f5fb;
+  color: var(--fg);
   background:
-    radial-gradient(1600px 900px at 2% -30%, rgba(67, 114, 255, 0.35), transparent 65%),
-    radial-gradient(900px 700px at 100% -10%, rgba(64, 195, 255, 0.2), transparent 55%),
-    radial-gradient(1200px 800px at 70% 120%, rgba(54, 97, 219, 0.18), transparent 60%),
-    #090f1d;
+    radial-gradient(1600px 900px at 2% -30%, rgba(212, 196, 255, 0.3), transparent 65%),
+    radial-gradient(900px 700px at 100% -10%, rgba(255, 184, 224, 0.18), transparent 55%),
+    radial-gradient(1200px 800px at 70% 120%, rgba(184, 255, 224, 0.16), transparent 60%),
+    var(--bg-base);
+}
+
+html.theme-olive,
+body.theme-olive,
+body.theme-olive #root {
+  background:
+    radial-gradient(1600px 900px at 2% -30%, rgba(96, 108, 56, 0.3), transparent 65%),
+    radial-gradient(900px 700px at 100% -10%, rgba(221, 161, 94, 0.16), transparent 55%),
+    radial-gradient(1200px 800px at 70% 120%, rgba(254, 250, 224, 0.12), transparent 60%),
+    var(--bg-base);
 }
 
 .newtab-root {
+  --tws-homecoming-ms: 1600ms;
   min-height: 100vh;
-  padding: 24px;
+  padding: 28px 24px 40px;
+}
+
+.newtab-root--homecoming {
+  position: relative;
+  animation: tws-homecoming-rise var(--tws-homecoming-ms) cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.newtab-root--homecoming::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background:
+    radial-gradient(circle at 50% 18%, rgba(14, 20, 34, 0.18), rgba(0, 0, 0, 0.98) 72%);
+  animation: tws-homecoming-veil var(--tws-homecoming-ms) cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
 .newtab-shell {
   max-width: 1280px;
   margin: 0 auto;
   display: grid;
+  gap: 18px;
+}
+
+.newtab-flashcard-hero {
+  order: -3;
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--border);
+  background:
+    radial-gradient(520px 220px at 0% 0%, rgba(212, 196, 255, 0.18), transparent 70%),
+    linear-gradient(145deg, color-mix(in srgb, var(--bg-surface) 82%, black), color-mix(in srgb, var(--bg-base) 88%, black));
+}
+
+.newtab-flashcard-copy h2 {
+  margin: 4px 0 8px;
+  font-size: clamp(24px, 2.6vw, 34px);
+}
+
+.newtab-flashcard-body,
+.newtab-flashcard-empty {
+  display: grid;
   gap: 14px;
 }
 
+.newtab-flashcard-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.newtab-flashcard-faces {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.newtab-flashcard-face {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-base) 82%, black);
+}
+
+.newtab-flashcard-face strong {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-sky);
+}
+
+.newtab-flashcard-face p {
+  margin: 0;
+  color: color-mix(in srgb, var(--fg) 88%, transparent);
+  white-space: pre-wrap;
+}
+
+.newtab-flashcard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.newtab-flashcard-actions button {
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-base));
+  color: var(--fg);
+  border-radius: 999px;
+  padding: 9px 13px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.newtab-flashcard-actions button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 20%, var(--bg-surface));
+}
+
+.newtab-flashcard-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.newtab-flashcard-empty {
+  align-items: start;
+}
+
+.newtab-flashcard-empty-copy p {
+  margin-bottom: 0;
+}
+
 .hero {
-  border-radius: 18px;
-  padding: 18px;
+  border-radius: 22px;
+  padding: 22px;
   border: 1px solid rgba(152, 185, 255, 0.28);
   background:
     linear-gradient(140deg, rgba(22, 33, 58, 0.9), rgba(10, 16, 30, 0.88));
@@ -42,6 +184,28 @@ body,
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
+}
+
+@keyframes tws-homecoming-rise {
+  from {
+    opacity: 0.14;
+    filter: brightness(0.42) blur(3px);
+    transform: scale(0.992);
+  }
+  to {
+    opacity: 1;
+    filter: brightness(1) blur(0);
+    transform: scale(1);
+  }
+}
+
+@keyframes tws-homecoming-veil {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
 }
 
 .hero-copy h1 {
@@ -58,7 +222,7 @@ body,
 
 .hero-meta {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .ghost-toggle {
@@ -103,12 +267,25 @@ body,
 }
 
 .quick-nav {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
+  display: grid;
+  gap: 14px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(156, 198, 255, 0.18);
+  background: rgba(12, 18, 33, 0.68);
   color: rgba(244, 245, 251, 0.78);
   font-size: 13px;
+}
+
+.quick-nav h2 {
+  margin: 2px 0 0;
+  font-size: 18px;
+}
+
+.quick-nav-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .quick-nav button {
@@ -128,6 +305,12 @@ body,
 .quick-nav button:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+.quick-nav-meta {
+  justify-self: start;
+  color: rgba(220, 234, 255, 0.62);
+  font-size: 12px;
 }
 
 .toggle-grid {
@@ -154,12 +337,12 @@ body,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 14px;
 }
 
 .stats-header h2,
 .library-head h2 {
-  margin: 0;
+  margin: 2px 0 0;
   font-size: 20px;
 }
 
@@ -187,6 +370,7 @@ body,
 }
 
 .reader-stage {
+  order: 5;
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
@@ -200,6 +384,10 @@ body,
     linear-gradient(145deg, rgba(10, 18, 35, 0.95), rgba(7, 11, 20, 0.94));
   box-shadow: 0 20px 60px rgba(3, 7, 17, 0.4);
   overflow: hidden;
+}
+
+.reader-shelf-grid {
+  order: 6;
 }
 
 .reader-stage::after {
@@ -585,29 +773,29 @@ body,
 
 .newtab-grid {
   display: grid;
-  gap: 12px;
+  gap: 14px;
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .newtab-row {
   display: grid;
-  gap: 12px;
+  gap: 14px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .newtab-card {
-  border-radius: 14px;
-  padding: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  padding: 18px;
+  border: 1px solid var(--border);
   background:
-    linear-gradient(145deg, rgba(16, 24, 44, 0.9), rgba(8, 13, 26, 0.92));
-  box-shadow: 0 10px 30px rgba(5, 8, 15, 0.34);
+    linear-gradient(145deg, color-mix(in srgb, var(--bg-surface) 82%, black), color-mix(in srgb, var(--bg-base) 88%, black));
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--bg-base) 58%, black);
 }
 
 .newtab-card .label {
   margin: 0;
   font-size: 13px;
-  color: rgba(244, 245, 251, 0.76);
+  color: color-mix(in srgb, var(--fg) 76%, transparent);
 }
 
 .newtab-card .value {
@@ -619,24 +807,24 @@ body,
 
 .newtab-card .hint {
   margin: 10px 0 0;
-  color: rgba(244, 245, 251, 0.64);
+  color: color-mix(in srgb, var(--fg) 64%, transparent);
   font-size: 12px;
 }
 
 .newtab-card textarea,
 .newtab-card input,
 .newtab-card select {
-  border: 1px solid rgba(164, 198, 255, 0.3);
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: rgba(12, 20, 39, 0.78);
-  color: #f4f5fb;
+  background: color-mix(in srgb, var(--bg-base) 82%, black);
+  color: var(--fg);
   padding: 9px 11px;
   font: inherit;
 }
 
 .newtab-card textarea::placeholder,
 .newtab-card input::placeholder {
-  color: rgba(244, 245, 251, 0.5);
+  color: color-mix(in srgb, var(--fg) 50%, transparent);
 }
 
 .capture-grid {
@@ -653,7 +841,7 @@ body,
 
 .newtab-card.tall h2 {
   margin: 0;
-  font-size: 16px;
+  font-size: 17px;
 }
 
 .newtab-card.tall h3 {
@@ -674,11 +862,11 @@ body,
   justify-content: space-between;
   gap: 12px;
   font-size: 14px;
-  color: rgba(244, 245, 251, 0.92);
+  color: color-mix(in srgb, var(--fg) 92%, transparent);
 }
 
 .newtab-card li span:last-child {
-  color: rgba(244, 245, 251, 0.7);
+  color: color-mix(in srgb, var(--fg) 70%, transparent);
   white-space: nowrap;
 }
 
@@ -694,12 +882,12 @@ body,
 
 .stacked p {
   margin: 5px 0 0;
-  color: rgba(244, 245, 251, 0.74);
+  color: color-mix(in srgb, var(--fg) 74%, transparent);
   font-size: 13px;
 }
 
 .stacked small {
-  color: rgba(244, 245, 251, 0.58);
+  color: color-mix(in srgb, var(--fg) 58%, transparent);
   font-size: 12px;
 }
 
@@ -712,9 +900,9 @@ body,
 .row-actions button,
 .library-actions button,
 .row-actions .reader-link-button {
-  border: 1px solid rgba(147, 200, 255, 0.4);
-  background: rgba(66, 122, 255, 0.22);
-  color: #e4f1ff;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-base));
+  color: var(--fg);
   border-radius: 9px;
   padding: 6px 10px;
   cursor: pointer;
@@ -732,7 +920,7 @@ body,
   width: 100%;
   height: 7px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
   overflow: hidden;
 }
 
@@ -757,7 +945,7 @@ body,
   width: 100%;
   height: 8px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
   overflow: hidden;
 }
 
@@ -1642,7 +1830,11 @@ body,
 
 @media (max-width: 960px) {
   .newtab-root {
-    padding: 20px;
+    padding: 22px 18px 30px;
+  }
+
+  .newtab-flashcard-faces {
+    grid-template-columns: 1fr;
   }
 
   .reader-stage {
@@ -1706,12 +1898,22 @@ body,
     align-items: flex-start;
   }
 
+  .stats-header,
+  .library-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
   .toggle-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 620px) {
+  .newtab-root {
+    padding: 18px 14px 24px;
+  }
+
   .writing-studio__projects,
   .writing-studio__promptList,
   .writing-studio__suggestions,
@@ -1727,6 +1929,14 @@ body,
   .library-head {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .quick-nav-actions {
+    flex-direction: column;
+  }
+
+  .quick-nav-actions button {
+    width: 100%;
   }
 
   .reader-shelf-grid {

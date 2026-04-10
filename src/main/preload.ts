@@ -68,6 +68,8 @@ const api: RendererApi = {
     resume: (domain) => ipcRenderer.invoke('paywall:resume', { domain })
   },
   settings: {
+    theme: () => ipcRenderer.invoke('settings:theme'),
+    updateTheme: (value) => ipcRenderer.invoke('settings:update-theme', value),
     categorisation: () => ipcRenderer.invoke('settings:categorisation'),
     updateCategorisation: (value) => ipcRenderer.invoke('settings:update-categorisation', value),
     idleThreshold: () => ipcRenderer.invoke('settings:idle-threshold'),
@@ -116,7 +118,9 @@ const api: RendererApi = {
     zotero: {
       config: () => ipcRenderer.invoke('integrations:zotero-config'),
       updateConfig: (value) => ipcRenderer.invoke('integrations:update-zotero-config', value),
-      collections: () => ipcRenderer.invoke('integrations:zotero-collections')
+      collections: () => ipcRenderer.invoke('integrations:zotero-collections'),
+      analytics: (days?: number, limit?: number, sync?: boolean) => ipcRenderer.invoke('integrations:zotero-analytics', { days, limit, sync }),
+      sync: (limit?: number) => ipcRenderer.invoke('integrations:zotero-sync', { limit })
     }
   },
   library: {
@@ -135,7 +139,14 @@ const api: RendererApi = {
     timeOfDay: (days) => ipcRenderer.invoke('analytics:time-of-day', { days }),
     patterns: (days) => ipcRenderer.invoke('analytics:patterns', { days }),
     engagement: (domain, days) => ipcRenderer.invoke('analytics:engagement', { domain, days }),
-    trends: (granularity) => ipcRenderer.invoke('analytics:trends', { granularity })
+    trends: (granularity) => ipcRenderer.invoke('analytics:trends', { granularity }),
+    episodes: (query) => ipcRenderer.invoke('analytics:episodes', query ?? {})
+  },
+  anki: {
+    status: (payload) => ipcRenderer.invoke('anki:status', payload ?? {}),
+    analytics: (days) => ipcRenderer.invoke('anki:analytics', { days }),
+    pickDeckFile: () => ipcRenderer.invoke('anki:pick-file'),
+    importDeck: (path) => ipcRenderer.invoke('anki:import-file', { path })
   },
   friends: {
     profile: () => ipcRenderer.invoke('friends:profile'),
@@ -168,6 +179,11 @@ const api: RendererApi = {
   },
   system: {
     reset: (scope) => ipcRenderer.invoke('system:reset', { scope })
+  },
+  writingHud: {
+    show: (payload) => ipcRenderer.invoke('writing-hud:show', payload),
+    update: (payload) => ipcRenderer.invoke('writing-hud:update', payload),
+    hide: () => ipcRenderer.invoke('writing-hud:hide')
   },
   events: {
     on: <T = unknown>(channel: string, callback: (payload: T) => void) => {

@@ -2,6 +2,7 @@
  * Storage layer for extension data
  * Uses chrome.storage.local to persist state
  */
+import { DAY_START_HOUR, getLocalDayStartMs } from '../../src/shared/time';
 
 export interface MarketRate {
     domain: string;
@@ -80,6 +81,7 @@ export interface PaywallSession {
     startedAt: number;
     lastTick?: number;
     paused?: boolean;
+    manualPaused?: boolean;
     purchasePrice?: number;
     purchasedSeconds?: number;
     spendRemainder?: number;
@@ -198,6 +200,7 @@ export interface ExtensionState {
     };
     marketRates: Record<string, MarketRate>;
     settings: {
+        theme?: 'lavender' | 'olive';
         frivolityDomains: string[];
         productiveDomains: string[];
         neutralDomains: string[];
@@ -275,6 +278,18 @@ export interface ExtensionState {
         session: WritingHudSession | null;
         lastUpdated: number | null;
     };
+    runtime?: {
+        dayKey: string;
+        lastRolloverAt: number | null;
+    };
+}
+
+function dayKeyForTimestamp(referenceMs: number) {
+    const start = new Date(getLocalDayStartMs(referenceMs, DAY_START_HOUR));
+    const year = start.getFullYear();
+    const month = String(start.getMonth() + 1).padStart(2, '0');
+    const day = String(start.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
 }
 
 const DEFAULT_STATE: ExtensionState = {
@@ -321,6 +336,7 @@ const DEFAULT_STATE: ExtensionState = {
         }
     },
     settings: {
+        theme: 'lavender',
         frivolityDomains: [
             'twitter.com', 'x.com', 'reddit.com', 'youtube.com',
             'facebook.com', 'instagram.com', 'tiktok.com',
@@ -377,7 +393,7 @@ const DEFAULT_STATE: ExtensionState = {
     },
     emergency: {
         usage: {
-            day: new Date().toISOString().slice(0, 10),
+            day: dayKeyForTimestamp(Date.now()),
             tokensUsed: 0,
             cooldownUntil: null
         },
@@ -396,8 +412,56 @@ const DEFAULT_STATE: ExtensionState = {
     writingHud: {
         session: null,
         lastUpdated: null
+    },
+    runtime: {
+        dayKey: dayKeyForTimestamp(Date.now()),
+        lastRolloverAt: null
     }
 };
+
+function createDefaultState(): ExtensionState {
+    return {
+        ...DEFAULT_STATE,
+        wallet: { ...DEFAULT_STATE.wallet },
+        marketRates: Object.fromEntries(
+            Object.entries(DEFAULT_STATE.marketRates).map(([domain, rate]) => [
+                domain,
+                {
+                    ...rate,
+                    packs: rate.packs.map((pack) => ({ ...pack })),
+                    hourlyModifiers: Array.isArray(rate.hourlyModifiers) ? [...rate.hourlyModifiers] : undefined
+                }
+            ])
+        ),
+        settings: { ...DEFAULT_STATE.settings },
+        dailyOnboarding: { ...DEFAULT_STATE.dailyOnboarding, note: null },
+        pendingDailyOnboarding: null,
+        pendingCategorisation: null,
+        sessions: {},
+        libraryItems: [],
+        pendingLibrarySync: {},
+        pendingWalletTransactions: [],
+        pendingConsumptionEvents: [],
+        pendingActivityEvents: [],
+        consumedReading: {},
+        rotMode: { ...DEFAULT_STATE.rotMode },
+        emergency: {
+            usage: {
+                day: dayKeyForTimestamp(Date.now()),
+                tokensUsed: 0,
+                cooldownUntil: null
+            },
+            lastEnded: null,
+            reviewStats: { ...DEFAULT_STATE.emergency.reviewStats }
+        },
+        pomodoro: { session: null, lastUpdated: null, pendingBlocks: [] },
+        writingHud: { session: null, lastUpdated: null },
+        runtime: {
+            dayKey: dayKeyForTimestamp(Date.now()),
+            lastRolloverAt: null
+        }
+    };
+}
 
 const MAX_PENDING_WALLET_TRANSACTIONS = 1000;
 const MAX_PENDING_CONSUMPTION_EVENTS = 1000;
@@ -419,21 +483,45 @@ function normalizePaywallSession(
     const spendRemainder = Number.isFinite(session.spendRemainder as number)
         ? Number(session.spendRemainder)
         : (existing?.spendRemainder ?? 0);
-    const remainingRaw = Number(session.remainingSeconds);
-    const remainingSeconds = Number.isFinite(remainingRaw)
-        ? remainingRaw
-        : (existing?.remainingSeconds ?? (mode === 'metered' || mode === 'store' ? Infinity : 0));
+    const remainingValue = session.remainingSeconds;
+    const remainingParsed = typeof remainingValue === 'number'
+        ? remainingValue
+        : (typeof remainingValue === 'string' ? Number(remainingValue) : NaN);
+    const defaultRemaining = mode === 'metered' || mode === 'store' || mode === 'emergency' ? Infinity : 0;
+    // Desktop JSON encodes Infinity as null. Preserve no-expiry modes accordingly.
+    const remainingSeconds = Number.isFinite(remainingParsed)
+        ? remainingParsed
+        : (remainingValue === null ? defaultRemaining : (existing?.remainingSeconds ?? defaultRemaining));
+    const hasAllowedUrl = Object.prototype.hasOwnProperty.call(session, 'allowedUrl');
+    let allowedUrl: string | undefined;
+    if (hasAllowedUrl) {
+        allowedUrl = typeof session.allowedUrl === 'string' && session.allowedUrl.trim().length > 0 ? session.allowedUrl : undefined;
+    } else if (mode === 'emergency') {
+        // Emergency sessions should default to domain-wide access unless
+        // explicitly URL-locked by policy in the incoming payload.
+        allowedUrl = undefined;
+    } else {
+        allowedUrl = existing?.allowedUrl;
+    }
 
     return {
         ...existing,
         ...session,
         domain,
         mode,
+        allowedUrl,
+        manualPaused: typeof session.manualPaused === 'boolean' ? session.manualPaused : (existing?.manualPaused ?? false),
         remainingSeconds,
         startedAt,
         lastTick,
         spendRemainder
     } as PaywallSession;
+}
+
+function isSessionInDay(session: Partial<PaywallSession>, dayKey: string) {
+    const startedAt = Number(session.startedAt);
+    if (!Number.isFinite(startedAt) || startedAt <= 0) return true;
+    return dayKeyForTimestamp(startedAt) === dayKey;
 }
 
 function maxDayString(a: string | null | undefined, b: string | null | undefined) {
@@ -493,10 +581,36 @@ class ExtensionStorage {
             this.state.nextLibraryTempId = -1;
         }
         if (!this.state.emergency) {
-            this.state.emergency = DEFAULT_STATE.emergency;
+            this.state.emergency = {
+                usage: {
+                    day: dayKeyForTimestamp(Date.now()),
+                    tokensUsed: 0,
+                    cooldownUntil: null
+                },
+                lastEnded: null,
+                reviewStats: {
+                    total: 0,
+                    kept: 0,
+                    notKept: 0
+                }
+            };
+        } else {
+            const usage = this.state.emergency.usage as any;
+            const day = typeof usage?.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(usage.day)
+                ? usage.day
+                : dayKeyForTimestamp(Date.now());
+            const tokensUsed = Number.isFinite(usage?.tokensUsed) ? Math.max(0, Math.round(Number(usage.tokensUsed))) : 0;
+            const cooldownUntil = Number.isFinite(usage?.cooldownUntil) ? Number(usage.cooldownUntil) : null;
+            this.state.emergency.usage = { day, tokensUsed, cooldownUntil };
+            const stats = this.state.emergency.reviewStats as any;
+            this.state.emergency.reviewStats = {
+                total: Number.isFinite(stats?.total) ? Math.max(0, Math.round(Number(stats.total))) : 0,
+                kept: Number.isFinite(stats?.kept) ? Math.max(0, Math.round(Number(stats.kept))) : 0,
+                notKept: Number.isFinite(stats?.notKept) ? Math.max(0, Math.round(Number(stats.notKept))) : 0
+            };
         }
         if (!this.state.settings) {
-            this.state.settings = DEFAULT_STATE.settings;
+            this.state.settings = { ...DEFAULT_STATE.settings };
         }
         if (!Array.isArray(this.state.settings.drainingDomains)) {
             this.state.settings.drainingDomains = DEFAULT_STATE.settings.drainingDomains ?? [];
@@ -527,6 +641,9 @@ class ExtensionStorage {
         }
         if (typeof this.state.settings.cameraModeEnabled !== 'boolean') {
             this.state.settings.cameraModeEnabled = false;
+        }
+        if (this.state.settings.theme !== 'lavender' && this.state.settings.theme !== 'olive') {
+            this.state.settings.theme = 'lavender';
         }
         if (
             this.state.settings.guardrailColorFilter !== 'full-color' &&
@@ -583,6 +700,21 @@ class ExtensionStorage {
                 this.state.pendingCategorisation.drainingDomains = this.state.settings.drainingDomains ?? [];
             }
         }
+        if (!this.state.runtime || typeof this.state.runtime !== 'object') {
+            this.state.runtime = {
+                dayKey: dayKeyForTimestamp(Date.now()),
+                lastRolloverAt: null
+            };
+        } else {
+            const runtimeAny = this.state.runtime as any;
+            this.state.runtime = {
+                dayKey:
+                    typeof runtimeAny.dayKey === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(runtimeAny.dayKey)
+                        ? runtimeAny.dayKey
+                        : dayKeyForTimestamp(Date.now()),
+                lastRolloverAt: Number.isFinite(runtimeAny.lastRolloverAt) ? Number(runtimeAny.lastRolloverAt) : null
+            };
+        }
         if (typeof this.state.settings.dailyWalletResetEnabled !== 'boolean') {
             this.state.settings.dailyWalletResetEnabled = DEFAULT_STATE.settings.dailyWalletResetEnabled ?? true;
         }
@@ -602,7 +734,7 @@ class ExtensionStorage {
         }
 
         if (!this.state.dailyOnboarding || typeof this.state.dailyOnboarding !== 'object') {
-            this.state.dailyOnboarding = DEFAULT_STATE.dailyOnboarding;
+            this.state.dailyOnboarding = { ...DEFAULT_STATE.dailyOnboarding, note: null };
         } else {
             const raw = this.state.dailyOnboarding as any;
             this.state.dailyOnboarding = {
@@ -757,14 +889,70 @@ class ExtensionStorage {
         }
     }
 
+    private applyDayRollover(nextDayKey: string, now = Date.now()) {
+        if (!this.state) return;
+        const previousDay = this.state.runtime?.dayKey ?? null;
+        if (previousDay === nextDayKey) return;
+
+        // Session and enforcement state should not spill into the next day.
+        this.state.sessions = {};
+        this.state.lastFrivolityAt = null;
+        this.state.rotMode = { enabled: false, startedAt: null };
+        this.state.emergency.usage = {
+            day: nextDayKey,
+            tokensUsed: 0,
+            cooldownUntil: null
+        };
+        this.state.emergency.lastEnded = null;
+        this.state.pomodoro = { session: null, lastUpdated: null, pendingBlocks: [] };
+        this.state.writingHud = { session: null, lastUpdated: null };
+
+        // Keep historical onboarding markers but clear stale notes/prompts from prior days.
+        const noteDay = this.state.dailyOnboarding?.note?.day ?? null;
+        if (noteDay && noteDay !== nextDayKey) {
+            this.state.dailyOnboarding = {
+                ...this.state.dailyOnboarding,
+                note: null
+            };
+        }
+        if (this.state.pendingDailyOnboarding?.patch?.note && this.state.pendingDailyOnboarding.patch.note.day !== nextDayKey) {
+            const { note: _discard, ...rest } = this.state.pendingDailyOnboarding.patch;
+            this.state.pendingDailyOnboarding = { ...this.state.pendingDailyOnboarding, patch: rest };
+        }
+
+        // Extension-only fallback should mirror desktop daily reset behavior.
+        if (this.state.settings.dailyWalletResetEnabled && this.state.wallet.balance !== 0) {
+            this.state.wallet.balance = 0;
+            this.state.wallet.lastSynced = now;
+        }
+
+        this.state.runtime = {
+            dayKey: nextDayKey,
+            lastRolloverAt: now
+        };
+    }
+
+    async rolloverIfNeeded(): Promise<{ rolledOver: boolean; previousDay: string | null; day: string }> {
+        await this.ensureReady(true);
+        const day = dayKeyForTimestamp(Date.now());
+        const previousDay = this.state?.runtime?.dayKey ?? null;
+        if (!this.state) return { rolledOver: false, previousDay, day };
+        if (previousDay === day) return { rolledOver: false, previousDay, day };
+        this.applyDayRollover(day);
+        await this.save();
+        return { rolledOver: true, previousDay, day };
+    }
+
     async init(): Promise<void> {
         const result = await chrome.storage.local.get('state');
         if (result.state) {
             this.state = result.state as ExtensionState;
             this.ensureStateDefaults();
+            this.applyDayRollover(dayKeyForTimestamp(Date.now()));
+            await this.save();
         } else {
             // First time - initialize with defaults
-            this.state = DEFAULT_STATE;
+            this.state = createDefaultState();
             await this.save();
         }
     }
@@ -775,8 +963,21 @@ class ExtensionStorage {
         }
     }
 
+    private async ensureReady(skipRollover = false) {
+        if (!this.state) {
+            await this.init();
+            return;
+        }
+        if (skipRollover) return;
+        const day = dayKeyForTimestamp(Date.now());
+        if (this.state.runtime?.dayKey !== day) {
+            this.applyDayRollover(day);
+            await this.save();
+        }
+    }
+
     async getWallet() {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.wallet;
     }
 
@@ -786,7 +987,7 @@ class ExtensionStorage {
     }
 
     async spendCoins(amount: number): Promise<number> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
 
         if (this.state!.wallet.balance < amount) {
             throw new Error('Insufficient funds');
@@ -798,30 +999,34 @@ class ExtensionStorage {
     }
 
     async earnCoins(amount: number): Promise<number> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.wallet.balance += amount;
         await this.save();
         return this.state!.wallet.balance;
     }
 
     async getMarketRate(domain: string): Promise<MarketRate | null> {
-        if (!this.state) await this.init();
-        const rate = this.state!.marketRates[domain];
+        await this.ensureReady();
+        const normalized = this.normalizeSessionDomain(domain);
+        if (!normalized) return null;
+        const rate = this.state!.marketRates[normalized];
         if (rate) return rate;
-        if (domain === 'x.com') {
-            return this.state!.marketRates['twitter.com'] ?? null;
-        }
-        return null;
+
+        // Ensure every frivolous domain can be priced out of the box.
+        const fallback = this.createDefaultMarketRate(normalized);
+        this.state!.marketRates[normalized] = fallback;
+        await this.save();
+        return fallback;
     }
 
     async setMarketRate(rate: MarketRate): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.marketRates[rate.domain] = rate;
         await this.save();
     }
 
     async isFrivolous(domain: string): Promise<boolean> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         const normalizeDomainCandidate = (value: string | null | undefined): string | null => {
             const raw = String(value ?? '').trim().toLowerCase();
             if (!raw) return null;
@@ -865,12 +1070,12 @@ class ExtensionStorage {
     }
 
     async getIdleThreshold(): Promise<number> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.settings.idleThreshold ?? 15;
     }
 
     async setIdleThreshold(value: number): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         const n = Number(value);
         if (!Number.isFinite(n)) return;
         this.state!.settings.idleThreshold = Math.max(5, Math.min(300, Math.round(n)));
@@ -878,12 +1083,12 @@ class ExtensionStorage {
     }
 
     async getContinuityWindowSeconds(): Promise<number> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.settings.continuityWindowSeconds ?? 120;
     }
 
     async setContinuityWindowSeconds(value: number): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         const n = Number(value);
         if (!Number.isFinite(n)) return;
         this.state!.settings.continuityWindowSeconds = Math.max(0, Math.min(900, Math.round(n)));
@@ -891,12 +1096,12 @@ class ExtensionStorage {
     }
 
     async getProductivityGoalHours(): Promise<number> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.settings.productivityGoalHours ?? 2;
     }
 
     async setProductivityGoalHours(value: number): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         const n = Number(value);
         if (!Number.isFinite(n)) return;
         this.state!.settings.productivityGoalHours = Math.max(0.5, Math.min(12, Math.round(n * 10) / 10));
@@ -904,24 +1109,24 @@ class ExtensionStorage {
     }
 
     async getEmergencyPolicy() {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.settings.emergencyPolicy ?? 'balanced';
     }
 
     async setEmergencyPolicy(value: 'off' | 'gentle' | 'balanced' | 'strict') {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (value !== 'off' && value !== 'gentle' && value !== 'balanced' && value !== 'strict') return;
         this.state!.settings.emergencyPolicy = value;
         await this.save();
     }
 
     async getDailyOnboardingState(): Promise<DailyOnboardingState> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.dailyOnboarding ?? DEFAULT_STATE.dailyOnboarding;
     }
 
     async updateDailyOnboardingState(patch: Partial<DailyOnboardingState>): Promise<DailyOnboardingState> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         const current = this.state!.dailyOnboarding ?? DEFAULT_STATE.dailyOnboarding;
         const next: DailyOnboardingState = {
             completedDay: patch.completedDay !== undefined ? patch.completedDay : current.completedDay,
@@ -936,12 +1141,12 @@ class ExtensionStorage {
     }
 
     async getPendingDailyOnboardingUpdate(): Promise<{ patch: Partial<DailyOnboardingState>; updatedAt: number } | null> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.pendingDailyOnboarding ?? null;
     }
 
     async queueDailyOnboardingUpdate(patch: Partial<DailyOnboardingState>): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         const existing = this.state!.pendingDailyOnboarding?.patch ?? {};
         const merged = { ...existing, ...patch };
         this.state!.pendingDailyOnboarding = { patch: merged, updatedAt: Date.now() };
@@ -949,33 +1154,33 @@ class ExtensionStorage {
     }
 
     async clearPendingDailyOnboardingUpdate(): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.pendingDailyOnboarding = null;
         await this.save();
     }
 
     async getSessionFadeSeconds(): Promise<number> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.settings.sessionFadeSeconds ?? 30;
     }
 
     async getDiscouragementEnabled(): Promise<boolean> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.settings.discouragementEnabled ?? true;
     }
 
     async getDiscouragementIntervalMinutes(): Promise<number> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.settings.discouragementIntervalMinutes ?? 1;
     }
 
     async getRotMode() {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.rotMode;
     }
 
     async setRotMode(enabled: boolean) {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         const next = Boolean(enabled);
         this.state!.rotMode = {
             enabled: next,
@@ -986,14 +1191,14 @@ class ExtensionStorage {
     }
 
     async setDiscouragementEnabled(enabled: boolean) {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.settings.discouragementEnabled = Boolean(enabled);
         await this.save();
         return this.state!.settings.discouragementEnabled;
     }
 
     async setDiscouragementIntervalMinutes(minutes: number) {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         const n = Number(minutes);
         if (!Number.isFinite(n)) return this.state!.settings.discouragementIntervalMinutes ?? 1;
         this.state!.settings.discouragementIntervalMinutes = Math.max(1, Math.min(60, Math.round(n)));
@@ -1002,33 +1207,33 @@ class ExtensionStorage {
     }
 
     async setSpendGuardEnabled(enabled: boolean) {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.settings.spendGuardEnabled = Boolean(enabled);
         await this.save();
         return this.state!.settings.spendGuardEnabled;
     }
 
     async getCameraModeEnabled(): Promise<boolean> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.settings.cameraModeEnabled ?? false;
     }
 
     async setCameraModeEnabled(enabled: boolean) {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.settings.cameraModeEnabled = Boolean(enabled);
         await this.save();
         return this.state!.settings.cameraModeEnabled;
     }
 
     async getGuardrailColorFilter(): Promise<'full-color' | 'greyscale' | 'redscale'> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         const mode = this.state!.settings.guardrailColorFilter;
         if (mode === 'full-color' || mode === 'greyscale' || mode === 'redscale') return mode;
         return 'full-color';
     }
 
     async setGuardrailColorFilter(mode: 'full-color' | 'greyscale' | 'redscale') {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (mode !== 'full-color' && mode !== 'greyscale' && mode !== 'redscale') {
             return this.getGuardrailColorFilter();
         }
@@ -1038,19 +1243,19 @@ class ExtensionStorage {
     }
 
     async getAlwaysGreyscale(): Promise<boolean> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return Boolean(this.state!.settings.alwaysGreyscale);
     }
 
     async setAlwaysGreyscale(enabled: boolean) {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.settings.alwaysGreyscale = Boolean(enabled);
         await this.save();
         return this.state!.settings.alwaysGreyscale;
     }
 
     async getReflectionSlideshowSettings(): Promise<ReflectionSlideshowSettings> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return normalizeReflectionSlideshowSettings({
             enabled: this.state!.settings.reflectionSlideshowEnabled,
             lookbackDays: this.state!.settings.reflectionSlideshowLookbackDays,
@@ -1062,7 +1267,7 @@ class ExtensionStorage {
     async updateReflectionSlideshowSettings(
         patch: Partial<ReflectionSlideshowSettings>
     ): Promise<ReflectionSlideshowSettings> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         const current = await this.getReflectionSlideshowSettings();
         const next = normalizeReflectionSlideshowSettings({
             enabled: patch.enabled ?? current.enabled,
@@ -1079,28 +1284,40 @@ class ExtensionStorage {
     }
 
     async getSession(domain: string): Promise<PaywallSession | null> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         const canonical = this.normalizeSessionDomain(domain);
         if (!canonical) return null;
         const exact = this.state!.sessions[canonical];
         if (exact) return exact;
 
-        // Backward compatibility for older alias keys like x.com.
+        // Backward compatibility for alias keys and session scopes that should
+        // apply to all subdomains (e.g. session on example.com for m.example.com).
         for (const [key, session] of Object.entries(this.state!.sessions)) {
             if (key === canonical) continue;
-            if (this.normalizeSessionDomain(key) === canonical) return session;
+            const sessionDomain = this.normalizeSessionDomain(session.domain || key);
+            if (!sessionDomain) continue;
+            if (canonical === sessionDomain || canonical.endsWith(`.${sessionDomain}`)) return session;
         }
         return null;
     }
 
     async setSession(domain: string, session: PaywallSession): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         const canonical = this.normalizeSessionDomain(domain);
         if (!canonical) return;
 
         // Collapse alias variants (x.com/twitter.com) onto one session key.
         for (const key of Object.keys(this.state!.sessions)) {
-            if (key !== canonical && this.normalizeSessionDomain(key) === canonical) {
+            const normalizedKey = this.normalizeSessionDomain(key);
+            if (
+                key !== canonical
+                && normalizedKey
+                && (
+                    normalizedKey === canonical
+                    || normalizedKey.endsWith(`.${canonical}`)
+                    || canonical.endsWith(`.${normalizedKey}`)
+                )
+            ) {
                 delete this.state!.sessions[key];
             }
         }
@@ -1113,11 +1330,18 @@ class ExtensionStorage {
     }
 
     async clearSession(domain: string): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         const canonical = this.normalizeSessionDomain(domain);
         if (!canonical) return;
         for (const key of Object.keys(this.state!.sessions)) {
-            if (this.normalizeSessionDomain(key) === canonical) {
+            const session = this.state!.sessions[key];
+            const sessionDomain = this.normalizeSessionDomain(session?.domain || key);
+            if (!sessionDomain) continue;
+            if (
+                sessionDomain === canonical
+                || canonical.endsWith(`.${sessionDomain}`)
+                || sessionDomain.endsWith(`.${canonical}`)
+            ) {
                 delete this.state!.sessions[key];
             }
         }
@@ -1125,12 +1349,12 @@ class ExtensionStorage {
     }
 
     async getAllSessions(): Promise<Record<string, PaywallSession>> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.sessions;
     }
 
     async getState(): Promise<ExtensionState> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!;
     }
 
@@ -1168,6 +1392,19 @@ class ExtensionStorage {
             'm.facebook.com': 'facebook.com'
         };
         return aliasMap[host] ?? host;
+    }
+
+    private createDefaultMarketRate(domain: string): MarketRate {
+        return {
+            domain,
+            ratePerMin: 3,
+            packs: [
+                { minutes: 10, price: 25 },
+                { minutes: 30, price: 60 },
+                { minutes: 60, price: 100 }
+            ],
+            hourlyModifiers: Array(24).fill(1)
+        };
     }
 
     private mergeLibraryItemsWithPending(libraryItems: LibraryItem[]) {
@@ -1208,7 +1445,7 @@ class ExtensionStorage {
     }
 
     async updateFromDesktop(desktopState: Partial<ExtensionState>): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
 
         // Merge desktop state into local state
         if (desktopState.wallet) {
@@ -1243,14 +1480,34 @@ class ExtensionStorage {
         if (desktopState.sessions) {
             const incoming = desktopState.sessions as Record<string, Partial<PaywallSession>>;
             const existingSessions = this.state!.sessions ?? {};
+            const currentDay = this.state!.runtime?.dayKey ?? dayKeyForTimestamp(Date.now());
             const next: Record<string, PaywallSession> = {};
             for (const [domain, session] of Object.entries(incoming)) {
+                if (!isSessionInDay(session, currentDay)) continue;
                 const canonical = this.normalizeSessionDomain(domain) || domain;
                 const existing = next[canonical] ?? existingSessions[canonical] ?? existingSessions[domain];
                 const normalized = normalizePaywallSession(session, existing, canonical);
                 next[canonical] = {
                     ...normalized,
                     domain: this.normalizeSessionDomain(normalized.domain || canonical) || canonical
+                };
+            }
+            // Preserve active local emergency sessions when desktop snapshots
+            // temporarily omit them (for example during transient API/WS skew).
+            // This prevents immediate re-block loops right after emergency start.
+            for (const [key, session] of Object.entries(existingSessions)) {
+                const canonical = this.normalizeSessionDomain(session?.domain || key) || key;
+                if (next[canonical]) continue;
+                if (!session) continue;
+                if (session.mode !== 'emergency') continue;
+                if (session.manualPaused) continue;
+                const normalized = normalizePaywallSession(session, session, canonical);
+                next[canonical] = {
+                    ...normalized,
+                    domain: this.normalizeSessionDomain(normalized.domain || canonical) || canonical,
+                    paused: false,
+                    manualPaused: false,
+                    allowedUrl: undefined
                 };
             }
             this.state!.sessions = next;
@@ -1292,7 +1549,7 @@ class ExtensionStorage {
     }
 
     async queueCategorisationUpdate(payload: { productiveDomains: string[]; neutralDomains: string[]; frivolityDomains: string[]; drainingDomains?: string[] }) {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.settings = {
             ...this.state!.settings,
             productiveDomains: payload.productiveDomains,
@@ -1305,24 +1562,24 @@ class ExtensionStorage {
     }
 
     async getPendingCategorisationUpdate() {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.pendingCategorisation ?? null;
     }
 
     async clearPendingCategorisationUpdate() {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.pendingCategorisation = null;
         await this.save();
     }
 
     async recordEmergencyEnded(payload: { domain: string; justification?: string; endedAt: number }) {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.emergency.lastEnded = payload;
         await this.save();
     }
 
     async recordEmergencyReview(outcome: 'kept' | 'not-kept') {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.emergency.reviewStats.total += 1;
         if (outcome === 'kept') this.state!.emergency.reviewStats.kept += 1;
         else this.state!.emergency.reviewStats.notKept += 1;
@@ -1331,28 +1588,28 @@ class ExtensionStorage {
     }
 
     async getEmergencyUsage() {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.emergency.usage;
     }
 
     async setEmergencyUsage(value: ExtensionState['emergency']['usage']) {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.emergency.usage = value;
         await this.save();
     }
 
     async getLastSyncTime(): Promise<number> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.lastDesktopSync;
     }
 
     async getLastFrivolityAt(): Promise<number | null> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.lastFrivolityAt ?? null;
     }
 
     async setLastFrivolityAt(value: number | null): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.lastFrivolityAt = typeof value === 'number' ? value : null;
         await this.save();
     }
@@ -1363,7 +1620,7 @@ class ExtensionStorage {
     }
 
     async queueWalletTransaction(payload: PendingWalletTransaction): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.pendingWalletTransactions = this.trimQueue(
             [...(this.state!.pendingWalletTransactions ?? []), payload],
             MAX_PENDING_WALLET_TRANSACTIONS
@@ -1372,12 +1629,12 @@ class ExtensionStorage {
     }
 
     async getPendingWalletTransactions(limit = MAX_PENDING_WALLET_TRANSACTIONS): Promise<PendingWalletTransaction[]> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return (this.state!.pendingWalletTransactions ?? []).slice(0, limit);
     }
 
     async clearPendingWalletTransactions(syncIds: string[]): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (!syncIds.length) return;
         const idSet = new Set(syncIds);
         this.state!.pendingWalletTransactions = (this.state!.pendingWalletTransactions ?? []).filter((entry) => !idSet.has(entry.syncId));
@@ -1385,7 +1642,7 @@ class ExtensionStorage {
     }
 
     async queueConsumptionEvent(payload: PendingConsumptionEvent): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.pendingConsumptionEvents = this.trimQueue(
             [...(this.state!.pendingConsumptionEvents ?? []), payload],
             MAX_PENDING_CONSUMPTION_EVENTS
@@ -1394,12 +1651,12 @@ class ExtensionStorage {
     }
 
     async getPendingConsumptionEvents(limit = MAX_PENDING_CONSUMPTION_EVENTS): Promise<PendingConsumptionEvent[]> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return (this.state!.pendingConsumptionEvents ?? []).slice(0, limit);
     }
 
     async clearPendingConsumptionEvents(syncIds: string[]): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (!syncIds.length) return;
         const idSet = new Set(syncIds);
         this.state!.pendingConsumptionEvents = (this.state!.pendingConsumptionEvents ?? []).filter((entry) => !idSet.has(entry.syncId));
@@ -1407,7 +1664,7 @@ class ExtensionStorage {
     }
 
     async queueActivityEvent(payload: PendingActivityEvent): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         this.state!.pendingActivityEvents = this.trimQueue(
             [...(this.state!.pendingActivityEvents ?? []), payload],
             MAX_PENDING_ACTIVITY_EVENTS
@@ -1416,24 +1673,24 @@ class ExtensionStorage {
     }
 
     async getPendingActivityEvents(limit = MAX_PENDING_ACTIVITY_EVENTS): Promise<PendingActivityEvent[]> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return (this.state!.pendingActivityEvents ?? []).slice(0, limit);
     }
 
     async clearPendingActivityEvents(count: number): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (count <= 0) return;
         this.state!.pendingActivityEvents = (this.state!.pendingActivityEvents ?? []).slice(count);
         await this.save();
     }
 
     async getLibraryItems(): Promise<LibraryItem[]> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         return this.state!.libraryItems ?? [];
     }
 
     async setLibraryItemConsumed(id: number, consumedAt: string | null): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         const items = this.state!.libraryItems ?? [];
         const idx = items.findIndex((it) => it.id === id);
         if (idx < 0) return;
@@ -1444,7 +1701,7 @@ class ExtensionStorage {
     }
 
     async markReadingConsumed(id: string, consumed: boolean): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         const key = (id ?? '').trim();
         if (!key) return;
         if (!this.state!.consumedReading) this.state!.consumedReading = {};
@@ -1457,7 +1714,7 @@ class ExtensionStorage {
     }
 
     async queueLibrarySync(payload: { url: string; purpose: LibraryPurpose; price?: number | null; title?: string | null; note?: string | null; consumedAt?: string | null }) {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (!this.state) throw new Error('Storage state not initialized');
         this.state!.pendingLibrarySync[payload.url] = {
             url: payload.url,
@@ -1472,20 +1729,20 @@ class ExtensionStorage {
     }
 
     async getPendingLibrarySync(): Promise<Record<string, PendingLibrarySync>> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (!this.state) throw new Error('Storage state not initialized');
         return this.state.pendingLibrarySync;
     }
 
     async clearPendingLibrarySync(url: string): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (!this.state) throw new Error('Storage state not initialized');
         delete this.state.pendingLibrarySync[url];
         await this.save();
     }
 
     async setPomodoroSession(session: PomodoroSession | null): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (!this.state) throw new Error('Storage state not initialized');
         if (!this.state.pomodoro) {
             this.state.pomodoro = { session: null, lastUpdated: null, pendingBlocks: [] };
@@ -1496,13 +1753,13 @@ class ExtensionStorage {
     }
 
     async getPomodoroSession(): Promise<PomodoroSession | null> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (!this.state) throw new Error('Storage state not initialized');
         return this.state.pomodoro?.session ?? null;
     }
 
     async updatePomodoroSession(patch: Partial<PomodoroSession>): Promise<PomodoroSession | null> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (!this.state) throw new Error('Storage state not initialized');
         if (!this.state.pomodoro?.session) return null;
         this.state.pomodoro.session = { ...this.state.pomodoro.session, ...patch };
@@ -1512,7 +1769,7 @@ class ExtensionStorage {
     }
 
     async setWritingHudSession(session: WritingHudSession | null): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (!this.state) throw new Error('Storage state not initialized');
         if (!this.state.writingHud) {
             this.state.writingHud = { session: null, lastUpdated: null };
@@ -1523,7 +1780,7 @@ class ExtensionStorage {
     }
 
     async getWritingHudSession(): Promise<WritingHudSession | null> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (!this.state) throw new Error('Storage state not initialized');
         return this.state.writingHud?.session ?? null;
     }
@@ -1531,7 +1788,7 @@ class ExtensionStorage {
     async updateWritingHudSession(
         patch: Partial<WritingHudSession> & { sessionId: string }
     ): Promise<WritingHudSession | null> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (!this.state) throw new Error('Storage state not initialized');
         const current = this.state.writingHud?.session ?? null;
         if (!current || current.sessionId !== patch.sessionId) return null;
@@ -1551,7 +1808,7 @@ class ExtensionStorage {
     }
 
     async clearWritingHudSession(sessionId?: string): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (!this.state) throw new Error('Storage state not initialized');
         const current = this.state.writingHud?.session ?? null;
         if (sessionId && current && current.sessionId !== sessionId) return;
@@ -1565,7 +1822,7 @@ class ExtensionStorage {
     }
 
     async queuePomodoroBlock(event: PomodoroBlockEvent): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (!this.state) throw new Error('Storage state not initialized');
         if (!this.state.pomodoro) {
             this.state.pomodoro = { session: null, lastUpdated: null, pendingBlocks: [] };
@@ -1576,13 +1833,13 @@ class ExtensionStorage {
     }
 
     async getPendingPomodoroBlocks(limit = 50): Promise<PomodoroBlockEvent[]> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (!this.state || !this.state.pomodoro) return [];
         return this.state.pomodoro.pendingBlocks.slice(0, limit);
     }
 
     async clearPendingPomodoroBlocks(count: number): Promise<void> {
-        if (!this.state) await this.init();
+        await this.ensureReady();
         if (!this.state || !this.state.pomodoro) return;
         this.state.pomodoro.pendingBlocks.splice(0, count);
         await this.save();

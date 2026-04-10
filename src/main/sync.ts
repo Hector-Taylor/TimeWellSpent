@@ -68,7 +68,8 @@ type RollupRow = {
   productive: number;
   neutral: number;
   frivolity: number;
-  draining: number;
+  draining?: number;
+  emergency?: number;
   idle: number;
   updated_at: string;
 };
@@ -451,7 +452,7 @@ export class SyncService {
     const sinceIso = new Date(now.getTime() - rangeHours * 60 * 60 * 1000).toISOString();
     const { data: rollups, error: rollupError } = await this.supabase
       .from('activity_rollups')
-      .select('device_id, hour_start, productive, neutral, frivolity, draining, idle, updated_at')
+      .select('device_id, hour_start, productive, neutral, frivolity, draining, emergency, idle, updated_at')
       .in('device_id', deviceIds)
       .gte('hour_start', sinceIso);
     if (rollupError || !rollups) return {};
@@ -495,9 +496,10 @@ export class SyncService {
       summary.categoryBreakdown.productive += row.productive;
       summary.categoryBreakdown.neutral += row.neutral;
       summary.categoryBreakdown.frivolity += row.frivolity;
-      summary.categoryBreakdown.draining += row.draining;
+      summary.categoryBreakdown.draining += row.draining ?? 0;
+      summary.categoryBreakdown.emergency += row.emergency ?? 0;
       summary.categoryBreakdown.idle += row.idle;
-      summary.totalActiveSeconds += row.productive + row.neutral + row.frivolity + row.draining;
+      summary.totalActiveSeconds += row.productive + row.neutral + row.frivolity + (row.draining ?? 0) + (row.emergency ?? 0);
       summary.deepWorkSeconds += 0;
       if (row.updated_at > summary.updatedAt) {
         summary.updatedAt = row.updated_at;
@@ -533,7 +535,7 @@ export class SyncService {
     const deviceIds = (devices as Array<{ id: string }>).map((row) => row.id);
     const { data: rollups, error: rollupError } = await this.supabase
       .from('activity_rollups')
-      .select('device_id, hour_start, productive, neutral, frivolity, idle, updated_at')
+      .select('device_id, hour_start, productive, neutral, frivolity, draining, emergency, idle, updated_at')
       .in('device_id', deviceIds)
       .gte('hour_start', sinceIso);
     if (rollupError || !rollups) return null;
@@ -559,7 +561,8 @@ export class SyncService {
       totalsByCategory.productive += row.productive;
       totalsByCategory.neutral += row.neutral;
       totalsByCategory.frivolity += row.frivolity;
-      totalsByCategory.draining += row.draining;
+      totalsByCategory.draining += row.draining ?? 0;
+      totalsByCategory.emergency += row.emergency ?? 0;
       totalsByCategory.idle += row.idle;
       deepWorkSeconds += 0;
       if (row.updated_at > updatedAt) updatedAt = row.updated_at;
@@ -570,7 +573,8 @@ export class SyncService {
         slot.productive += row.productive;
         slot.neutral += row.neutral;
         slot.frivolity += row.frivolity;
-        slot.draining += row.draining;
+        slot.draining += row.draining ?? 0;
+        slot.emergency += row.emergency ?? 0;
         slot.idle += row.idle;
       }
     }
@@ -580,6 +584,7 @@ export class SyncService {
         { key: 'productive', value: slot.productive },
         { key: 'neutral', value: slot.neutral },
         { key: 'frivolity', value: slot.frivolity + slot.draining },
+        { key: 'emergency', value: slot.emergency },
         { key: 'idle', value: slot.idle }
       ];
       const dominant = counts.reduce((prev, curr) => (curr.value > prev.value ? curr : prev), counts[0]);
@@ -1055,6 +1060,7 @@ export class SyncService {
         neutral: rollup.neutral,
         frivolity: rollup.frivolity,
         draining: rollup.draining,
+        emergency: rollup.emergency,
         idle: rollup.idle,
         updated_at: rollup.updatedAt
       }));
@@ -1069,7 +1075,7 @@ export class SyncService {
 
     const { data, error } = await this.supabase
       .from('activity_rollups')
-      .select('device_id, hour_start, productive, neutral, frivolity, draining, idle, updated_at')
+      .select('device_id, hour_start, productive, neutral, frivolity, draining, emergency, idle, updated_at')
       .gt('updated_at', since)
       .order('updated_at', { ascending: true });
     if (error) throw error;
@@ -1080,6 +1086,7 @@ export class SyncService {
       neutral: row.neutral,
       frivolity: row.frivolity,
       draining: row.draining ?? 0,
+      emergency: row.emergency ?? 0,
       idle: row.idle,
       updatedAt: row.updated_at
     }));
@@ -1232,6 +1239,7 @@ function buildHourTimeline(startIso: string, hours: number): FriendTimelinePoint
       neutral: 0,
       frivolity: 0,
       draining: 0,
+      emergency: 0,
       idle: 0,
       dominant: 'idle'
     });

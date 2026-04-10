@@ -59,3 +59,4 @@ export const DEFAULT_MARKET_RATES: MarketRate[] = [
 ];
 
 export const DEFAULT_IDLE_THRESHOLD_SECONDS = 15;
+export const DEFAULT_FRIVOLOUS_IDLE_THRESHOLD_SECONDS = 60;

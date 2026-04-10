@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type {
   ActivitySummary,
+  AppTheme,
   AnalyticsOverview,
   DailyOnboardingState,
   LibraryItem,
@@ -11,8 +12,7 @@ import type {
   WalletSnapshot
 } from '@shared/types';
 import type { EmbeddedReaderSnapshot } from './components/EmbeddedDocumentReader';
-import { EmbeddedDocumentReader } from './components/EmbeddedDocumentReader';
-import { WritingStudioPanel } from './components/WritingStudioPanel';
+import { applyAppTheme, DEFAULT_APP_THEME, normalizeAppTheme } from '@shared/theme';
 import {
   addLocalReaderBooks,
   deleteLocalReaderBook,
@@ -21,6 +21,16 @@ import {
   openLocalReaderBook,
   type LocalReaderBook
 } from './localReaderShelf';
+
+const EmbeddedDocumentReader = lazy(async () => {
+  const module = await import('./components/EmbeddedDocumentReader');
+  return { default: module.EmbeddedDocumentReader };
+});
+
+const WritingStudioPanel = lazy(async () => {
+  const module = await import('./components/WritingStudioPanel');
+  return { default: module.WritingStudioPanel };
+});
 
 type Pane = 'home' | 'library' | 'capture';
 
@@ -38,6 +48,47 @@ type ReaderSession = {
   book: LocalReaderBook;
   objectUrl: string;
 };
+
+type AnkiDeckSummary = {
+  id: number;
+  name: string;
+  sourcePath: string | null;
+  cardCount: number;
+  dueCount: number;
+  reviewedToday: number;
+  lastImportedAt: string | null;
+  lastReviewedAt: string | null;
+};
+
+type AnkiDueCard = {
+  id: number;
+  deckId: number;
+  deckName: string;
+  front: string;
+  back: string;
+  tags: string[];
+  noteType: string | null;
+  dueAt: string;
+  intervalDays: number;
+  easeFactor: number;
+  repetitions: number;
+  lapses: number;
+  suspended: boolean;
+  lastReviewedAt: string | null;
+};
+
+type AnkiStatusPayload = {
+  decks: AnkiDeckSummary[];
+  dueCards: AnkiDueCard[];
+  totalDue: number;
+  reviewedToday: number;
+  totalReviewMsToday: number;
+  availableUnlockReviews: number;
+  unlockThreshold: number;
+  unlocksAvailable: number;
+};
+
+type AnkiReviewRating = 'again' | 'hard' | 'good' | 'easy';
 
 const DEFAULT_API_BASE = 'http://127.0.0.1:17600';
 const DAILY_START_HOUR = 4;
@@ -179,6 +230,7 @@ function localBookDocKey(book: LocalReaderBook) {
 
 export default function WebHomepage() {
   const [pane, setPane] = useState<Pane>('home');
+  const [theme, setTheme] = useState<AppTheme>(DEFAULT_APP_THEME);
   const [apiBaseInput, setApiBaseInput] = useState(loadStoredApiBase);
   const [apiBase, setApiBase] = useState(loadStoredApiBase);
   const [loading, setLoading] = useState(true);
@@ -210,6 +262,10 @@ export default function WebHomepage() {
   const readerMetricsRef = useRef<EmbeddedReaderSnapshot | null>(null);
   const readerTrackingRef = useRef<{ sessionId: string; docKey: string } | null>(null);
   const [dailyState, setDailyState] = useState<DailyOnboardingState | null>(null);
+  const [ankiStatus, setAnkiStatus] = useState<AnkiStatusPayload | null>(null);
+  const [ankiRevealAnswer, setAnkiRevealAnswer] = useState(false);
+  const [ankiBusy, setAnkiBusy] = useState(false);
+  const [ankiImportBusy, setAnkiImportBusy] = useState(false);
 
   const [captureUrl, setCaptureUrl] = useState('');
   const [captureTitle, setCaptureTitle] = useState('');
@@ -222,6 +278,10 @@ export default function WebHomepage() {
   const [savingNote, setSavingNote] = useState(false);
   const [noteSavedAt, setNoteSavedAt] = useState<number | null>(null);
 
+  useEffect(() => {
+    applyAppTheme(theme);
+  }, [theme]);
+
   const loadHomepage = useCallback(
     async (silent = false) => {
       if (!silent) setLoading(true);
@@ -229,26 +289,41 @@ export default function WebHomepage() {
       setError(null);
       try {
         await fetchJson<{ status: string }>(apiBase, '/health');
-        const [walletData, summaryData, overviewData, literaryData, timeData, libraryData, readingData, onboardingData] = await Promise.all([
+        const [themeData, walletData, summaryData, overviewData, libraryData, onboardingData, ankiData] = await Promise.all([
+          fetchJson<{ theme?: string }>(apiBase, '/settings/theme'),
           fetchJson<WalletSnapshot>(apiBase, '/wallet'),
-          fetchJson<ActivitySummary>(apiBase, '/activities/summary?windowHours=24'),
+          fetchJson<ActivitySummary>(apiBase, '/activities/summary?window=today'),
           fetchJson<AnalyticsOverview>(apiBase, '/analytics/overview?days=7'),
-          fetchJson<LiteraryAnalyticsOverview>(apiBase, '/analytics/literary/overview?days=14'),
-          fetchJson<TimeOfDayStats[]>(apiBase, '/analytics/time-of-day?days=7'),
           fetchJson<LibraryItem[]>(apiBase, '/library'),
-          fetchJson<{ items: ReadingAttractor[] }>(apiBase, '/integrations/reading?limit=8'),
-          fetchJson<DailyOnboardingState>(apiBase, '/settings/daily-onboarding')
+          fetchJson<DailyOnboardingState>(apiBase, '/settings/daily-onboarding'),
+          fetchJson<AnkiStatusPayload>(apiBase, '/anki/status?limit=1')
         ]);
+        setTheme(normalizeAppTheme(themeData?.theme));
         setWallet(walletData);
         setSummary(summaryData);
         setOverview(overviewData);
-        setLiteraryOverview(literaryData);
-        setTimeOfDay(timeData);
         setLibraryItems(libraryData);
-        setReadingItems(readingData.items ?? []);
         setDailyState(onboardingData);
         setDailyNote(onboardingData.note?.message ?? '');
+        setAnkiStatus(ankiData);
+        setAnkiRevealAnswer(false);
         setConnected(true);
+        if (!silent) setLoading(false);
+
+        const secondaryResults = await Promise.allSettled([
+          fetchJson<LiteraryAnalyticsOverview>(apiBase, '/analytics/literary/overview?days=14'),
+          fetchJson<TimeOfDayStats[]>(apiBase, '/analytics/time-of-day?days=7'),
+          fetchJson<{ items: ReadingAttractor[] }>(apiBase, '/integrations/reading?limit=8')
+        ]);
+        if (secondaryResults[0].status === 'fulfilled') {
+          setLiteraryOverview(secondaryResults[0].value);
+        }
+        if (secondaryResults[1].status === 'fulfilled') {
+          setTimeOfDay(secondaryResults[1].value);
+        }
+        if (secondaryResults[2].status === 'fulfilled') {
+          setReadingItems(secondaryResults[2].value.items ?? []);
+        }
       } catch (loadError) {
         setConnected(false);
         setError((loadError as Error).message || 'Failed to load homepage data.');
@@ -650,6 +725,54 @@ export default function WebHomepage() {
 
   const featuredUploadedBook = useMemo(() => localReaderBooks[0] ?? null, [localReaderBooks]);
   const shelfPreviewBooks = useMemo(() => localReaderBooks.slice(0, 8), [localReaderBooks]);
+  const currentDueCard = ankiStatus?.dueCards?.[0] ?? null;
+
+  const refreshAnkiStatus = useCallback(async () => {
+    const next = await fetchJson<AnkiStatusPayload>(apiBase, '/anki/status?limit=1');
+    setAnkiStatus(next);
+    setAnkiRevealAnswer(false);
+  }, [apiBase]);
+
+  const handleReviewAnki = useCallback(async (rating: AnkiReviewRating) => {
+    const card = ankiStatus?.dueCards?.[0];
+    if (!card || ankiBusy) return;
+    setAnkiBusy(true);
+    try {
+      await fetchJson(apiBase, '/anki/review', {
+        method: 'POST',
+        body: JSON.stringify({ cardId: card.id, rating })
+      });
+      await refreshAnkiStatus();
+      setReaderNotice('Flashcard logged.');
+    } catch (error) {
+      setReaderNotice((error as Error).message ?? 'Unable to review flashcard.');
+    } finally {
+      setAnkiBusy(false);
+    }
+  }, [ankiBusy, ankiStatus?.dueCards, apiBase, refreshAnkiStatus]);
+
+  const handleImportAnkiDeck = useCallback(async () => {
+    if (ankiImportBusy) return;
+    setAnkiImportBusy(true);
+    try {
+      const picked = await fetchJson<{ ok?: boolean; cancelled?: boolean; path?: string | null }>(apiBase, '/anki/pick-file', {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+      const path = typeof picked.path === 'string' ? picked.path.trim() : '';
+      if (picked.cancelled || !path) return;
+      await fetchJson(apiBase, '/anki/import-file', {
+        method: 'POST',
+        body: JSON.stringify({ path })
+      });
+      await refreshAnkiStatus();
+      setReaderNotice('Deck imported.');
+    } catch (error) {
+      setReaderNotice((error as Error).message ?? 'Unable to import deck.');
+    } finally {
+      setAnkiImportBusy(false);
+    }
+  }, [ankiImportBusy, apiBase, refreshAnkiStatus]);
   const readerAnnotationCounts = useMemo(
     () =>
       readerAnnotations.reduce(
@@ -837,6 +960,67 @@ export default function WebHomepage() {
 
           {!loading && pane === 'home' && (
             <div className="panel-body web-home-grid">
+              <article className="card web-full-width web-flashcard-hero">
+                <div className="web-flashcard-copy">
+                  <p className="eyebrow">Flashcard Redirect</p>
+                  <h2>Start with a card, not the whole dashboard</h2>
+                  <p className="subtle">
+                    {currentDueCard
+                      ? `One due card from ${currentDueCard.deckName} is ready right now.`
+                      : ankiStatus?.decks?.length
+                        ? 'No due card is ready right now, but study is still the best redirect.'
+                        : 'Import a deck and let this be the first thing you see instead of a crowded homepage.'}
+                  </p>
+                </div>
+
+                {currentDueCard ? (
+                  <div className="web-flashcard-body">
+                    <div className="web-flashcard-meta">
+                      <span className="pill success">{currentDueCard.deckName}</span>
+                      <span className="pill ghost">{ankiStatus?.totalDue ?? 0} due</span>
+                    </div>
+                    <div className="web-flashcard-faces">
+                      <article className="web-flashcard-face">
+                        <strong>Front</strong>
+                        <p>{currentDueCard.front || 'No front text.'}</p>
+                      </article>
+                      <article className="web-flashcard-face">
+                        <strong>Back</strong>
+                        <p>{ankiRevealAnswer ? (currentDueCard.back || 'No back text.') : 'Reveal the answer, then grade yourself.'}</p>
+                      </article>
+                    </div>
+                    <div className="web-flashcard-actions">
+                      <button type="button" onClick={() => setAnkiRevealAnswer((value) => !value)} disabled={ankiBusy}>
+                        {ankiRevealAnswer ? 'Hide answer' : 'Reveal answer'}
+                      </button>
+                      <button type="button" onClick={() => void handleReviewAnki('again')} disabled={ankiBusy}>Again</button>
+                      <button type="button" onClick={() => void handleReviewAnki('hard')} disabled={ankiBusy}>Hard</button>
+                      <button type="button" onClick={() => void handleReviewAnki('good')} disabled={ankiBusy}>Good</button>
+                      <button type="button" onClick={() => void handleReviewAnki('easy')} disabled={ankiBusy}>Easy</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="web-flashcard-empty">
+                    <div>
+                      <strong>{ankiStatus?.decks?.length ? 'No due cards in view' : 'No deck imported yet'}</strong>
+                      <p className="subtle">
+                        {ankiStatus?.decks?.length
+                          ? 'Refresh or come back when more cards are due.'
+                          : 'Choose an Anki deck to make this homepage open with a real redirect.'}
+                      </p>
+                    </div>
+                    <div className="web-flashcard-actions">
+                      <button type="button" onClick={() => void handleImportAnkiDeck()} disabled={ankiImportBusy}>
+                        {ankiImportBusy ? 'Importing...' : 'Choose deck'}
+                      </button>
+                      <button type="button" onClick={() => void refreshAnkiStatus()} disabled={ankiImportBusy || ankiBusy}>
+                        Refresh study
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </article>
+
               <article
                 className={`card web-full-width web-reader-stage ${readerDragActive ? 'drag-active' : ''}`}
                 onDragEnter={(event) => {
@@ -989,7 +1173,9 @@ export default function WebHomepage() {
                 ) : null}
               </article>
 
-              <WritingStudioPanel apiBase={apiBase} surface="web-homepage" variant="web" />
+              <Suspense fallback={<article className="card">Loading writing studio…</article>}>
+                <WritingStudioPanel apiBase={apiBase} surface="web-homepage" variant="web" />
+              </Suspense>
 
               <article className="card">
                 <div className="card-header-row">
@@ -1346,15 +1532,17 @@ export default function WebHomepage() {
               </div>
             </header>
             <div className="web-reader-overlay-frameWrap">
-              <div className="web-reader-overlay-readingGrid">
-                <div className="web-reader-overlay-readerPane">
-                  <EmbeddedDocumentReader
-                    src={readerSession.objectUrl}
-                    format={readerSession.book.format}
-                    title={readerSession.book.title}
-                    onSnapshotChange={handleEmbeddedReaderSnapshot}
-                  />
-                </div>
+                <div className="web-reader-overlay-readingGrid">
+                  <div className="web-reader-overlay-readerPane">
+                    <Suspense fallback={<article className="card">Loading reader…</article>}>
+                      <EmbeddedDocumentReader
+                        src={readerSession.objectUrl}
+                        format={readerSession.book.format}
+                        title={readerSession.book.title}
+                        onSnapshotChange={handleEmbeddedReaderSnapshot}
+                      />
+                    </Suspense>
+                  </div>
                 <aside className="web-reader-annotations" aria-label="Reader annotations">
                   <div className="web-reader-annotations-header">
                     <div>

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
+    AnkiAnalyticsSnapshot,
     AnalyticsOverview,
     BehaviorEpisodeMap,
     BehavioralPattern,
     RendererApi,
     TimeOfDayStats,
     TrendPoint,
+    ZoteroProgressAnalytics,
 } from '@shared/types';
 import { DAY_START_HOUR, shiftHourToDayStart } from '@shared/time';
 
@@ -22,6 +24,8 @@ export default function Analytics({ api }: AnalyticsProps) {
     const [patterns, setPatterns] = useState<BehavioralPattern[]>([]);
     const [trends, setTrends] = useState<TrendPoint[]>([]);
     const [episodeMap, setEpisodeMap] = useState<BehaviorEpisodeMap | null>(null);
+    const [ankiAnalytics, setAnkiAnalytics] = useState<AnkiAnalyticsSnapshot | null>(null);
+    const [zoteroAnalytics, setZoteroAnalytics] = useState<ZoteroProgressAnalytics | null>(null);
     const [selectedEpisodeId, setSelectedEpisodeId] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [excludedKeywords, setExcludedKeywords] = useState<string[]>([]);
@@ -36,7 +40,7 @@ export default function Analytics({ api }: AnalyticsProps) {
 
     const refresh = useCallback(async () => {
         setLoading(true);
-        const [o, t, p, tr, ep] = await Promise.all([
+        const [overviewData, timeData, patternsData, trendData, episodeData, ankiData, zoteroData] = await Promise.all([
             api.analytics.overview(days),
             api.analytics.timeOfDay(days),
             api.analytics.patterns(days),
@@ -46,16 +50,20 @@ export default function Analytics({ api }: AnalyticsProps) {
                 gapMinutes: 8,
                 binSeconds: 30,
                 maxEpisodes: 20
-            })
+            }),
+            api.anki.analytics(days),
+            api.integrations.zotero.analytics(days, 8, true)
         ]);
-        setOverview(o);
-        setTimeOfDay(t);
-        setPatterns(p);
-        setTrends(tr);
-        setEpisodeMap(ep);
-        setSelectedEpisodeId((prev) => prev && ep.episodes.some((item) => item.id === prev)
+        setOverview(overviewData);
+        setTimeOfDay(timeData);
+        setPatterns(patternsData);
+        setTrends(trendData);
+        setEpisodeMap(episodeData);
+        setAnkiAnalytics(ankiData);
+        setZoteroAnalytics(zoteroData);
+        setSelectedEpisodeId((prev) => prev && episodeData.episodes.some((item) => item.id === prev)
             ? prev
-            : (ep.episodes[ep.episodes.length - 1]?.id ?? null));
+            : (episodeData.episodes[episodeData.episodes.length - 1]?.id ?? null));
         setLoading(false);
     }, [api, days]);
 
@@ -111,6 +119,19 @@ export default function Analytics({ api }: AnalyticsProps) {
         if (!selectedEpisodeId) return episodeMap.episodes[episodeMap.episodes.length - 1] ?? null;
         return episodeMap.episodes.find((episode) => episode.id === selectedEpisodeId) ?? null;
     }, [episodeMap, selectedEpisodeId]);
+    const ankiSnapshot = ankiAnalytics?.snapshot ?? null;
+    const ankiPeakHour = useMemo(() => {
+        if (!ankiAnalytics?.hourly?.length) return null;
+        return ankiAnalytics.hourly.reduce((best, point) => (point.reviews > best.reviews ? point : best), ankiAnalytics.hourly[0]);
+    }, [ankiAnalytics?.hourly]);
+    const ankiHourlyMax = useMemo(() => {
+        if (!ankiAnalytics?.hourly?.length) return 1;
+        return Math.max(...ankiAnalytics.hourly.map((point) => point.reviews), 1);
+    }, [ankiAnalytics?.hourly]);
+    const zoteroDailyMax = useMemo(() => {
+        if (!zoteroAnalytics?.daily?.length) return 1;
+        return Math.max(...zoteroAnalytics.daily.map((point) => point.pagesAdvanced), 1);
+    }, [zoteroAnalytics?.daily]);
 
     const formatDuration = (seconds: number) => {
         const s = Math.max(0, Math.round(seconds));
@@ -122,12 +143,18 @@ export default function Analytics({ api }: AnalyticsProps) {
         return `${rem}s`;
     };
 
+    const formatPercent = (value?: number | null) => {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+        return `${Math.round(value * 100)}%`;
+    };
+
     return (
         <section className="panel analytics-panel">
             <header className="panel-header">
                 <div>
-                    <p className="eyebrow">Behavioral intelligence</p>
+                    <p className="eyebrow">Review</p>
                     <h1>Analytics</h1>
+                    <p className="subtle">Measure focus quality, study momentum, and the hours where attention is most fragile.</p>
                 </div>
                 <div className="time-range-selector">
                     <button
@@ -189,6 +216,238 @@ export default function Analytics({ api }: AnalyticsProps) {
                             <div className="overview-value">{formatHour(overview?.riskHour ?? 15)}</div>
                             <div className="overview-label">Risk Hour</div>
                         </div>
+                    </div>
+
+                    {/* Anki Learning Analytics */}
+                    <div className="card anki-analytics-card">
+                        <div className="card-header-row">
+                            <h2>Anki Learning Momentum</h2>
+                            <span className="subtle">Welcoming, data-driven coaching for spaced repetition</span>
+                        </div>
+                        {!ankiAnalytics || !ankiSnapshot ? (
+                            <p className="subtle">Import an Anki deck and complete a few reviews to unlock insights.</p>
+                        ) : (
+                            <>
+                                <div className="anki-analytics-metrics">
+                                    <div className="anki-analytics-metric">
+                                        <span>True retention</span>
+                                        <strong>{formatPercent(ankiSnapshot.trueRetention)}</strong>
+                                        <small>target {Math.round(ankiAnalytics.desiredRetention * 100)}%</small>
+                                    </div>
+                                    <div className="anki-analytics-metric">
+                                        <span>Mature retention</span>
+                                        <strong>{formatPercent(ankiSnapshot.matureRetention)}</strong>
+                                        <small>interval 21d+</small>
+                                    </div>
+                                    <div className="anki-analytics-metric">
+                                        <span>Current streak</span>
+                                        <strong>{ankiSnapshot.currentStreakDays}d</strong>
+                                        <small>consistency signal</small>
+                                    </div>
+                                    <div className="anki-analytics-metric">
+                                        <span>Due now</span>
+                                        <strong>{ankiSnapshot.dueNow}</strong>
+                                        <small>{ankiSnapshot.dueIn7Days} due in 7d</small>
+                                    </div>
+                                    <div className="anki-analytics-metric">
+                                        <span>Review minutes</span>
+                                        <strong>{Math.round(ankiSnapshot.reviewMinutes)}m</strong>
+                                        <small>last {ankiAnalytics.windowDays} days</small>
+                                    </div>
+                                    <div className="anki-analytics-metric">
+                                        <span>Peak review hour</span>
+                                        <strong>{ankiPeakHour ? formatHour(ankiPeakHour.hour) : '—'}</strong>
+                                        <small>highest review volume</small>
+                                    </div>
+                                </div>
+
+                                <div className="anki-analytics-grid">
+                                    <section className="anki-analytics-block">
+                                        <div className="anki-analytics-block-header">
+                                            <h3>Review heatmap</h3>
+                                            <span className="subtle">{ankiAnalytics.heatmap.startDay} → {ankiAnalytics.heatmap.endDay}</span>
+                                        </div>
+                                        <div className="anki-analytics-heatmap">
+                                            {ankiAnalytics.heatmap.cells.slice(-84).map((cell) => (
+                                                <span
+                                                    key={cell.day}
+                                                    className={`anki-heatmap-cell level-${cell.level}`}
+                                                    title={`${cell.day}: ${cell.reviews} reviews`}
+                                                />
+                                            ))}
+                                        </div>
+                                    </section>
+
+                                    <section className="anki-analytics-block">
+                                        <div className="anki-analytics-block-header">
+                                            <h3>Hourly rhythm</h3>
+                                            <span className="subtle">reviews by local hour</span>
+                                        </div>
+                                        <div className="anki-analytics-hourly">
+                                            {ankiAnalytics.hourly.map((point) => (
+                                                <div key={point.hour} className="anki-hour-col" title={`${point.hour}:00 · ${point.reviews} reviews`}>
+                                                    <span className="anki-hour-fill" style={{ height: `${Math.max(6, Math.round((point.reviews / ankiHourlyMax) * 100))}%` }} />
+                                                    <small>{point.hour % 6 === 0 ? `${point.hour}` : ''}</small>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </section>
+                                </div>
+
+                                <div className="anki-analytics-grid">
+                                    <section className="anki-analytics-block">
+                                        <div className="anki-analytics-block-header">
+                                            <h3>Signals</h3>
+                                            <span className="subtle">gentle interventions</span>
+                                        </div>
+                                        {ankiAnalytics.risks.length ? (
+                                            <ul className="anki-risk-list">
+                                                {ankiAnalytics.risks.map((risk) => (
+                                                    <li key={risk.id} className={risk.level === 'warning' ? 'warning' : 'info'}>
+                                                        <strong>{risk.title}</strong>
+                                                        <span>{risk.detail}</span>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        ) : (
+                                            <p className="subtle">No warning signals right now. Keep the rhythm going.</p>
+                                        )}
+                                    </section>
+
+                                    <section className="anki-analytics-block">
+                                        <div className="anki-analytics-block-header">
+                                            <h3>Encouragement</h3>
+                                            <span className="subtle">generated from your learning data</span>
+                                        </div>
+                                        <ul className="anki-cheer-list">
+                                            {ankiAnalytics.encouragement.slice(0, 3).map((line, idx) => (
+                                                <li key={`${idx}-${line}`}>{line}</li>
+                                            ))}
+                                        </ul>
+                                    </section>
+                                </div>
+                            </>
+                        )}
+                    </div>
+
+                    <div className="card zotero-analytics-card">
+                        <div className="card-header-row">
+                            <h2>Zotero Reading Stream</h2>
+                            <span className="subtle">Graphical progress tracking from Zotero checkpoints</span>
+                        </div>
+                        {!zoteroAnalytics ? (
+                            <p className="subtle">Connect Zotero and open a PDF to start tracking title progress.</p>
+                        ) : (
+                            <>
+                                <div className="zotero-analytics-metrics">
+                                    <div className="zotero-analytics-metric">
+                                        <span>Tracked titles</span>
+                                        <strong>{zoteroAnalytics.snapshot.trackedItems}</strong>
+                                        <small>{zoteroAnalytics.snapshot.activeItems} active</small>
+                                    </div>
+                                    <div className="zotero-analytics-metric">
+                                        <span>Completed titles</span>
+                                        <strong>{zoteroAnalytics.snapshot.completedItems}</strong>
+                                        <small>~98% progress</small>
+                                    </div>
+                                    <div className="zotero-analytics-metric">
+                                        <span>Pages advanced</span>
+                                        <strong>{zoteroAnalytics.snapshot.pagesAdvancedWindow}</strong>
+                                        <small>last {zoteroAnalytics.windowDays} days</small>
+                                    </div>
+                                    <div className="zotero-analytics-metric">
+                                        <span>Titles progressed</span>
+                                        <strong>{zoteroAnalytics.snapshot.progressedItemsWindow}</strong>
+                                        <small>{zoteroAnalytics.snapshot.checkpointsWindow} checkpoints</small>
+                                    </div>
+                                    <div className="zotero-analytics-metric">
+                                        <span>Average progress</span>
+                                        <strong>{formatPercent(zoteroAnalytics.snapshot.averageProgress)}</strong>
+                                        <small>median {formatPercent(zoteroAnalytics.snapshot.medianProgress)}</small>
+                                    </div>
+                                    <div className="zotero-analytics-metric">
+                                        <span>Last sync</span>
+                                        <strong>{zoteroAnalytics.snapshot.lastSyncAt ? new Date(zoteroAnalytics.snapshot.lastSyncAt).toLocaleString() : '—'}</strong>
+                                        <small>fresh visual stream</small>
+                                    </div>
+                                </div>
+
+                                <div className="zotero-analytics-grid">
+                                    <section className="zotero-analytics-block">
+                                        <div className="zotero-analytics-block-header">
+                                            <h3>Daily momentum</h3>
+                                            <span className="subtle">pages advanced per day</span>
+                                        </div>
+                                        {zoteroAnalytics.daily.length ? (
+                                            <div className="zotero-daily-chart">
+                                                {zoteroAnalytics.daily.map((point) => (
+                                                    <div key={point.day} className="zotero-day-col" title={`${point.day}: +${point.pagesAdvanced} pages`}>
+                                                        <span
+                                                            className="zotero-day-fill"
+                                                            style={{ height: `${Math.max(point.pagesAdvanced > 0 ? 6 : 0, Math.round((point.pagesAdvanced / zoteroDailyMax) * 100))}%` }}
+                                                        />
+                                                        <small>{point.day.slice(5)}</small>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <p className="subtle">No page movement captured in this window.</p>
+                                        )}
+                                    </section>
+
+                                    <section className="zotero-analytics-block">
+                                        <div className="zotero-analytics-block-header">
+                                            <h3>Progress buckets</h3>
+                                            <span className="subtle">current title distribution</span>
+                                        </div>
+                                        <div className="zotero-buckets">
+                                            {zoteroAnalytics.progressBuckets.map((bucket) => (
+                                                <div key={bucket.id}>
+                                                    <span>{bucket.label}</span>
+                                                    <strong>{bucket.count}</strong>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </section>
+                                </div>
+
+                                <section className="zotero-analytics-block zotero-top-block">
+                                    <div className="zotero-analytics-block-header">
+                                        <h3>Top progressed titles</h3>
+                                        <span className="subtle">where momentum is strongest</span>
+                                    </div>
+                                    {zoteroAnalytics.topProgressed.length ? (
+                                        <ul className="zotero-top-list">
+                                            {zoteroAnalytics.topProgressed.slice(0, 6).map((item) => (
+                                                <li key={item.itemKey}>
+                                                    <div>
+                                                        <strong>{item.title}</strong>
+                                                        <span>
+                                                            {item.totalPages && item.currentPage ? `${item.currentPage}/${item.totalPages}` : 'page unknown'}
+                                                            {' · '}
+                                                            {formatPercent(item.progress)}
+                                                            {' · '}
+                                                            +{item.pagesAdvancedWindow}p
+                                                        </span>
+                                                    </div>
+                                                    <small>{item.stalledDays != null ? `${item.stalledDays}d since change` : 'recently updated'}</small>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    ) : (
+                                        <p className="subtle">No titles have moved yet. Open a Zotero paper and progress will appear here.</p>
+                                    )}
+                                </section>
+
+                                {zoteroAnalytics.insights.length ? (
+                                    <ul className="zotero-insights">
+                                        {zoteroAnalytics.insights.map((line) => (
+                                            <li key={line}>{line}</li>
+                                        ))}
+                                    </ul>
+                                ) : null}
+                            </>
+                        )}
                     </div>
 
                     {/* Insights Panel */}

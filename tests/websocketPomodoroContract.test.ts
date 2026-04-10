@@ -21,12 +21,20 @@ describe('WebSocket pomodoro contract', () => {
 
     const broadcaster = new WebSocketBroadcaster({
       economy: economy as any,
-      paywall: { pause: () => undefined, resume: () => undefined, endSession: () => null } as any,
       wallet: {} as any,
       focus: focus as any,
       pomodoro: pomodoro as any,
       library: library as any,
-      emergency: { start: () => null, recordReview: () => ({ total: 0, kept: 0, notKept: 0 }) } as any,
+      paywallCommands: {
+        startMetered: () => null,
+        buyPack: () => null,
+        pause: () => undefined,
+        resume: () => undefined,
+        endSession: () => null,
+        startEmergency: () => null,
+        recordEmergencyReview: () => ({ total: 0, kept: 0, notKept: 0 }),
+        startStore: () => null
+      } as any,
       handleActivity: () => undefined
     });
 

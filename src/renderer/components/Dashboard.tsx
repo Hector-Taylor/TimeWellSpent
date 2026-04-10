@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import type {
   ActivityRecord,
   ActivitySummary,
@@ -29,6 +29,8 @@ interface DashboardProps {
   wallet: WalletSnapshot;
   economy: EconomyState | null;
   productivityGoalHoursOverride?: number;
+  compact?: boolean;
+  priorityCompactView?: boolean;
 }
 
 const DASHBOARD_SCENES = [
@@ -40,7 +42,119 @@ const DASHBOARD_SCENES = [
 
 type DashboardScene = (typeof DASHBOARD_SCENES)[number]['id'];
 
-export default function Dashboard({ api, wallet, economy, productivityGoalHoursOverride }: DashboardProps) {
+const DASHBOARD_LAYOUT_STORAGE_KEY = 'tws-dashboard-layout-v2';
+
+const DASHBOARD_MODULE_IDS = [
+  'productivity-ring',
+  'recovery-timer',
+  'focus-deck',
+  'flow-signals',
+  'weekly-insights',
+  'focus-telemetry',
+  'day-compass',
+  'attention-trail',
+  'attention-map',
+  'trophy-case',
+  'friend-strip'
+] as const;
+
+type DashboardModuleId = (typeof DASHBOARD_MODULE_IDS)[number];
+
+type DashboardModuleLayout = {
+  order: DashboardModuleId[];
+  hidden: DashboardModuleId[];
+};
+
+type DashboardModuleDefinition = {
+  id: DashboardModuleId;
+  label: string;
+  hint: string;
+  span?: 'half' | 'full';
+  node: ReactNode;
+};
+
+const DEFAULT_DASHBOARD_LAYOUT: DashboardModuleLayout = {
+  order: [
+    'productivity-ring',
+    'flow-signals',
+    'attention-trail',
+    'attention-map',
+    'focus-telemetry',
+    'focus-deck',
+    'recovery-timer',
+    'weekly-insights',
+    'day-compass',
+    'trophy-case',
+    'friend-strip'
+  ],
+  hidden: ['recovery-timer', 'focus-deck', 'weekly-insights', 'focus-telemetry', 'day-compass', 'trophy-case', 'friend-strip']
+};
+
+const PRIORITY_COMPACT_MODULES: DashboardModuleId[] = [
+  'productivity-ring',
+  'flow-signals',
+  'attention-trail',
+  'attention-map'
+];
+
+function normalizeDashboardLayout(value: unknown): DashboardModuleLayout {
+  const record = value && typeof value === 'object' ? value as Partial<DashboardModuleLayout> : null;
+  const known = new Set<DashboardModuleId>(DASHBOARD_MODULE_IDS);
+  const order = Array.isArray(record?.order)
+    ? record.order.filter((id): id is DashboardModuleId => typeof id === 'string' && known.has(id as DashboardModuleId))
+    : [];
+  const hidden = Array.isArray(record?.hidden)
+    ? record.hidden.filter((id): id is DashboardModuleId => typeof id === 'string' && known.has(id as DashboardModuleId))
+    : [];
+
+  for (const id of DEFAULT_DASHBOARD_LAYOUT.order) {
+    if (!order.includes(id)) order.push(id);
+  }
+
+  return {
+    order: dedupeDashboardIds(order),
+    hidden: dedupeDashboardIds(hidden)
+  };
+}
+
+function loadDashboardLayout(): DashboardModuleLayout {
+  try {
+    const raw = window.localStorage.getItem(DASHBOARD_LAYOUT_STORAGE_KEY);
+    if (!raw) return DEFAULT_DASHBOARD_LAYOUT;
+    return normalizeDashboardLayout(JSON.parse(raw));
+  } catch {
+    return DEFAULT_DASHBOARD_LAYOUT;
+  }
+}
+
+function dedupeDashboardIds(ids: DashboardModuleId[]) {
+  return ids.filter((id, index) => ids.indexOf(id) === index);
+}
+
+function reorderDashboardIds(ids: DashboardModuleId[], activeId: DashboardModuleId, targetId: DashboardModuleId) {
+  if (activeId === targetId) return ids;
+  const next = [...ids];
+  const from = next.indexOf(activeId);
+  const to = next.indexOf(targetId);
+  if (from === -1 || to === -1) return ids;
+  next.splice(from, 1);
+  next.splice(to, 0, activeId);
+  return next;
+}
+
+function dashboardIdsEqual(left: DashboardModuleId[], right: DashboardModuleId[]) {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+export default function Dashboard({
+  api,
+  wallet,
+  economy,
+  productivityGoalHoursOverride,
+  compact = false,
+  priorityCompactView = false
+}: DashboardProps) {
   const [activities, setActivities] = useState<ActivityRecord[]>([]);
   const [summary, setSummary] = useState<ActivitySummary | null>(null);
   const [loadingSummary, setLoadingSummary] = useState(true);
@@ -71,7 +185,13 @@ export default function Dashboard({ api, wallet, economy, productivityGoalHoursO
   const [competitiveOptIn, setCompetitiveOptIn] = useState(false);
   const [pomodoroOpen, setPomodoroOpen] = useState(false);
   const [productivityGoalHours, setProductivityGoalHours] = useState(2);
+  const summaryRequestRef = useRef(0);
+  const friendDetailRequestRef = useRef(0);
+  const scheduledRefreshRef = useRef<number | null>(null);
+  const compactModuleRefs = useRef(new Map<DashboardModuleId, HTMLDivElement>());
+  const compactModuleRects = useRef(new Map<DashboardModuleId, DOMRect>());
   const [dashboardScene, setDashboardScene] = useState<DashboardScene>(() => {
+    if (compact) return 'focus';
     try {
       const saved = window.localStorage.getItem('tws-dashboard-scene');
       if (saved && DASHBOARD_SCENES.some((scene) => scene.id === saved)) {
@@ -82,19 +202,34 @@ export default function Dashboard({ api, wallet, economy, productivityGoalHoursO
     }
     return 'focus';
   });
+  const [compactLayout, setCompactLayout] = useState<DashboardModuleLayout>(() => loadDashboardLayout());
+  const [customizeLayout, setCustomizeLayout] = useState(false);
+  const [draggingModuleId, setDraggingModuleId] = useState<DashboardModuleId | null>(null);
+  const [dropTargetModuleId, setDropTargetModuleId] = useState<DashboardModuleId | null>(null);
 
   const refresh = useCallback(async (silent = false) => {
+    const requestId = summaryRequestRef.current + 1;
+    summaryRequestRef.current = requestId;
     if (!silent) setLoadingSummary(true);
-    const isRemote = Boolean(selectedDeviceId && (selectedDeviceId === 'all' || (localDeviceId && selectedDeviceId !== localDeviceId)));
-    const [recent, aggregate, journeyData] = await Promise.all([
-      isRemote ? Promise.resolve([]) : api.activities.recent(30),
-      api.activities.summary(24, selectedDeviceId ?? undefined),
-      isRemote ? Promise.resolve(null) : api.activities.journey(24, selectedDeviceId ?? undefined)
-    ]);
-    setActivities(recent);
-    setSummary(aggregate);
-    setJourney(journeyData);
-    setLoadingSummary(false);
+    try {
+      const isRemote = Boolean(selectedDeviceId && (selectedDeviceId === 'all' || (localDeviceId && selectedDeviceId !== localDeviceId)));
+      const [recent, aggregate, journeyData] = await Promise.all([
+        isRemote ? Promise.resolve([]) : api.activities.recent(30),
+        api.activities.summary(24, selectedDeviceId ?? undefined),
+        isRemote ? Promise.resolve(null) : api.activities.journey(24, selectedDeviceId ?? undefined)
+      ]);
+      if (summaryRequestRef.current !== requestId) return;
+      setActivities(recent);
+      setSummary(aggregate);
+      setJourney(journeyData);
+    } catch (error) {
+      if (summaryRequestRef.current !== requestId) return;
+      console.error('Failed to refresh dashboard summary', error);
+    } finally {
+      if (!silent && summaryRequestRef.current === requestId) {
+        setLoadingSummary(false);
+      }
+    }
   }, [api, localDeviceId, selectedDeviceId]);
 
   const refreshOverview = useCallback(async () => {
@@ -203,6 +338,8 @@ export default function Dashboard({ api, wallet, economy, productivityGoalHoursO
   }, [api]);
 
   const openFriendDetail = useCallback(async (friend: FriendConnection) => {
+    const requestId = friendDetailRequestRef.current + 1;
+    friendDetailRequestRef.current = requestId;
     setSelectedFriend(friend);
     setFriendTimeline(null);
     setFriendPublicLibrary([]);
@@ -212,9 +349,11 @@ export default function Dashboard({ api, wallet, economy, productivityGoalHoursO
         api.friends.timeline(friend.userId, 24),
         api.friends.publicLibrary(friend.userId, 168)
       ]);
+      if (friendDetailRequestRef.current !== requestId) return;
       setFriendTimeline(timeline);
       setFriendPublicLibrary(publicLibrary ?? []);
     } catch (error) {
+      if (friendDetailRequestRef.current !== requestId) return;
       console.error('Failed to load friend timeline', error);
     }
   }, [api]);
@@ -241,22 +380,40 @@ export default function Dashboard({ api, wallet, economy, productivityGoalHoursO
   }, [api]);
 
   useEffect(() => {
+    if (compact) return;
     try {
       window.localStorage.setItem('tws-dashboard-scene', dashboardScene);
     } catch {
       // ignore
     }
-  }, [dashboardScene]);
+  }, [compact, dashboardScene]);
+
+  useEffect(() => {
+    if (!compact) return;
+    try {
+      window.localStorage.setItem(DASHBOARD_LAYOUT_STORAGE_KEY, JSON.stringify(compactLayout));
+    } catch {
+      // ignore
+    }
+  }, [compact, compactLayout]);
 
   useEffect(() => {
     const unsub = api.events.on('economy:activity', () => {
-      refresh(true);
+      if (scheduledRefreshRef.current != null) return;
+      scheduledRefreshRef.current = window.setTimeout(() => {
+        scheduledRefreshRef.current = null;
+        refresh(true);
+      }, 1200);
     });
     const unsubPaywallStart = api.events.on('paywall:session-started', () => {
       setLastFrivolityAt(Date.now());
       setLastFrivolityLoaded(true);
     });
     return () => {
+      if (scheduledRefreshRef.current != null) {
+        window.clearTimeout(scheduledRefreshRef.current);
+        scheduledRefreshRef.current = null;
+      }
       unsub();
       unsubPaywallStart();
     };
@@ -265,7 +422,7 @@ export default function Dashboard({ api, wallet, economy, productivityGoalHoursO
   useEffect(() => {
     const id = window.setInterval(() => {
       setNow(Date.now());
-    }, 1000);
+    }, 15_000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -459,18 +616,602 @@ export default function Dashboard({ api, wallet, economy, productivityGoalHoursO
     .filter((trophy) => trophy.progress.state === 'locked')
     .sort((a, b) => b.progress.ratio - a.progress.ratio)[0] ?? null;
 
+  const handleCompactModuleOrder = useCallback((activeId: DashboardModuleId, targetId: DashboardModuleId) => {
+    setCompactLayout((current) => {
+      const nextOrder = reorderDashboardIds(current.order, activeId, targetId);
+      if (dashboardIdsEqual(nextOrder, current.order)) return current;
+      return { ...current, order: nextOrder };
+    });
+  }, []);
+
+  const handleCompactDragStart = useCallback((moduleId: DashboardModuleId, event: DragEvent<HTMLDivElement>) => {
+    if (!customizeLayout) return;
+    setDraggingModuleId(moduleId);
+    setDropTargetModuleId(moduleId);
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', moduleId);
+  }, [customizeLayout]);
+
+  const handleCompactDragOver = useCallback((moduleId: DashboardModuleId, event: DragEvent<HTMLDivElement>) => {
+    if (!customizeLayout || !draggingModuleId || draggingModuleId === moduleId) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDropTargetModuleId(moduleId);
+    handleCompactModuleOrder(draggingModuleId, moduleId);
+  }, [customizeLayout, draggingModuleId, handleCompactModuleOrder]);
+
+  const handleCompactDrop = useCallback((moduleId: DashboardModuleId, event: DragEvent<HTMLDivElement>) => {
+    if (!customizeLayout) return;
+    event.preventDefault();
+    if (draggingModuleId && draggingModuleId !== moduleId) {
+      handleCompactModuleOrder(draggingModuleId, moduleId);
+    }
+    setDropTargetModuleId(moduleId);
+  }, [customizeLayout, draggingModuleId, handleCompactModuleOrder]);
+
+  const handleCompactDragEnd = useCallback(() => {
+    setDraggingModuleId(null);
+    window.setTimeout(() => setDropTargetModuleId(null), 180);
+  }, []);
+
+  const toggleCompactModule = useCallback((moduleId: DashboardModuleId) => {
+    setCompactLayout((current) => {
+      const hidden = new Set(current.hidden);
+      if (hidden.has(moduleId)) {
+        hidden.delete(moduleId);
+      } else {
+        const visibleCount = current.order.filter((id) => !hidden.has(id)).length;
+        if (visibleCount <= 1) return current;
+        hidden.add(moduleId);
+      }
+      return normalizeDashboardLayout({
+        order: current.order,
+        hidden: Array.from(hidden)
+      });
+    });
+  }, []);
+
+  const resetCompactLayout = useCallback(() => {
+    setCompactLayout(DEFAULT_DASHBOARD_LAYOUT);
+    setDraggingModuleId(null);
+    setDropTargetModuleId(null);
+  }, []);
+
+  const productivityRingCard = (
+    <div className={`card productivity-ring ${ringComplete ? 'complete' : ''}`}>
+      <div className="card-header-row">
+        <div>
+          <p className="eyebrow">Daily productivity</p>
+          <h2>Goal tracker</h2>
+        </div>
+        <span className="pill ghost">{formatGoalHours(goalHours)} goal</span>
+      </div>
+      <div className="productivity-ring-body">
+        <div
+          className="productivity-ring-graphic"
+          role="img"
+          aria-label={`Productivity ring ${formatHoursMinutesFromSeconds(productiveTodaySeconds)} of ${formatGoalHours(goalHours)}`}
+        >
+          <div className="productivity-ring-glow" />
+          <svg viewBox="0 0 120 120" aria-hidden>
+            <circle
+              className="productivity-ring-track"
+              cx="60"
+              cy="60"
+              r={ringRadius}
+              strokeWidth="10"
+            />
+            <circle
+              className="productivity-ring-progress"
+              cx="60"
+              cy="60"
+              r={ringRadius}
+              strokeWidth="10"
+              strokeDasharray={ringCircumference}
+              strokeDashoffset={ringOffset}
+            />
+          </svg>
+          <div className="productivity-ring-center">
+            <strong>{formatHoursMinutesFromSeconds(productiveTodaySeconds)}</strong>
+            <span>productive</span>
+          </div>
+        </div>
+        <div className="productivity-ring-meta">
+          <strong>{loadingSummary ? '--' : `${ringPercent}%`}</strong>
+          <span className="subtle">
+            {loadingSummary
+              ? 'Collecting signal...'
+              : ringComplete
+                ? 'Goal reached'
+                : `${formatHoursMinutesFromSeconds(remainingSeconds)} remaining`}
+          </span>
+          <span className="subtle">Today - {formatHoursMinutesFromSeconds(goalSeconds)} target</span>
+        </div>
+      </div>
+    </div>
+  );
+
+  const streakCard = (
+    <div
+      className={`card dashboard-streak ${streakProgress >= 1 ? 'streak-max' : ''}`}
+      style={{
+        ['--streak-color' as string]: streakColor,
+        ['--streak-progress' as string]: `${Math.round(streakProgress * 100)}%`
+      }}
+    >
+      <div className="streak-header">
+        <span className="eyebrow">Recovery timer</span>
+        <span className={`pill inline ${activeCategory}`}>{activeCategory}</span>
+      </div>
+      <h2>Time since last frivolity</h2>
+      <div className="streak-time">
+        {lastFrivolityLoaded ? (lastFrivolityAgeMs ? formatDuration(lastFrivolityAgeMs) : 'No frivolity logged') : 'Loading...'}
+      </div>
+      <div className="streak-meta">
+        <span className="subtle">
+          {lastFrivolityAt ? `Last spend ${new Date(lastFrivolityAt).toLocaleString()}` : 'No paid sessions recorded yet.'}
+        </span>
+        <div className="streak-meta-row">
+          <span className="pill ghost">Goal: 3 days</span>
+          <span className="pill ghost">{frivolityCount24h ?? 0} frivolity uses (24h)</span>
+        </div>
+      </div>
+      <div className="streak-bar" aria-hidden>
+        <span />
+      </div>
+    </div>
+  );
+
+  const focusDeckCard = (
+    <div className="card dashboard-focus-metrics">
+      <div className="card-header-row">
+        <div>
+          <p className="eyebrow">Focus deck</p>
+          <h2>Session highlights</h2>
+        </div>
+        <span className="pill ghost">{summary ? `${summary.windowHours}h window` : 'Rolling day'}</span>
+      </div>
+      <div className="overview-grid">
+        <div className="overview-metric">
+          <span className="label">Active time</span>
+          <strong>{totalHours.toFixed(1)}h</strong>
+          <span className="subtle">last {summary?.windowHours ?? 24}h</span>
+        </div>
+        <div className="overview-metric">
+          <span className="label">Productivity</span>
+          <strong>{overview?.productivityScore ?? '--'}%</strong>
+          <span className="subtle">last {overview?.periodDays ?? 7}d</span>
+        </div>
+        <div className="overview-metric">
+          <span className="label">Deep work</span>
+          <strong>{deepWorkMinutes == null ? '--' : `${deepWorkMinutes}m`}</strong>
+          <span className="subtle">today</span>
+        </div>
+        <div className="overview-metric">
+          <span className="label">Frivolity</span>
+          <strong>{frivolityCount24h == null ? '--' : frivolityCount24h}</strong>
+          <span className="subtle">last 24h</span>
+        </div>
+      </div>
+      <div className="dashboard-focus-meta">
+        <div>
+          <span className="metric-label">Active context</span>
+          <strong>{activeLabel}</strong>
+        </div>
+        <span className={`pill inline ${activeCategory}`}>{activeCategory}</span>
+      </div>
+    </div>
+  );
+
+  const flowSignalsCard = (
+    <div className="card flow-card dashboard-flow">
+      <div className="card-header-row">
+        <div>
+          <p className="eyebrow">Attention stability</p>
+          <h2>Flow signals</h2>
+        </div>
+        <span className="pill ghost">Last 24h</span>
+      </div>
+      <div className="flow-metrics">
+        <div>
+          <span className="label">Context switches</span>
+          <strong>{switchesPerHour == null ? '--' : `${switchesPerHour.toFixed(1)}/h`}</strong>
+          <span className="subtle">avg across window</span>
+        </div>
+        <div>
+          <span className="label">Thrash rate</span>
+          <strong>{thrashPerHour == null ? '--' : `${thrashPerHour.toFixed(1)}/h`}</strong>
+          <span className="subtle">rapid hops</span>
+        </div>
+        <div>
+          <span className="label">Idle ratio</span>
+          <strong>{idleRatio == null ? '--' : `${Math.round(idleRatio * 100)}%`}</strong>
+          <span className="subtle">passive time</span>
+        </div>
+        <div>
+          <span className="label">Longest run</span>
+          <strong>{longestProductiveRunHours}h</strong>
+          <span className="subtle">productive streak</span>
+        </div>
+      </div>
+      <div className="flow-toggle">
+        <button
+          type="button"
+          className={`pill ghost ${flowMetric === 'productivity' ? 'active' : ''}`}
+          onClick={() => setFlowMetric('productivity')}
+        >
+          Productivity
+        </button>
+        <button
+          type="button"
+          className={`pill ghost ${flowMetric === 'switches' ? 'active' : ''}`}
+          onClick={() => setFlowMetric('switches')}
+        >
+          Switches
+        </button>
+        <button
+          type="button"
+          className={`pill ghost ${flowMetric === 'thrash' ? 'active' : ''}`}
+          onClick={() => setFlowMetric('thrash')}
+        >
+          Thrash
+        </button>
+        <button
+          type="button"
+          className={`pill ghost ${flowMetric === 'idle' ? 'active' : ''}`}
+          onClick={() => setFlowMetric('idle')}
+        >
+          Idle
+        </button>
+      </div>
+      <div className="flow-sparkline">
+        <span className="label">
+          {flowMetric === 'switches'
+            ? 'Switches trend'
+            : flowMetric === 'thrash'
+              ? 'Thrash trend'
+              : flowMetric === 'idle'
+                ? 'Idle trend'
+                : 'Productive trend'}
+        </span>
+        <div className="flow-sparkline-track">
+          {flowTrend.length > 1 ? (
+            <svg viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden>
+              <path
+                d={buildSparklinePath(flowTrend)}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              />
+            </svg>
+          ) : (
+            <span className="subtle">Collecting signal…</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  const weeklyInsightsCard = (
+    <Insights api={api} overview={overview} loading={loadingOverview} onRefresh={refreshOverview} />
+  );
+
+  const focusTelemetryCard = (
+    <div className="card dashboard-overview">
+      <div className="card-header-row">
+        <div>
+          <p className="eyebrow">Signal deck</p>
+          <h2>Focus telemetry</h2>
+        </div>
+        <span className="pill ghost">{summary ? `${summary.windowHours}h window` : 'Rolling day'}</span>
+      </div>
+      <div className="overview-grid">
+        <div className="overview-metric">
+          <span className="label">Active time</span>
+          <strong>{totalHours.toFixed(1)}h</strong>
+          <span className="subtle">last {summary?.windowHours ?? 24}h</span>
+        </div>
+        <div className="overview-metric">
+          <span className="label">Productivity</span>
+          <strong>{overview?.productivityScore ?? '--'}%</strong>
+          <span className="subtle">last {overview?.periodDays ?? 7}d</span>
+        </div>
+        <div className="overview-metric">
+          <span className="label">Avg session</span>
+          <strong>{overview ? formatDuration(overview.avgSessionLength * 1000) : '--'}</strong>
+          <span className="subtle">{overview?.totalSessions ?? '--'} sessions</span>
+        </div>
+        <div className="overview-metric">
+          <span className="label">Peak hour</span>
+          <strong>{overview ? formatHour(overview.peakProductiveHour) : '--'}</strong>
+          <span className="subtle">risk {overview ? formatHour(overview.riskHour) : '--'}</span>
+        </div>
+      </div>
+      <div className="overview-breakdown">
+        <span className="label">Category mix</span>
+        <div className="overview-bars">
+          {renderCategoryBar('Productive', 'productive', overview)}
+          {renderCategoryBar('Neutral', 'neutral', overview)}
+          {renderCategoryBar('Frivolity', 'frivolity', overview)}
+          {renderCategoryBar('Draining', 'draining', overview)}
+          {renderCategoryBar('Emergency', 'emergency', overview)}
+          {renderCategoryBar('Idle', 'idle', overview)}
+        </div>
+      </div>
+      <div className="overview-top">
+        <span className="label">Top contexts</span>
+        <ul className="overview-list">
+          {topContexts.slice(0, 3).map((ctx) => (
+            <li key={ctx.label}>
+              <strong>{ctx.label}</strong>
+              <span className="subtle">{Math.round(ctx.seconds / 60)}m • {ctx.source === 'url' ? 'Browser' : 'App'}</span>
+            </li>
+          ))}
+          {topContexts.length === 0 && <li className="subtle">No streams yet.</li>}
+        </ul>
+        {overview?.topEngagementDomain && !isExcludedLabel(overview.topEngagementDomain) && (
+          <div className="overview-highlight">
+            <span className="label">Most engaging</span>
+            <strong>{overview.topEngagementDomain}</strong>
+            <span className="subtle">highest attention hold this week</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const dayCompassCard = (
+    <div className="dashboard-orbit">
+      <DayCompass summary={summary} economy={economy} />
+    </div>
+  );
+
+  const attentionTrailCard = (
+    <DayJourney journey={journey} loading={loadingSummary} isRemote={isRemoteView} />
+  );
+
+  const attentionMapCard = (
+    <AttentionMap journey={journey} loading={loadingSummary} isRemote={isRemoteView} />
+  );
+
+  const friendStripCard = (
+    <div className="card friends-strip">
+      <div className="friends-strip-header">
+        <div>
+          <p className="eyebrow">Friends</p>
+          <h2>In the zone</h2>
+        </div>
+        <span className="pill ghost">Last 24h</span>
+      </div>
+      {!friendsReady ? (
+        <div className="friends-empty">
+          <strong>Syncing friends…</strong>
+          <span className="subtle">Connect the desktop app to pull stats.</span>
+        </div>
+      ) : friends.length === 0 ? (
+        <div className="friends-empty">
+          <strong>No friends yet</strong>
+          <span className="subtle">Add a handle in the Friends tab.</span>
+        </div>
+      ) : (
+        <div className="friends-strip-row">
+          {friends.map((friend) => {
+            const summary = friendSummaries[friend.userId];
+            const totals = summary?.categoryBreakdown ?? null;
+            const active = summary?.totalActiveSeconds ?? 0;
+            const productivePct = active > 0 ? (totals!.productive / active) * 100 : 0;
+            const neutralPct = active > 0 ? (totals!.neutral / active) * 100 : 0;
+            const frivolityPct = active > 0 ? (totals!.frivolity / active) * 100 : 0;
+            const friendTrophies = (friend.pinnedTrophies ?? [])
+              .map((id) => trophyById.get(id))
+              .filter((trophy): trophy is TrophyStatus => Boolean(trophy));
+            return (
+              <button key={friend.id} type="button" className="friends-chip" onClick={() => openFriendDetail(friend)}>
+                <div className="friends-chip-header">
+                  <div>
+                    <strong>{friend.displayName ?? friend.handle ?? 'Friend'}</strong>
+                    <span className="subtle">@{friend.handle ?? 'no-handle'}</span>
+                  </div>
+                  <span className="pill ghost">{summary ? `${summary.productivityScore}%` : '--'}</span>
+                </div>
+                <div className="friends-chip-activity">
+                  <span>{summary ? formatHoursFromSeconds(summary.totalActiveSeconds) : '--'} active</span>
+                  <span className="subtle">{summary ? `Updated ${new Date(summary.updatedAt).toLocaleTimeString()}` : 'No data yet'}</span>
+                </div>
+                <div className="friends-chip-bar">
+                  <span className="cat-productive" style={{ width: `${productivePct}%` }} />
+                  <span className="cat-neutral" style={{ width: `${neutralPct}%` }} />
+                  <span className="cat-frivolity" style={{ width: `${frivolityPct}%` }} />
+                </div>
+                {competitiveOptIn ? (
+                  <div className="head-to-head">
+                    {friendSummaries[friend.userId] ? (
+                      <>
+                        <div className="head-to-head-row">
+                          <span>You</span>
+                          <span>{friend.displayName ?? friend.handle ?? 'Friend'}</span>
+                        </div>
+                        <div className="head-to-head-bar fancy">
+                          <span
+                            className="head-to-head-left"
+                            style={{ width: `${headToHeadPercentFromSummary(myHeadToHeadSummary, friendSummaries[friend.userId])}%`, background: myProfile?.color ?? 'var(--accent)' }}
+                          />
+                          <span
+                            className="head-to-head-right"
+                            style={{ width: `${100 - headToHeadPercentFromSummary(myHeadToHeadSummary, friendSummaries[friend.userId])}%`, background: friend.color ?? 'rgba(255, 255, 255, 0.3)' }}
+                          />
+                          <div className="head-to-head-glow" />
+                        </div>
+                        <div className="head-to-head-row subtle">
+                          <span>{formatMinutes(myHeadToHeadSummary?.categoryBreakdown.productive ?? 0)} productive</span>
+                          <span>{formatMinutes(friendSummaries[friend.userId]?.categoryBreakdown.productive ?? 0)} productive</span>
+                        </div>
+                        <div className="head-to-head-row subtle">
+                          <span>{formatCount(myHeadToHeadSummary?.emergencySessions)} emergency</span>
+                          <span>{formatCount(friendSummaries[friend.userId]?.emergencySessions)} emergency</span>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="subtle" style={{ marginTop: 6 }}>
+                        Waiting for shared activity data.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="subtle" style={{ marginTop: 10 }}>Competitive view is off.</p>
+                )}
+                {friendTrophies.length > 0 && (
+                  <div className="friends-trophies">
+                    {friendTrophies.slice(0, 3).map((trophy) => (
+                      <span key={trophy.id} className="trophy-badge">
+                        <span className="emoji">{trophy.emoji}</span>
+                        {trophy.name}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
+  const trophyCaseCard = (
+    <div className="card trophy-strip">
+      <div className="trophy-strip-header">
+        <div>
+          <p className="eyebrow">Trophies</p>
+          <h2>Case highlights</h2>
+        </div>
+        <span className="pill ghost">Profile view</span>
+      </div>
+      <div className="trophy-strip-row">
+        {trophies.length === 0 ? (
+          <div className="friends-empty">
+            <strong>No trophies yet</strong>
+            <span className="subtle">Your case fills up as you build streaks and finish hard things.</span>
+          </div>
+        ) : pinnedTrophies.length === 0 ? (
+          <div className="friends-empty">
+            <strong>No pinned trophies</strong>
+            <span className="subtle">Pin trophies in your Profile page.</span>
+          </div>
+        ) : (
+          pinnedTrophies.map((trophy) => (
+            <div key={trophy.id} className="trophy-badge">
+              <span className="emoji">{trophy.emoji}</span>
+              <span>{trophy.name}</span>
+            </div>
+          ))
+        )}
+      </div>
+      {nextTrophy && (
+        <div className="trophy-next">
+          <span className="label">Next up</span>
+          <div className="trophy-next-body">
+            <span className="emoji">{nextTrophy.emoji}</span>
+            <div>
+              <strong>{nextTrophy.name}</strong>
+              <span className="subtle">{nextTrophy.progress.label ?? `${nextTrophy.progress.current}/${nextTrophy.progress.target}`}</span>
+            </div>
+          </div>
+          <div className="progress-bar">
+            <span style={{ width: `${Math.round(nextTrophy.progress.ratio * 100)}%` }} />
+          </div>
+        </div>
+      )}
+      {trophyToast && (
+        <div className="trophy-toast">
+          <span className="emoji">{trophyToast.emoji}</span>
+          <div>
+            <strong>{trophyToast.name}</strong>
+            <span className="subtle">New trophy earned</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  const compactModules: DashboardModuleDefinition[] = [
+    { id: 'productivity-ring', label: 'Productivity ring', hint: 'Daily progress toward your focus target.', node: productivityRingCard },
+    { id: 'recovery-timer', label: 'Recovery timer', hint: 'How long you have stayed clear of frivolity.', node: streakCard },
+    { id: 'focus-deck', label: 'Focus deck', hint: 'The core metrics that keep the day legible.', span: 'full', node: focusDeckCard },
+    { id: 'flow-signals', label: 'Flow signals', hint: 'Switches, thrash, idle rate, and trendline.', node: flowSignalsCard },
+    { id: 'weekly-insights', label: 'Weekly insights', hint: 'Short interpretation of your recent behavior.', node: weeklyInsightsCard },
+    { id: 'focus-telemetry', label: 'Focus telemetry', hint: 'Category mix, peak hour, and top contexts.', node: focusTelemetryCard },
+    { id: 'day-compass', label: 'Day compass', hint: 'Orbit view of where attention went.', node: dayCompassCard },
+    { id: 'attention-trail', label: 'Attention trail', hint: 'Timeline of the day and neutral touchpoints.', span: 'full', node: attentionTrailCard },
+    { id: 'attention-map', label: 'Attention map', hint: 'How one context leads into another.', span: 'full', node: attentionMapCard },
+    { id: 'trophy-case', label: 'Trophy case', hint: 'Pinned trophies and what you are close to earning.', node: trophyCaseCard },
+    { id: 'friend-strip', label: 'Friend strip', hint: 'Live social comparison and shared momentum.', span: 'full', node: friendStripCard }
+  ];
+
+  const compactModuleMap = new Map<DashboardModuleId, DashboardModuleDefinition>(
+    compactModules.map((module) => [module.id, module])
+  );
+  const hiddenModuleIds = new Set(compactLayout.hidden);
+  const compactVisibleModules = priorityCompactView
+    ? PRIORITY_COMPACT_MODULES
+        .map((id) => compactModuleMap.get(id))
+        .filter((module): module is DashboardModuleDefinition => Boolean(module))
+    : compactLayout.order
+        .map((id) => compactModuleMap.get(id))
+        .filter((module): module is DashboardModuleDefinition => Boolean(module))
+        .filter((module) => !hiddenModuleIds.has(module.id));
+  const setCompactModuleRef = useCallback((moduleId: DashboardModuleId, node: HTMLDivElement | null) => {
+    if (node) {
+      compactModuleRefs.current.set(moduleId, node);
+    } else {
+      compactModuleRefs.current.delete(moduleId);
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!compact || !customizeLayout) {
+      compactModuleRects.current = new Map();
+      return;
+    }
+    const hidden = new Set(compactLayout.hidden);
+    const nextRects = new Map<DashboardModuleId, DOMRect>();
+    compactLayout.order.forEach((moduleId) => {
+      if (hidden.has(moduleId)) return;
+      const node = compactModuleRefs.current.get(moduleId);
+      if (!node) return;
+      const rect = node.getBoundingClientRect();
+      nextRects.set(moduleId, rect);
+      const previousRect = compactModuleRects.current.get(moduleId);
+      if (!previousRect) return;
+      const deltaX = previousRect.left - rect.left;
+      const deltaY = previousRect.top - rect.top;
+      if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) return;
+      node.animate(
+        [
+          { transform: `translate(${deltaX}px, ${deltaY}px) scale(0.985)` },
+          { transform: 'translate(0px, 0px) scale(1)' }
+        ],
+        {
+          duration: 240,
+          easing: 'cubic-bezier(0.22, 1, 0.36, 1)'
+        }
+      );
+    });
+    compactModuleRects.current = nextRects;
+  }, [compact, compactLayout, customizeLayout]);
+
   return (
-    <section className="panel">
+    <section className={`panel ${compact ? 'dashboard-compact' : ''}`}>
       <header className="panel-header dashboard-header">
         <div className="dashboard-hero-left">
           <div>
-            <p className="eyebrow">Attention control</p>
-            <h1>Your day at a glance</h1>
+            <p className="eyebrow">{compact ? 'Live signals' : 'Attention control'}</p>
+            <h1>{compact ? 'Today at a glance' : 'Your day at a glance'}</h1>
             <div className="pill-row pill-row-tight topbar-actions">
               <div className="pill-group">
                 <span className="pill ghost">Wallet {wallet.balance} f-coins</span>
                 <button type="button" className="pomodoro-trigger" onClick={() => setPomodoroOpen(true)}>
-                  Locking in?
+                  Pomodoro
                 </button>
               </div>
               <span className="pill ghost">
@@ -503,23 +1244,72 @@ export default function Dashboard({ api, wallet, economy, productivityGoalHoursO
         </div>
       </header>
 
-      <div className="dashboard-controls">
-        <div className="dashboard-tabs" role="tablist" aria-label="Dashboard scenes">
-          {DASHBOARD_SCENES.map((scene) => (
-            <button
-              key={scene.id}
-              type="button"
-              role="tab"
-              className={dashboardScene === scene.id ? 'active' : ''}
-              aria-selected={dashboardScene === scene.id}
-              onClick={() => setDashboardScene(scene.id)}
-            >
-              <span className="dashboard-tab-label">{scene.label}</span>
-              <span className="dashboard-tab-hint">{scene.hint}</span>
-            </button>
-          ))}
+      {compact && !priorityCompactView ? (
+        <div className="dashboard-controls dashboard-controls-compact">
+          <div className="dashboard-customize-bar">
+            <div>
+              <p className="eyebrow">Layout</p>
+              <h2>{customizeLayout ? 'Arrange modules' : 'Visible modules'}</h2>
+            </div>
+            <div className="dashboard-customize-actions">
+              {customizeLayout && (
+                <button type="button" className="pill ghost" onClick={resetCompactLayout}>
+                  Reset
+                </button>
+              )}
+              <button
+                type="button"
+                className={`pill ghost ${customizeLayout ? 'active' : ''}`}
+                onClick={() => {
+                  setCustomizeLayout((current) => !current);
+                  setDraggingModuleId(null);
+                  setDropTargetModuleId(null);
+                }}
+              >
+                {customizeLayout ? 'Done' : 'Edit layout'}
+              </button>
+            </div>
+          </div>
+
+          {customizeLayout && (
+            <div className="dashboard-module-picker">
+              {compactModules.map((module) => {
+                const hidden = hiddenModuleIds.has(module.id);
+                return (
+                  <button
+                    key={module.id}
+                    type="button"
+                    className={`dashboard-module-toggle ${hidden ? '' : 'active'}`}
+                    onClick={() => toggleCompactModule(module.id)}
+                  >
+                    <span className="dashboard-module-toggle-state">{hidden ? 'Hidden' : 'Visible'}</span>
+                    <strong>{module.label}</strong>
+                    <span className="subtle">{module.hint}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
-      </div>
+      ) : !compact ? (
+        <div className="dashboard-controls">
+          <div className="dashboard-tabs" role="tablist" aria-label="Dashboard scenes">
+            {DASHBOARD_SCENES.map((scene) => (
+              <button
+                key={scene.id}
+                type="button"
+                role="tab"
+                className={dashboardScene === scene.id ? 'active' : ''}
+                aria-selected={dashboardScene === scene.id}
+                onClick={() => setDashboardScene(scene.id)}
+              >
+                <span className="dashboard-tab-label">{scene.label}</span>
+                <span className="dashboard-tab-hint">{scene.hint}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {pomodoroOpen && (
         <div className="pomodoro-flyout">
@@ -535,456 +1325,86 @@ export default function Dashboard({ api, wallet, economy, productivityGoalHoursO
       )}
 
       <div className="dashboard-scenes">
-        {dashboardScene === 'focus' && (
-          <div className="dashboard-focus-grid">
-            <div className={`card productivity-ring ${ringComplete ? 'complete' : ''}`}>
-              <div className="card-header-row">
-                <div>
-                  <p className="eyebrow">Daily productivity</p>
-                  <h2>Close your ring</h2>
-                </div>
-                <span className="pill ghost">{formatGoalHours(goalHours)} goal</span>
-              </div>
-              <div className="productivity-ring-body">
-                <div
-                  className="productivity-ring-graphic"
-                  role="img"
-                  aria-label={`Productivity ring ${formatHoursMinutesFromSeconds(productiveTodaySeconds)} of ${formatGoalHours(goalHours)}`}
-                >
-                  <div className="productivity-ring-glow" />
-                  <svg viewBox="0 0 120 120" aria-hidden>
-                    <circle
-                      className="productivity-ring-track"
-                      cx="60"
-                      cy="60"
-                      r={ringRadius}
-                      strokeWidth="10"
-                    />
-                    <circle
-                      className="productivity-ring-progress"
-                      cx="60"
-                      cy="60"
-                      r={ringRadius}
-                      strokeWidth="10"
-                      strokeDasharray={ringCircumference}
-                      strokeDashoffset={ringOffset}
-                    />
-                  </svg>
-                  <div className="productivity-ring-center">
-                    <strong>{formatHoursMinutesFromSeconds(productiveTodaySeconds)}</strong>
-                    <span>productive</span>
-                  </div>
-                </div>
-                <div className="productivity-ring-meta">
-                  <strong>{loadingSummary ? '--' : `${ringPercent}%`}</strong>
-                  <span className="subtle">
-                    {loadingSummary
-                      ? 'Collecting signal...'
-                      : ringComplete
-                        ? "You've closed your circle."
-                        : `${formatHoursMinutesFromSeconds(remainingSeconds)} to go`}
-                  </span>
-                  <span className="subtle">Today - {formatHoursMinutesFromSeconds(goalSeconds)} target</span>
-                </div>
-              </div>
-            </div>
-
-            <div
-              className={`card dashboard-streak ${streakProgress >= 1 ? 'streak-max' : ''}`}
-              style={{
-                ['--streak-color' as string]: streakColor,
-                ['--streak-progress' as string]: `${Math.round(streakProgress * 100)}%`
-              }}
-            >
-              <div className="streak-header">
-                <span className="eyebrow">Recovery timer</span>
-                <span className={`pill inline ${activeCategory}`}>{activeCategory}</span>
-              </div>
-              <h2>Time since last frivolity</h2>
-              <div className="streak-time">
-                {lastFrivolityLoaded ? (lastFrivolityAgeMs ? formatDuration(lastFrivolityAgeMs) : 'No frivolity logged') : 'Loading...'}
-              </div>
-              <div className="streak-meta">
-                <span className="subtle">
-                  {lastFrivolityAt ? `Last spend ${new Date(lastFrivolityAt).toLocaleString()}` : 'No paid sessions recorded yet.'}
-                </span>
-                <div className="streak-meta-row">
-                  <span className="pill ghost">Goal: 3 days</span>
-                  <span className="pill ghost">{frivolityCount24h ?? 0} frivolity uses (24h)</span>
-                </div>
-              </div>
-              <div className="streak-bar" aria-hidden>
-                <span />
-              </div>
-            </div>
-
-            <div className="card dashboard-focus-metrics">
-              <div className="card-header-row">
-                <div>
-                  <p className="eyebrow">Focus deck</p>
-                  <h2>Session highlights</h2>
-                </div>
-                <span className="pill ghost">{summary ? `${summary.windowHours}h window` : 'Rolling day'}</span>
-              </div>
-              <div className="overview-grid">
-                <div className="overview-metric">
-                  <span className="label">Active time</span>
-                  <strong>{totalHours.toFixed(1)}h</strong>
-                  <span className="subtle">last {summary?.windowHours ?? 24}h</span>
-                </div>
-                <div className="overview-metric">
-                  <span className="label">Productivity</span>
-                  <strong>{overview?.productivityScore ?? '--'}%</strong>
-                  <span className="subtle">last {overview?.periodDays ?? 7}d</span>
-                </div>
-                <div className="overview-metric">
-                  <span className="label">Deep work</span>
-                  <strong>{deepWorkMinutes == null ? '--' : `${deepWorkMinutes}m`}</strong>
-                  <span className="subtle">today</span>
-                </div>
-                <div className="overview-metric">
-                  <span className="label">Frivolity</span>
-                  <strong>{frivolityCount24h == null ? '--' : frivolityCount24h}</strong>
-                  <span className="subtle">last 24h</span>
-                </div>
-              </div>
-              <div className="dashboard-focus-meta">
-                <div>
-                  <span className="metric-label">Active context</span>
-                  <strong>{activeLabel}</strong>
-                </div>
-                <span className={`pill inline ${activeCategory}`}>{activeCategory}</span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {dashboardScene === 'signals' && (
-          <div className="dashboard-signals-grid">
-            <div className="dashboard-signals-main">
-              <div className="card flow-card dashboard-flow">
-                <div className="card-header-row">
-                  <div>
-                    <p className="eyebrow">Attention stability</p>
-                    <h2>Flow signals</h2>
-                  </div>
-                  <span className="pill ghost">Last 24h</span>
-                </div>
-                <div className="flow-metrics">
-                  <div>
-                    <span className="label">Context switches</span>
-                    <strong>{switchesPerHour == null ? '--' : `${switchesPerHour.toFixed(1)}/h`}</strong>
-                    <span className="subtle">avg across window</span>
-                  </div>
-                  <div>
-                    <span className="label">Thrash rate</span>
-                    <strong>{thrashPerHour == null ? '--' : `${thrashPerHour.toFixed(1)}/h`}</strong>
-                    <span className="subtle">rapid hops</span>
-                  </div>
-                  <div>
-                    <span className="label">Idle ratio</span>
-                    <strong>{idleRatio == null ? '--' : `${Math.round(idleRatio * 100)}%`}</strong>
-                    <span className="subtle">passive time</span>
-                  </div>
-                  <div>
-                    <span className="label">Longest run</span>
-                    <strong>{longestProductiveRunHours}h</strong>
-                    <span className="subtle">productive streak</span>
-                  </div>
-                </div>
-                <div className="flow-toggle">
-                  <button
-                    type="button"
-                    className={`pill ghost ${flowMetric === 'productivity' ? 'active' : ''}`}
-                    onClick={() => setFlowMetric('productivity')}
-                  >
-                    Productivity
-                  </button>
-                  <button
-                    type="button"
-                    className={`pill ghost ${flowMetric === 'switches' ? 'active' : ''}`}
-                    onClick={() => setFlowMetric('switches')}
-                  >
-                    Switches
-                  </button>
-                  <button
-                    type="button"
-                    className={`pill ghost ${flowMetric === 'thrash' ? 'active' : ''}`}
-                    onClick={() => setFlowMetric('thrash')}
-                  >
-                    Thrash
-                  </button>
-                  <button
-                    type="button"
-                    className={`pill ghost ${flowMetric === 'idle' ? 'active' : ''}`}
-                    onClick={() => setFlowMetric('idle')}
-                  >
-                    Idle
-                  </button>
-                </div>
-                <div className="flow-sparkline">
-                  <span className="label">
-                    {flowMetric === 'switches'
-                      ? 'Switches trend'
-                      : flowMetric === 'thrash'
-                        ? 'Thrash trend'
-                        : flowMetric === 'idle'
-                          ? 'Idle trend'
-                          : 'Productive trend'}
-                  </span>
-                  <div className="flow-sparkline-track">
-                    {flowTrend.length > 1 ? (
-                      <svg viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden>
-                        <path
-                          d={buildSparklinePath(flowTrend)}
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                        />
-                      </svg>
-                    ) : (
-                      <span className="subtle">Collecting signal…</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="dashboard-insights">
-                <Insights api={api} overview={overview} loading={loadingOverview} onRefresh={refreshOverview} />
-              </div>
-            </div>
-
-            <div className="card dashboard-overview">
-              <div className="card-header-row">
-                <div>
-                  <p className="eyebrow">Signal deck</p>
-                  <h2>Focus telemetry</h2>
-                </div>
-                <span className="pill ghost">{summary ? `${summary.windowHours}h window` : 'Rolling day'}</span>
-              </div>
-              <div className="overview-grid">
-                <div className="overview-metric">
-                  <span className="label">Active time</span>
-                  <strong>{totalHours.toFixed(1)}h</strong>
-                  <span className="subtle">last {summary?.windowHours ?? 24}h</span>
-                </div>
-                <div className="overview-metric">
-                  <span className="label">Productivity</span>
-                  <strong>{overview?.productivityScore ?? '--'}%</strong>
-                  <span className="subtle">last {overview?.periodDays ?? 7}d</span>
-                </div>
-                <div className="overview-metric">
-                  <span className="label">Avg session</span>
-                  <strong>{overview ? formatDuration(overview.avgSessionLength * 1000) : '--'}</strong>
-                  <span className="subtle">{overview?.totalSessions ?? '--'} sessions</span>
-                </div>
-                <div className="overview-metric">
-                  <span className="label">Peak hour</span>
-                  <strong>{overview ? formatHour(overview.peakProductiveHour) : '--'}</strong>
-                  <span className="subtle">risk {overview ? formatHour(overview.riskHour) : '--'}</span>
-                </div>
-              </div>
-              <div className="overview-breakdown">
-                <span className="label">Category mix</span>
-                <div className="overview-bars">
-                  {renderCategoryBar('Productive', 'productive', overview)}
-                  {renderCategoryBar('Neutral', 'neutral', overview)}
-                  {renderCategoryBar('Frivolity', 'frivolity', overview)}
-                  {renderCategoryBar('Draining', 'draining', overview)}
-                  {renderCategoryBar('Emergency', 'emergency', overview)}
-                  {renderCategoryBar('Idle', 'idle', overview)}
-                </div>
-              </div>
-              <div className="overview-top">
-                <span className="label">Top contexts</span>
-                <ul className="overview-list">
-                  {topContexts.slice(0, 3).map((ctx) => (
-                    <li key={ctx.label}>
-                      <strong>{ctx.label}</strong>
-                      <span className="subtle">{Math.round(ctx.seconds / 60)}m • {ctx.source === 'url' ? 'Browser' : 'App'}</span>
-                    </li>
-                  ))}
-                  {topContexts.length === 0 && <li className="subtle">No streams yet.</li>}
-                </ul>
-                {overview?.topEngagementDomain && !isExcludedLabel(overview.topEngagementDomain) && (
-                  <div className="overview-highlight">
-                    <span className="label">Most engaging</span>
-                    <strong>{overview.topEngagementDomain}</strong>
-                    <span className="subtle">highest attention hold this week</span>
+        {compact ? (
+          <div className={`dashboard-module-board ${customizeLayout ? 'dashboard-module-board--editing' : ''} ${draggingModuleId ? 'dashboard-module-board--sorting' : ''}`}>
+            {compactVisibleModules.map((module) => (
+              <div
+                key={module.id}
+                ref={(node) => setCompactModuleRef(module.id, node)}
+                className={[
+                  'dashboard-module-shell',
+                  module.span === 'full' ? 'dashboard-module-shell--full' : '',
+                  customizeLayout ? 'dashboard-module-shell--editable' : '',
+                  draggingModuleId === module.id ? 'dashboard-module-shell--dragging' : '',
+                  dropTargetModuleId === module.id && draggingModuleId !== module.id ? 'dashboard-module-shell--drop-target' : ''
+                ].filter(Boolean).join(' ')}
+                draggable={customizeLayout}
+                onDragStart={(event) => handleCompactDragStart(module.id, event)}
+                onDragOver={(event) => handleCompactDragOver(module.id, event)}
+                onDrop={(event) => handleCompactDrop(module.id, event)}
+                onDragEnd={handleCompactDragEnd}
+              >
+                {customizeLayout && (
+                  <div className="dashboard-module-shell-bar" aria-hidden>
+                    <span className="dashboard-module-shell-handle">⋮⋮</span>
+                    <span className="dashboard-module-shell-label">{module.label}</span>
+                    <button
+                      type="button"
+                      className="dashboard-module-shell-hide"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleCompactModule(module.id);
+                      }}
+                    >
+                      Hide
+                    </button>
                   </div>
                 )}
+                <div className="dashboard-module-shell-body">
+                  {module.node}
+                </div>
               </div>
-            </div>
+            ))}
           </div>
-        )}
-
-        {dashboardScene === 'journey' && (
-          <div className="dashboard-journey-grid">
-            <div className="dashboard-orbit">
-              <DayCompass summary={summary} economy={economy} />
-            </div>
-            <div className="dashboard-timeline">
-              <DayJourney journey={journey} loading={loadingSummary} isRemote={isRemoteView} />
-              <AttentionMap journey={journey} loading={loadingSummary} isRemote={isRemoteView} />
-            </div>
-          </div>
-        )}
-
-        {dashboardScene === 'social' && (
-          <div className="dashboard-social-grid">
-            <div className="card friends-strip">
-              <div className="friends-strip-header">
-                <div>
-                  <p className="eyebrow">Friends</p>
-                  <h2>In the zone</h2>
-                </div>
-                <span className="pill ghost">Last 24h</span>
-              </div>
-              {!friendsReady ? (
-                <div className="friends-empty">
-                  <strong>Syncing friends…</strong>
-                  <span className="subtle">Connect the desktop app to pull stats.</span>
-                </div>
-              ) : friends.length === 0 ? (
-                <div className="friends-empty">
-                  <strong>No friends yet</strong>
-                  <span className="subtle">Add a handle in the Friends tab.</span>
-                </div>
-              ) : (
-                <div className="friends-strip-row">
-                  {friends.map((friend) => {
-                    const summary = friendSummaries[friend.userId];
-                    const totals = summary?.categoryBreakdown ?? null;
-                    const active = summary?.totalActiveSeconds ?? 0;
-                    const productivePct = active > 0 ? (totals!.productive / active) * 100 : 0;
-                    const neutralPct = active > 0 ? (totals!.neutral / active) * 100 : 0;
-                    const frivolityPct = active > 0 ? (totals!.frivolity / active) * 100 : 0;
-                    const friendTrophies = (friend.pinnedTrophies ?? [])
-                      .map((id) => trophyById.get(id))
-                      .filter((trophy): trophy is TrophyStatus => Boolean(trophy));
-                    return (
-                      <button key={friend.id} type="button" className="friends-chip" onClick={() => openFriendDetail(friend)}>
-                        <div className="friends-chip-header">
-                          <div>
-                            <strong>{friend.displayName ?? friend.handle ?? 'Friend'}</strong>
-                            <span className="subtle">@{friend.handle ?? 'no-handle'}</span>
-                          </div>
-                          <span className="pill ghost">{summary ? `${summary.productivityScore}%` : '--'}</span>
-                        </div>
-                        <div className="friends-chip-activity">
-                          <span>{summary ? formatHoursFromSeconds(summary.totalActiveSeconds) : '--'} active</span>
-                          <span className="subtle">{summary ? `Updated ${new Date(summary.updatedAt).toLocaleTimeString()}` : 'No data yet'}</span>
-                        </div>
-                        <div className="friends-chip-bar">
-                          <span className="cat-productive" style={{ width: `${productivePct}%` }} />
-                          <span className="cat-neutral" style={{ width: `${neutralPct}%` }} />
-                          <span className="cat-frivolity" style={{ width: `${frivolityPct}%` }} />
-                        </div>
-                        {competitiveOptIn ? (
-                          <div className="head-to-head">
-                            {friendSummaries[friend.userId] ? (
-                              <>
-                                <div className="head-to-head-row">
-                                  <span>You</span>
-                                  <span>{friend.displayName ?? friend.handle ?? 'Friend'}</span>
-                                </div>
-                                <div className="head-to-head-bar fancy">
-                                  <span
-                                    className="head-to-head-left"
-                                    style={{ width: `${headToHeadPercentFromSummary(myHeadToHeadSummary, friendSummaries[friend.userId])}%`, background: myProfile?.color ?? 'var(--accent)' }}
-                                  />
-                                  <span
-                                    className="head-to-head-right"
-                                    style={{ width: `${100 - headToHeadPercentFromSummary(myHeadToHeadSummary, friendSummaries[friend.userId])}%`, background: friend.color ?? 'rgba(255, 255, 255, 0.3)' }}
-                                  />
-                                  <div className="head-to-head-glow" />
-                                </div>
-                                <div className="head-to-head-row subtle">
-                                  <span>{formatMinutes(myHeadToHeadSummary?.categoryBreakdown.productive ?? 0)} productive</span>
-                                  <span>{formatMinutes(friendSummaries[friend.userId]?.categoryBreakdown.productive ?? 0)} productive</span>
-                                </div>
-                                <div className="head-to-head-row subtle">
-                                  <span>{formatCount(myHeadToHeadSummary?.emergencySessions)} emergency</span>
-                                  <span>{formatCount(friendSummaries[friend.userId]?.emergencySessions)} emergency</span>
-                                </div>
-                              </>
-                            ) : (
-                              <p className="subtle" style={{ marginTop: 6 }}>
-                                Waiting for shared activity data.
-                              </p>
-                            )}
-                          </div>
-                        ) : (
-                          <p className="subtle" style={{ marginTop: 10 }}>Competitive view is off.</p>
-                        )}
-                        {friendTrophies.length > 0 && (
-                          <div className="friends-trophies">
-                            {friendTrophies.slice(0, 3).map((trophy) => (
-                              <span key={trophy.id} className="trophy-badge">
-                                <span className="emoji">{trophy.emoji}</span>
-                                {trophy.name}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            {trophies.length > 0 && (
-              <div className="card trophy-strip">
-                <div className="trophy-strip-header">
-                  <div>
-                    <p className="eyebrow">Trophies</p>
-                    <h2>Case highlights</h2>
-                  </div>
-                  <span className="pill ghost">Profile view</span>
-                </div>
-                <div className="trophy-strip-row">
-                  {pinnedTrophies.length === 0 ? (
-                    <div className="friends-empty">
-                      <strong>No pinned trophies</strong>
-                      <span className="subtle">Pin trophies in your Profile page.</span>
-                    </div>
-                  ) : (
-                    pinnedTrophies.map((trophy) => (
-                      <div key={trophy.id} className="trophy-badge">
-                        <span className="emoji">{trophy.emoji}</span>
-                        <span>{trophy.name}</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-                {nextTrophy && (
-                  <div className="trophy-next">
-                    <span className="label">Next up</span>
-                    <div className="trophy-next-body">
-                      <span className="emoji">{nextTrophy.emoji}</span>
-                      <div>
-                        <strong>{nextTrophy.name}</strong>
-                        <span className="subtle">{nextTrophy.progress.label ?? `${nextTrophy.progress.current}/${nextTrophy.progress.target}`}</span>
-                      </div>
-                    </div>
-                    <div className="progress-bar">
-                      <span style={{ width: `${Math.round(nextTrophy.progress.ratio * 100)}%` }} />
-                    </div>
-                  </div>
-                )}
-                {trophyToast && (
-                  <div className="trophy-toast">
-                    <span className="emoji">{trophyToast.emoji}</span>
-                    <div>
-                      <strong>{trophyToast.name}</strong>
-                      <span className="subtle">New trophy earned</span>
-                    </div>
-                  </div>
-                )}
+        ) : (
+          <>
+            {dashboardScene === 'focus' && (
+              <div className="dashboard-focus-grid">
+                {productivityRingCard}
+                {streakCard}
+                {focusDeckCard}
               </div>
             )}
-          </div>
+
+            {dashboardScene === 'signals' && (
+              <div className="dashboard-signals-grid">
+                <div className="dashboard-signals-main">
+                  {flowSignalsCard}
+                  <div className="dashboard-insights">
+                    {weeklyInsightsCard}
+                  </div>
+                </div>
+                {focusTelemetryCard}
+              </div>
+            )}
+
+            {dashboardScene === 'journey' && (
+              <div className="dashboard-journey-grid">
+                {dayCompassCard}
+                <div className="dashboard-timeline">
+                  {attentionTrailCard}
+                  {attentionMapCard}
+                </div>
+              </div>
+            )}
+
+            {dashboardScene === 'social' && (
+              <div className="dashboard-social-grid">
+                {friendStripCard}
+                {trophyCaseCard}
+              </div>
+            )}
+          </>
         )}
       </div>
 

@@ -268,6 +268,7 @@ export type PaywallSession = {
   startedAt?: number;
   lastTick?: number;
   paused?: boolean;
+  manualPaused?: boolean;
   purchasePrice?: number;
   purchasedSeconds?: number;
   spendRemainder?: number;
@@ -280,6 +281,7 @@ export type PaywallSession = {
 
 export type EmergencyPolicyId = 'off' | 'gentle' | 'balanced' | 'strict';
 export type GuardrailColorFilter = 'full-color' | 'greyscale' | 'redscale';
+export type AppTheme = 'lavender' | 'olive';
 
 export type FriendProfile = {
   id: string;
@@ -401,6 +403,7 @@ export type FriendTimelinePoint = {
   neutral: number;
   frivolity: number;
   draining: number;
+  emergency: number;
   idle: number;
   dominant: ActivityCategory | 'idle';
 };
@@ -506,6 +509,8 @@ export type RendererApi = {
     resume(domain: string): Promise<void>;
   };
   settings: {
+    theme(): Promise<AppTheme>;
+    updateTheme(value: AppTheme): Promise<void>;
     categorisation(): Promise<CategorisationConfig>;
     updateCategorisation(value: CategorisationConfig): Promise<void>;
     idleThreshold(): Promise<number>;
@@ -554,6 +559,8 @@ export type RendererApi = {
       config(): Promise<ZoteroIntegrationConfig>;
       updateConfig(value: ZoteroIntegrationConfig): Promise<void>;
       collections(): Promise<ZoteroCollection[]>;
+      analytics(days?: number, limit?: number, sync?: boolean): Promise<ZoteroProgressAnalytics>;
+      sync(limit?: number): Promise<{ ok: true; items: number; tracked: number; syncedAt: string }>;
     };
   };
   library: {
@@ -576,6 +583,13 @@ export type RendererApi = {
     patterns(days?: number): Promise<BehavioralPattern[]>;
     engagement(domain: string, days?: number): Promise<EngagementMetrics>;
     trends(granularity?: 'hour' | 'day' | 'week'): Promise<TrendPoint[]>;
+    episodes(query?: BehaviorEpisodeQuery): Promise<BehaviorEpisodeMap>;
+  };
+  anki: {
+    status(payload?: { deckId?: number | null; limit?: number }): Promise<AnkiStatusSnapshot>;
+    analytics(days?: number): Promise<AnkiAnalyticsSnapshot>;
+    pickDeckFile(): Promise<string | null>;
+    importDeck(path: string): Promise<{ ok: true; result: AnkiImportSnapshot; status: AnkiStatusSnapshot }>;
   };
   friends: {
     profile(): Promise<FriendProfile | null>;
@@ -609,9 +623,128 @@ export type RendererApi = {
   system: {
     reset(scope: 'trophies' | 'wallet' | 'all'): Promise<{ cleared: 'trophies' | 'wallet' | 'all' }>;
   };
+  writingHud: {
+    show(payload: WritingHudSnapshot): Promise<void>;
+    update(payload: WritingHudSnapshot): Promise<void>;
+    hide(): Promise<void>;
+  };
   events: {
     on<T = unknown>(channel: string, callback: (payload: T) => void): () => void;
   };
+};
+
+export type AnkiStatusSnapshot = {
+  decks: Array<{
+    id: number;
+    name: string;
+    sourcePath: string | null;
+    cardCount: number;
+    dueCount: number;
+    reviewedToday: number;
+    lastImportedAt: string | null;
+    lastReviewedAt: string | null;
+  }>;
+  dueCards: Array<{
+    id: number;
+    deckId: number;
+    deckName: string;
+    front: string;
+    back: string;
+    tags: string[];
+    noteType: string | null;
+    dueAt: string;
+    intervalDays: number;
+    easeFactor: number;
+    repetitions: number;
+    lapses: number;
+    suspended: boolean;
+    lastReviewedAt: string | null;
+  }>;
+  totalDue: number;
+  reviewedToday: number;
+  totalReviewMsToday: number;
+  availableUnlockReviews: number;
+  unlockThreshold: number;
+  unlocksAvailable: number;
+};
+
+export type AnkiImportSnapshot = {
+  packagePath: string;
+  importedAt: string;
+  decksImported: number;
+  cardsImported: number;
+  cardsUpdated: number;
+  cardsSkipped: number;
+};
+
+export type AnkiAnalyticsSnapshot = {
+  windowDays: number;
+  generatedAt: string;
+  desiredRetention: number;
+  snapshot: {
+    cardsTotal: number;
+    cardsActive: number;
+    cardsLearned: number;
+    cardsMature: number;
+    cardsSuspended: number;
+    dueNow: number;
+    dueIn7Days: number;
+    dueIn30Days: number;
+    reviews: number;
+    successfulReviews: number;
+    successRate: number | null;
+    trueRetention: number | null;
+    matureRetention: number | null;
+    youngRetention: number | null;
+    averageResponseMs: number | null;
+    reviewMinutes: number;
+    currentStreakDays: number;
+    availableUnlockReviews: number;
+  };
+  ratings: {
+    again: number;
+    hard: number;
+    good: number;
+    easy: number;
+  };
+  daily: Array<{
+    day: string;
+    reviews: number;
+    successfulReviews: number;
+    successRate: number | null;
+    again: number;
+    hard: number;
+    good: number;
+    easy: number;
+    reviewMinutes: number;
+  }>;
+  hourly: Array<{
+    hour: number;
+    reviews: number;
+    successRate: number | null;
+    averageResponseMs: number | null;
+  }>;
+  heatmap: {
+    startDay: string;
+    endDay: string;
+    maxReviews: number;
+    cells: Array<{ day: string; reviews: number; level: 0 | 1 | 2 | 3 | 4 }>;
+  };
+  decks: Array<{
+    id: number;
+    name: string;
+    cardsTotal: number;
+    dueNow: number;
+    reviews: number;
+    retention: number | null;
+  }>;
+  risks: Array<{
+    id: string;
+    level: 'info' | 'warning';
+    title: string;
+    detail: string;
+  }>;
+  encouragement: string[];
 };
 
 export type CameraPhoto = {
@@ -636,6 +769,51 @@ export type ZoteroCollection = {
   key?: string;
   name: string;
   path: string;
+};
+
+export type ZoteroProgressDailyPoint = {
+  day: string;
+  checkpoints: number;
+  progressedEvents: number;
+  itemsTouched: number;
+  pagesAdvanced: number;
+};
+
+export type ZoteroProgressItem = {
+  itemKey: string;
+  attachmentKey?: string | null;
+  title: string;
+  subtitle?: string | null;
+  collectionPath?: string | null;
+  progress?: number | null;
+  currentPage?: number | null;
+  totalPages?: number | null;
+  lastSeenAt: string;
+  lastProgressChangeAt?: string | null;
+  pagesAdvancedWindow: number;
+  checkpointsWindow: number;
+  stalledDays?: number | null;
+};
+
+export type ZoteroProgressAnalytics = {
+  windowDays: number;
+  generatedAt: string;
+  snapshot: {
+    trackedItems: number;
+    activeItems: number;
+    completedItems: number;
+    progressedItemsWindow: number;
+    checkpointsWindow: number;
+    pagesAdvancedWindow: number;
+    averageProgress: number | null;
+    medianProgress: number | null;
+    lastSyncAt?: string | null;
+  };
+  progressBuckets: Array<{ id: string; label: string; count: number }>;
+  daily: ZoteroProgressDailyPoint[];
+  topProgressed: ZoteroProgressItem[];
+  recentlyOpened: ZoteroProgressItem[];
+  insights: string[];
 };
 
 export type JournalConfig = {
@@ -686,6 +864,124 @@ export type BehaviorEvent = {
   valueInt?: number;
   valueFloat?: number;
   metadata?: Record<string, unknown>;
+};
+
+export type BehaviorEpisodeQuery = {
+  start?: string;
+  end?: string;
+  hours?: number;
+  gapMinutes?: number;
+  binSeconds?: number;
+  maxEpisodes?: number;
+};
+
+export type BehaviorEpisodeEventCounts = {
+  scroll: number;
+  click: number;
+  keystroke: number;
+  focus: number;
+  blur: number;
+  idleStart: number;
+  idleEnd: number;
+  visibility: number;
+};
+
+export type BehaviorEpisodeContextSlice = {
+  source: 'activity';
+  activityId: number;
+  start: string;
+  end: string;
+  appName: string | null;
+  domain: string | null;
+  url: string | null;
+  windowTitle: string | null;
+  category: ActivityCategory;
+  activeSeconds: number;
+  idleSeconds: number;
+};
+
+export type BehaviorEpisodeContentSnapshot = {
+  timestamp: string;
+  domain: string | null;
+  url: string | null;
+  title: string | null;
+  source: 'activity' | 'behavior-event';
+  confidence: number;
+};
+
+export type BehaviorEpisodeMarker = {
+  timestamp: string;
+  kind: string;
+  title: string | null;
+  domain: string | null;
+  url: string | null;
+  meta?: Record<string, unknown>;
+  source: 'consumption-log';
+};
+
+export type BehaviorEpisodeTimeBin = {
+  start: string;
+  end: string;
+  activeSeconds: number;
+  idleSeconds: number;
+  categoryBreakdown: Record<ActivityCategory | 'idle', number>;
+  eventCounts: BehaviorEpisodeEventCounts;
+  topDomain: string | null;
+  topTitle: string | null;
+};
+
+export type BehaviorEpisode = {
+  id: string;
+  start: string;
+  end: string;
+  durationSeconds: number;
+  activeSeconds: number;
+  idleSeconds: number;
+  categoryBreakdown: Record<ActivityCategory | 'idle', number>;
+  dominantCategory: ActivityCategory | 'idle';
+  topDomains: Array<{ domain: string; activeSeconds: number }>;
+  topApps: Array<{ appName: string; activeSeconds: number }>;
+  eventCounts: BehaviorEpisodeEventCounts;
+  rates: {
+    actionsPerMinute: number;
+    scrollsPerMinute: number;
+    clicksPerMinute: number;
+    keystrokesPerMinute: number;
+    focusEventsPerMinute: number;
+  };
+  domainSwitches: number;
+  contextSlices: BehaviorEpisodeContextSlice[];
+  contentSnapshots: BehaviorEpisodeContentSnapshot[];
+  markers: BehaviorEpisodeMarker[];
+  timelineBins: BehaviorEpisodeTimeBin[];
+  sourceCoverage: {
+    hasBehaviorEvents: boolean;
+    hasContentTitles: boolean;
+    hasConsumptionMarkers: boolean;
+  };
+};
+
+export type BehaviorEpisodeMap = {
+  schemaVersion: number;
+  generatedAt: string;
+  range: { start: string; end: string };
+  query: Required<BehaviorEpisodeQuery>;
+  summary: {
+    totalEpisodes: number;
+    totalDurationSeconds: number;
+    totalActiveSeconds: number;
+    totalIdleSeconds: number;
+    topDomains: Array<{ domain: string; activeSeconds: number }>;
+    totalMarkers: number;
+    totalContentSnapshots: number;
+  };
+  episodes: BehaviorEpisode[];
+  breadcrumbs: {
+    capturedSignals: string[];
+    missingSignals: string[];
+    nextInstrumentation: string[];
+    notes: string[];
+  };
 };
 
 export type TimeOfDayStats = {
@@ -1006,6 +1302,22 @@ export type WritingSessionRecord = {
   currentWordCount: number;
   bodyTextLength?: number | null;
   locationLabel?: string | null;
+};
+
+export type WritingHudSnapshot = {
+  sessionId: string;
+  title: string;
+  kind: WritingProjectKind;
+  targetKind: WritingTargetKind;
+  mode: 'editor' | 'external';
+  locationLabel?: string | null;
+  activeSecondsTotal: number;
+  focusedSecondsTotal: number;
+  keystrokesTotal: number;
+  currentWordCount: number;
+  netWordsTotal: number;
+  sprintMinutes?: number | null;
+  remainingSprintSeconds?: number | null;
 };
 
 export type WritingPrompt = {

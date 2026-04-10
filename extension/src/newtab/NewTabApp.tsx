@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Component, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo, type ReactNode } from 'react';
 import { DESKTOP_API_URL } from '../constants';
 import {
   addLocalReaderBooks,
@@ -8,8 +8,18 @@ import {
   openLocalReaderBook,
   type LocalReaderBook,
 } from './localReaderShelf';
-import { EmbeddedDocumentReader, type EmbeddedReaderSnapshot } from './EmbeddedDocumentReader';
-import { WritingStudioPanel } from './WritingStudioPanel';
+import type { EmbeddedReaderSnapshot } from './EmbeddedDocumentReader';
+import { useExtensionTheme } from '../theme';
+
+const EmbeddedDocumentReader = lazy(async () => {
+  const module = await import('./EmbeddedDocumentReader');
+  return { default: module.EmbeddedDocumentReader };
+});
+
+const WritingStudioPanel = lazy(async () => {
+  const module = await import('./WritingStudioPanel');
+  return { default: module.WritingStudioPanel };
+});
 
 type LibraryPurpose = 'replace' | 'allow' | 'temptation' | 'productive';
 type StatsView = 'focus' | 'attention' | 'social';
@@ -216,6 +226,47 @@ type LiteraryAnalyticsOverview = {
   insights: string[];
 };
 
+type AnkiDeckSummary = {
+  id: number;
+  name: string;
+  sourcePath: string | null;
+  cardCount: number;
+  dueCount: number;
+  reviewedToday: number;
+  lastImportedAt: string | null;
+  lastReviewedAt: string | null;
+};
+
+type AnkiDueCard = {
+  id: number;
+  deckId: number;
+  deckName: string;
+  front: string;
+  back: string;
+  tags: string[];
+  noteType: string | null;
+  dueAt: string;
+  intervalDays: number;
+  easeFactor: number;
+  repetitions: number;
+  lapses: number;
+  suspended: boolean;
+  lastReviewedAt: string | null;
+};
+
+type AnkiStatusPayload = {
+  decks: AnkiDeckSummary[];
+  dueCards: AnkiDueCard[];
+  totalDue: number;
+  reviewedToday: number;
+  totalReviewMsToday: number;
+  availableUnlockReviews: number;
+  unlockThreshold: number;
+  unlocksAvailable: number;
+};
+
+type AnkiReviewRating = 'again' | 'hard' | 'good' | 'easy';
+
 const REFRESH_MS = 45_000;
 const DAILY_START_HOUR = 4;
 const HOME_PREFS_KEY = 'tws-newtab-prefs-v1';
@@ -237,6 +288,32 @@ type HomePrefs = {
   showQuickPulse: boolean;
   compactCards: boolean;
 };
+
+type SectionBoundaryProps = {
+  children: ReactNode;
+  fallback: ReactNode;
+};
+
+type SectionBoundaryState = {
+  hasError: boolean;
+};
+
+class SectionErrorBoundary extends Component<SectionBoundaryProps, SectionBoundaryState> {
+  state: SectionBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('New tab section crashed', error, info);
+  }
+
+  render() {
+    if (this.state.hasError) return this.props.fallback;
+    return this.props.children;
+  }
+}
 
 const DEFAULT_HOME_PREFS: HomePrefs = {
   showCategoryMix: true,
@@ -375,7 +452,19 @@ function loadHomePrefs(): HomePrefs {
   }
 }
 
+function readEntryTransitionMs() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('tws_transition') !== 'return-home') return 0;
+    const raw = Number(params.get('tws_transition_ms'));
+    return Number.isFinite(raw) ? Math.max(400, Math.min(4000, Math.round(raw))) : 1600;
+  } catch {
+    return 0;
+  }
+}
+
 export function NewTabApp() {
+  useExtensionTheme();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -385,6 +474,8 @@ export function NewTabApp() {
   const [now, setNow] = useState(Date.now());
   const [showCustomize, setShowCustomize] = useState(false);
   const [homePrefs, setHomePrefs] = useState<HomePrefs>(loadHomePrefs);
+  const [entryTransitionMs] = useState<number>(() => readEntryTransitionMs());
+  const [entryTransitionActive, setEntryTransitionActive] = useState(() => readEntryTransitionMs() > 0);
 
   const [statsView, setStatsView] = useState<StatsView>('focus');
   const [query, setQuery] = useState('');
@@ -398,6 +489,10 @@ export function NewTabApp() {
   const [dailyState, setDailyState] = useState<DailyOnboardingState | null>(null);
   const [dailyNote, setDailyNote] = useState('');
   const [savingNote, setSavingNote] = useState(false);
+  const [ankiStatus, setAnkiStatus] = useState<AnkiStatusPayload | null>(null);
+  const [ankiRevealAnswer, setAnkiRevealAnswer] = useState(false);
+  const [ankiBusy, setAnkiBusy] = useState(false);
+  const [ankiImportBusy, setAnkiImportBusy] = useState(false);
 
   const [wallet, setWallet] = useState<WalletSnapshot>({ balance: 0 });
   const [summary24h, setSummary24h] = useState<ActivitySummary | null>(null);
@@ -441,45 +536,65 @@ export function NewTabApp() {
     setNotice(null);
     try {
       await fetchJson<{ status: string }>('/health');
-      const [walletData, summaryData, overviewData, literaryData, timeData, libraryData, readingData, friendsData, trophiesData, onboardingData] = await Promise.all([
+      const [walletData, summaryData, overviewData, libraryData, onboardingData, ankiData] = await Promise.all([
         fetchJson<WalletSnapshot>('/wallet'),
-        fetchJson<ActivitySummary>('/activities/summary?windowHours=24'),
+        fetchJson<ActivitySummary>('/activities/summary?window=today'),
         fetchJson<AnalyticsOverview>('/analytics/overview?days=7'),
-        fetchJson<LiteraryAnalyticsOverview>('/analytics/literary/overview?days=14'),
-        fetchJson<TimeOfDayStats[]>('/analytics/time-of-day?days=7'),
         fetchJson<LibraryItem[]>('/library'),
-        fetchJson<{ items: ReadingAttractor[] }>('/integrations/reading?limit=12'),
-        chrome.runtime.sendMessage({ type: 'GET_FRIENDS' }) as Promise<FriendsPayload>,
-        chrome.runtime.sendMessage({ type: 'GET_TROPHIES' }) as Promise<TrophiesPayload>,
         fetchJson<DailyOnboardingState>('/settings/daily-onboarding'),
+        fetchJson<AnkiStatusPayload>('/anki/status?limit=1'),
       ]);
 
       setWallet(walletData);
       setSummary24h(summaryData);
       setOverview7d(overviewData);
-      setLiteraryOverview(literaryData);
-      setTimeOfDay(Array.isArray(timeData) ? timeData : []);
       setLibraryItems(Array.isArray(libraryData) ? libraryData : []);
-      setReadingItems(Array.isArray(readingData.items) ? readingData.items : []);
       setDailyState(onboardingData);
       setDailyNote(onboardingData?.note?.message ?? '');
-      setFriendsPayload(friendsData?.success ? friendsData : {
-        success: false,
-        friends: [],
-        summaries: {},
-        profile: null,
-        meSummary: null,
-        publicLibrary: [],
-        error: friendsData?.error ?? 'Friends unavailable',
-      });
-      setTrophiesPayload(trophiesData?.success ? trophiesData : {
-        success: false,
-        trophies: [],
-        profile: null,
-        error: trophiesData?.error ?? 'Trophies unavailable',
-      });
+      setAnkiStatus(ankiData);
+      setAnkiRevealAnswer(false);
       setConnected(true);
       setUpdatedAt(Date.now());
+      if (!silent) setLoading(false);
+
+      const secondaryResults = await Promise.allSettled([
+        fetchJson<LiteraryAnalyticsOverview>('/analytics/literary/overview?days=14'),
+        fetchJson<TimeOfDayStats[]>('/analytics/time-of-day?days=7'),
+        fetchJson<{ items: ReadingAttractor[] }>('/integrations/reading?limit=12'),
+        chrome.runtime.sendMessage({ type: 'GET_FRIENDS' }) as Promise<FriendsPayload>,
+        chrome.runtime.sendMessage({ type: 'GET_TROPHIES' }) as Promise<TrophiesPayload>
+      ]);
+
+      if (secondaryResults[0].status === 'fulfilled') {
+        setLiteraryOverview(secondaryResults[0].value);
+      }
+      if (secondaryResults[1].status === 'fulfilled') {
+        setTimeOfDay(Array.isArray(secondaryResults[1].value) ? secondaryResults[1].value : []);
+      }
+      if (secondaryResults[2].status === 'fulfilled') {
+        setReadingItems(Array.isArray(secondaryResults[2].value.items) ? secondaryResults[2].value.items : []);
+      }
+      if (secondaryResults[3].status === 'fulfilled') {
+        const friendsData = secondaryResults[3].value;
+        setFriendsPayload(friendsData?.success ? friendsData : {
+          success: false,
+          friends: [],
+          summaries: {},
+          profile: null,
+          meSummary: null,
+          publicLibrary: [],
+          error: friendsData?.error ?? 'Friends unavailable',
+        });
+      }
+      if (secondaryResults[4].status === 'fulfilled') {
+        const trophiesData = secondaryResults[4].value;
+        setTrophiesPayload(trophiesData?.success ? trophiesData : {
+          success: false,
+          trophies: [],
+          profile: null,
+          error: trophiesData?.error ?? 'Trophies unavailable',
+        });
+      }
     } catch (loadError) {
       setConnected(false);
       setError((loadError as Error).message ?? 'Failed to load TimeWellSpent data.');
@@ -708,6 +823,24 @@ export function NewTabApp() {
   }, [loadData]);
 
   useEffect(() => {
+    if (!entryTransitionActive || entryTransitionMs <= 0) return undefined;
+    const timer = window.setTimeout(() => {
+      setEntryTransitionActive(false);
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('tws_transition');
+        url.searchParams.delete('tws_transition_ms');
+        url.searchParams.delete('from_domain');
+        url.searchParams.delete('session_reason');
+        window.history.replaceState({}, '', url.toString());
+      } catch {
+        // ignore URL cleanup failures
+      }
+    }, entryTransitionMs + 120);
+    return () => window.clearTimeout(timer);
+  }, [entryTransitionActive, entryTransitionMs]);
+
+  useEffect(() => {
     void refreshLocalReaderBooks(true);
     void refreshReaderStorageEstimate();
   }, [refreshLocalReaderBooks, refreshReaderStorageEstimate]);
@@ -884,7 +1017,7 @@ export function NewTabApp() {
     if (statsView === 'focus') {
       return [
         { label: 'Wallet', value: `${wallet.balance.toFixed(2)} f-coins`, hint: 'Current balance' },
-        { label: 'Deep Work', value: formatDuration(summary24h?.deepWorkSeconds ?? 0), hint: 'Last 24 hours' },
+        { label: 'Deep Work', value: formatDuration(summary24h?.deepWorkSeconds ?? 0), hint: 'Today' },
         { label: 'Productivity', value: formatPercent(overview7d?.productivityScore ?? 0), hint: '7-day score' },
         { label: 'Best Hour', value: bestHour ? formatHour(bestHour.hour) : 'n/a', hint: bestHour ? formatDuration(bestHour.productive) : 'No data' },
       ];
@@ -892,10 +1025,10 @@ export function NewTabApp() {
     if (statsView === 'attention') {
       const topFrivolity = topContexts.find((ctx) => ctx.category === 'frivolity' || ctx.category === 'draining');
       return [
-        { label: 'Frivolity', value: formatDuration(summary24h?.totalsByCategory?.frivolity ?? 0), hint: 'Last 24 hours' },
-        { label: 'Idle', value: formatDuration(summary24h?.totalsByCategory?.idle ?? 0), hint: 'Last 24 hours' },
+        { label: 'Frivolity', value: formatDuration(summary24h?.totalsByCategory?.frivolity ?? 0), hint: 'Today' },
+        { label: 'Idle', value: formatDuration(summary24h?.totalsByCategory?.idle ?? 0), hint: 'Today' },
         { label: 'Top Risk Context', value: topFrivolity?.label ?? 'None', hint: topFrivolity ? formatDuration(topFrivolity.seconds) : 'No risky context yet' },
-        { label: 'Emergency Sessions', value: String(friendsPayload.meSummary?.emergencySessions ?? 0), hint: 'Last 24 hours' },
+        { label: 'Emergency Sessions', value: String(friendsPayload.meSummary?.emergencySessions ?? 0), hint: 'Today' },
       ];
     }
     return [
@@ -942,6 +1075,7 @@ export function NewTabApp() {
   const todayLabel = new Date(now).toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
   const timeLabel = new Date(now).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   const profileName = friendsPayload.profile?.displayName ?? friendsPayload.profile?.handle ?? 'friend';
+  const currentDueCard = ankiStatus?.dueCards?.[0] ?? null;
   const readerStorageLabel = readerStorageUsage?.usage
     ? `${formatBytes(readerStorageUsage.usage)} used${readerStorageUsage.quota ? ` · ${formatBytes(readerStorageUsage.quota)} quota` : ''}`
     : 'Stored locally in this browser profile';
@@ -958,6 +1092,53 @@ export function NewTabApp() {
       setNotice(result?.error ?? `Unable to open ${view} in desktop app.`);
     }
   }, []);
+
+  const refreshAnkiStatus = useCallback(async () => {
+    const next = await fetchJson<AnkiStatusPayload>('/anki/status?limit=1');
+    setAnkiStatus(next);
+    setAnkiRevealAnswer(false);
+  }, []);
+
+  const handleReviewAnki = useCallback(async (rating: AnkiReviewRating) => {
+    const card = ankiStatus?.dueCards?.[0];
+    if (!card || ankiBusy) return;
+    setAnkiBusy(true);
+    try {
+      await fetchJson('/anki/review', {
+        method: 'POST',
+        body: JSON.stringify({ cardId: card.id, rating }),
+      });
+      await refreshAnkiStatus();
+      setNotice('Flashcard logged.');
+    } catch (error) {
+      setNotice((error as Error).message ?? 'Unable to review flashcard.');
+    } finally {
+      setAnkiBusy(false);
+    }
+  }, [ankiBusy, ankiStatus?.dueCards, refreshAnkiStatus]);
+
+  const handleImportAnkiDeck = useCallback(async () => {
+    if (ankiImportBusy) return;
+    setAnkiImportBusy(true);
+    try {
+      const picked = await fetchJson<{ ok?: boolean; cancelled?: boolean; path?: string | null }>('/anki/pick-file', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      const path = typeof picked.path === 'string' ? picked.path.trim() : '';
+      if (picked.cancelled || !path) return;
+      await fetchJson('/anki/import-file', {
+        method: 'POST',
+        body: JSON.stringify({ path }),
+      });
+      await refreshAnkiStatus();
+      setNotice('Deck imported.');
+    } catch (error) {
+      setNotice((error as Error).message ?? 'Unable to import deck.');
+    } finally {
+      setAnkiImportBusy(false);
+    }
+  }, [ankiImportBusy, refreshAnkiStatus]);
 
   const handleCaptureSubmit = useCallback(async () => {
     setCaptureError(null);
@@ -1078,7 +1259,10 @@ export function NewTabApp() {
 
   if (loading) {
     return (
-      <main className="newtab-root">
+      <main
+        className={`newtab-root${entryTransitionActive ? ' newtab-root--homecoming' : ''}`}
+        style={entryTransitionActive ? ({ ['--tws-homecoming-ms' as any]: `${entryTransitionMs}ms` }) : undefined}
+      >
         <section className={`newtab-shell ${homePrefs.compactCards ? 'compact' : ''}`}>
           <article className="newtab-card">Loading your TimeWellSpent landing page...</article>
         </section>
@@ -1087,8 +1271,72 @@ export function NewTabApp() {
   }
 
   return (
-    <main className="newtab-root">
+    <main
+      className={`newtab-root${entryTransitionActive ? ' newtab-root--homecoming' : ''}`}
+      style={entryTransitionActive ? ({ ['--tws-homecoming-ms' as any]: `${entryTransitionMs}ms` }) : undefined}
+    >
       <section className={`newtab-shell ${homePrefs.compactCards ? 'compact' : ''}`}>
+        <section className="newtab-card newtab-flashcard-hero">
+          <div className="newtab-flashcard-copy">
+            <p className="newtab-eyebrow">Flashcard Redirect</p>
+            <h2>Start here before anything else</h2>
+            <p className="hint">
+              {currentDueCard
+                ? `One due card from ${currentDueCard.deckName} is ready.`
+                : ankiStatus?.decks?.length
+                  ? 'No due card is ready right now, but study is still your cleanest reset.'
+                  : 'Import a deck and make this tab open with a real redirect instead of a crowded dashboard.'}
+            </p>
+          </div>
+
+          {currentDueCard ? (
+            <div className="newtab-flashcard-body">
+              <div className="newtab-flashcard-meta">
+                <span className="status-pill connected">{currentDueCard.deckName}</span>
+                <span className="hint">{ankiStatus?.totalDue ?? 0} due</span>
+              </div>
+              <div className="newtab-flashcard-faces">
+                <article className="newtab-flashcard-face">
+                  <strong>Front</strong>
+                  <p>{currentDueCard.front || 'No front text.'}</p>
+                </article>
+                <article className="newtab-flashcard-face">
+                  <strong>Back</strong>
+                  <p>{ankiRevealAnswer ? (currentDueCard.back || 'No back text.') : 'Reveal the answer, then grade yourself.'}</p>
+                </article>
+              </div>
+              <div className="newtab-flashcard-actions">
+                <button type="button" className="ghost-toggle" onClick={() => setAnkiRevealAnswer((value) => !value)} disabled={ankiBusy}>
+                  {ankiRevealAnswer ? 'Hide answer' : 'Reveal answer'}
+                </button>
+                <button type="button" onClick={() => void handleReviewAnki('again')} disabled={ankiBusy}>Again</button>
+                <button type="button" onClick={() => void handleReviewAnki('hard')} disabled={ankiBusy}>Hard</button>
+                <button type="button" onClick={() => void handleReviewAnki('good')} disabled={ankiBusy}>Good</button>
+                <button type="button" onClick={() => void handleReviewAnki('easy')} disabled={ankiBusy}>Easy</button>
+              </div>
+            </div>
+          ) : (
+            <div className="newtab-flashcard-empty">
+              <div className="newtab-flashcard-empty-copy">
+                <strong>{ankiStatus?.decks?.length ? 'No due cards in view' : 'No deck imported yet'}</strong>
+                <p className="hint">
+                  {ankiStatus?.decks?.length
+                    ? 'Refresh or come back when more cards are due.'
+                    : 'Choose an Anki deck to make this the first thing you see.'}
+                </p>
+              </div>
+              <div className="newtab-flashcard-actions">
+                <button type="button" onClick={() => void handleImportAnkiDeck()} disabled={ankiImportBusy}>
+                  {ankiImportBusy ? 'Importing...' : 'Choose deck'}
+                </button>
+                <button type="button" className="ghost-toggle" onClick={() => void refreshAnkiStatus()} disabled={ankiImportBusy || ankiBusy}>
+                  Refresh study
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+
         <header className="hero">
           <div className="hero-copy">
             <p className="newtab-eyebrow">TimeWellSpent</p>
@@ -1108,16 +1356,23 @@ export function NewTabApp() {
         </header>
 
         <section className="quick-nav">
-          <button type="button" onClick={() => void openDesktopView('library')}>Open Library</button>
-          <button type="button" onClick={() => void openDesktopView('friends')}>Open Friends</button>
-          <button type="button" onClick={() => void openDesktopView('analytics')}>Open Analytics</button>
-          <button type="button" onClick={() => void openDesktopView('dashboard')}>Open Dashboard</button>
-          <button type="button" onClick={() => void loadData(true)} disabled={refreshing}>{refreshing ? 'Refreshing...' : 'Refresh'}</button>
-          <span>Updated: {updatedLabel}</span>
+          <div>
+            <p className="newtab-eyebrow">Quick links</p>
+            <h2>Jump back into the desktop app</h2>
+          </div>
+          <div className="quick-nav-actions">
+            <button type="button" onClick={() => void openDesktopView('library')}>Open Library</button>
+            <button type="button" onClick={() => void openDesktopView('friends')}>Open Friends</button>
+            <button type="button" onClick={() => void openDesktopView('analytics')}>Open Analytics</button>
+            <button type="button" onClick={() => void openDesktopView('dashboard')}>Open Dashboard</button>
+            <button type="button" onClick={() => void loadData(true)} disabled={refreshing}>{refreshing ? 'Refreshing...' : 'Refresh'}</button>
+          </div>
+          <span className="quick-nav-meta">Updated {updatedLabel}</span>
         </section>
 
         {showCustomize ? (
           <section className="newtab-card">
+            <p className="newtab-eyebrow">Customize</p>
             <h2>Customize Home</h2>
             <div className="toggle-grid">
               <label><input type="checkbox" checked={homePrefs.showCategoryMix} onChange={() => togglePref('showCategoryMix')} /> Category mix</label>
@@ -1299,9 +1554,22 @@ export function NewTabApp() {
           </section>
         ) : null}
 
-        <section className="newtab-row">
-          <WritingStudioPanel apiBase={DESKTOP_API_URL} surface="extension-newtab" variant="extension" />
-        </section>
+        <SectionErrorBoundary
+          fallback={(
+            <section className="newtab-row">
+              <article className="newtab-card tall">
+                <h2>Writing studio unavailable</h2>
+                <p className="hint">The rest of the homepage is still available. Refresh this tab to retry the writing panel.</p>
+              </article>
+            </section>
+          )}
+        >
+          <section className="newtab-row">
+            <Suspense fallback={<article className="newtab-card tall">Loading writing studio…</article>}>
+              <WritingStudioPanel apiBase={DESKTOP_API_URL} surface="extension-newtab" variant="extension" />
+            </Suspense>
+          </section>
+        </SectionErrorBoundary>
 
         <section className="newtab-row">
           <article className="newtab-card tall">
@@ -1353,7 +1621,10 @@ export function NewTabApp() {
         </section>
 
         <section className="stats-header">
-          <h2>Stats Viewers</h2>
+          <div>
+            <p className="newtab-eyebrow">Metrics</p>
+            <h2>Stats viewers</h2>
+          </div>
           <div className="pill-group">
             <button type="button" className={statsView === 'focus' ? 'active' : ''} onClick={() => setStatsView('focus')}>Focus</button>
             <button type="button" className={statsView === 'attention' ? 'active' : ''} onClick={() => setStatsView('attention')}>Attention</button>
@@ -1394,7 +1665,7 @@ export function NewTabApp() {
 
             {homePrefs.showContexts ? (
               <article className="newtab-card tall">
-                <h2>Top contexts (24h)</h2>
+                <h2>Top contexts (today)</h2>
                 {topContexts.length ? (
                   <ul>
                     {topContexts.map((item) => (
@@ -1423,7 +1694,10 @@ export function NewTabApp() {
         ) : null}
 
         <section className="library-head">
-          <h2>Library Landing</h2>
+          <div>
+            <p className="newtab-eyebrow">Library</p>
+            <h2>Library landing</h2>
+          </div>
           <div className="library-actions">
             <button type="button" onClick={() => void openRandomUploadedBook()}>Random Local Book</button>
             <button type="button" onClick={() => void openRandomLibrary()}>Random from Library</button>
@@ -1593,11 +1867,11 @@ export function NewTabApp() {
                     <span>{formatPercent(friendsPayload.meSummary?.productivityScore ?? overview7d?.productivityScore ?? 0)}</span>
                   </li>
                   <li>
-                    <span>Active (24h)</span>
+                    <span>Active (today)</span>
                     <span>{formatDuration(summary24h?.totalSeconds ?? 0)}</span>
                   </li>
                   <li>
-                    <span>Deep work (24h)</span>
+                    <span>Deep work (today)</span>
                     <span>{formatDuration(summary24h?.deepWorkSeconds ?? 0)}</span>
                   </li>
                   <li>
@@ -1638,12 +1912,14 @@ export function NewTabApp() {
               <div className="reader-overlay__frameWrap">
                 <div className="reader-overlay__readingGrid">
                   <div className="reader-overlay__readerPane">
-                    <EmbeddedDocumentReader
-                      src={readerSession.objectUrl}
-                      format={readerSession.book.format}
-                      title={readerSession.book.title}
-                      onSnapshotChange={handleEmbeddedReaderSnapshot}
-                    />
+                    <Suspense fallback={<article className="newtab-card tall">Loading reader…</article>}>
+                      <EmbeddedDocumentReader
+                        src={readerSession.objectUrl}
+                        format={readerSession.book.format}
+                        title={readerSession.book.title}
+                        onSnapshotChange={handleEmbeddedReaderSnapshot}
+                      />
+                    </Suspense>
                   </div>
                   <aside className="reader-annotations" aria-label="Reader annotations">
                     <div className="reader-annotations__header">

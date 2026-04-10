@@ -173,6 +173,7 @@ export class Database {
         neutral INTEGER NOT NULL,
         frivolity INTEGER NOT NULL,
         draining INTEGER NOT NULL DEFAULT 0,
+        emergency INTEGER NOT NULL DEFAULT 0,
         idle INTEGER NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(device_id, hour_start)
@@ -336,6 +337,42 @@ export class Database {
         meta TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS zotero_progress_state (
+        item_key TEXT PRIMARY KEY,
+        attachment_key TEXT,
+        doc_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        subtitle TEXT,
+        collection_path TEXT,
+        source_path TEXT,
+        total_pages INTEGER,
+        current_page INTEGER,
+        progress REAL,
+        last_seen_at TEXT NOT NULL,
+        last_progress_change_at TEXT,
+        pages_advanced_total INTEGER NOT NULL DEFAULT 0,
+        checkpoints_count INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS zotero_progress_events (
+        id INTEGER PRIMARY KEY,
+        item_key TEXT NOT NULL,
+        attachment_key TEXT,
+        doc_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        subtitle TEXT,
+        collection_path TEXT,
+        source_path TEXT,
+        observed_at TEXT NOT NULL,
+        day TEXT NOT NULL,
+        total_pages INTEGER,
+        current_page INTEGER,
+        progress REAL,
+        delta_progress REAL NOT NULL DEFAULT 0,
+        delta_pages INTEGER NOT NULL DEFAULT 0,
+        progressed INTEGER NOT NULL DEFAULT 0
+      );
+
       CREATE INDEX IF NOT EXISTS idx_reading_sessions_started_at ON reading_sessions(started_at);
       CREATE INDEX IF NOT EXISTS idx_reading_sessions_doc_key ON reading_sessions(doc_key);
       CREATE INDEX IF NOT EXISTS idx_reading_sessions_last_event_at ON reading_sessions(last_event_at);
@@ -346,6 +383,12 @@ export class Database {
       CREATE INDEX IF NOT EXISTS idx_reading_annotations_doc_key ON reading_annotations(doc_key);
       CREATE INDEX IF NOT EXISTS idx_reading_annotations_created_at ON reading_annotations(created_at);
       CREATE INDEX IF NOT EXISTS idx_reading_annotations_kind ON reading_annotations(kind);
+      CREATE INDEX IF NOT EXISTS idx_zotero_progress_state_last_seen ON zotero_progress_state(last_seen_at);
+      CREATE INDEX IF NOT EXISTS idx_zotero_progress_state_progress ON zotero_progress_state(progress);
+      CREATE INDEX IF NOT EXISTS idx_zotero_progress_events_observed_at ON zotero_progress_events(observed_at);
+      CREATE INDEX IF NOT EXISTS idx_zotero_progress_events_day ON zotero_progress_events(day);
+      CREATE INDEX IF NOT EXISTS idx_zotero_progress_events_item_key ON zotero_progress_events(item_key);
+      CREATE INDEX IF NOT EXISTS idx_zotero_progress_events_progressed ON zotero_progress_events(progressed);
 
       -- Writing studio analytics (projects / sessions / rollups)
       CREATE TABLE IF NOT EXISTS writing_projects (
@@ -451,6 +494,55 @@ export class Database {
         PRIMARY KEY (day, project_id)
       );
 
+      -- Anki-inspired spaced repetition (local deck imports + review history)
+      CREATE TABLE IF NOT EXISTS anki_decks (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        source_path TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_imported_at TEXT,
+        last_reviewed_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS anki_cards (
+        id INTEGER PRIMARY KEY,
+        deck_id INTEGER NOT NULL,
+        source_card_id TEXT,
+        fingerprint TEXT NOT NULL,
+        front TEXT NOT NULL,
+        back TEXT NOT NULL,
+        tags TEXT,
+        note_type TEXT,
+        due_at TEXT NOT NULL,
+        interval_days INTEGER NOT NULL DEFAULT 0,
+        ease_factor REAL NOT NULL DEFAULT 2.5,
+        repetitions INTEGER NOT NULL DEFAULT 0,
+        lapses INTEGER NOT NULL DEFAULT 0,
+        suspended INTEGER NOT NULL DEFAULT 0,
+        last_reviewed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(deck_id, fingerprint)
+      );
+
+      CREATE TABLE IF NOT EXISTS anki_reviews (
+        id INTEGER PRIMARY KEY,
+        card_id INTEGER NOT NULL,
+        deck_id INTEGER NOT NULL,
+        reviewed_at TEXT NOT NULL,
+        rating TEXT NOT NULL,
+        response_ms INTEGER,
+        before_due_at TEXT,
+        after_due_at TEXT,
+        before_interval_days INTEGER,
+        after_interval_days INTEGER,
+        before_ease_factor REAL,
+        after_ease_factor REAL,
+        reward_coins INTEGER NOT NULL DEFAULT 0,
+        unlock_consumed INTEGER NOT NULL DEFAULT 0
+      );
+
       CREATE INDEX IF NOT EXISTS idx_writing_projects_kind ON writing_projects(kind);
       CREATE INDEX IF NOT EXISTS idx_writing_projects_status ON writing_projects(status);
       CREATE INDEX IF NOT EXISTS idx_writing_projects_last_touched ON writing_projects(last_touched_at);
@@ -460,6 +552,13 @@ export class Database {
       CREATE INDEX IF NOT EXISTS idx_writing_progress_events_occurred_at ON writing_progress_events(occurred_at);
       CREATE INDEX IF NOT EXISTS idx_writing_progress_events_session_id ON writing_progress_events(session_id);
       CREATE INDEX IF NOT EXISTS idx_writing_daily_project_touches_day ON writing_daily_project_touches(day);
+      CREATE INDEX IF NOT EXISTS idx_anki_decks_name ON anki_decks(name);
+      CREATE INDEX IF NOT EXISTS idx_anki_cards_deck_due ON anki_cards(deck_id, due_at);
+      CREATE INDEX IF NOT EXISTS idx_anki_cards_due ON anki_cards(due_at);
+      CREATE INDEX IF NOT EXISTS idx_anki_reviews_card ON anki_reviews(card_id);
+      CREATE INDEX IF NOT EXISTS idx_anki_reviews_deck ON anki_reviews(deck_id);
+      CREATE INDEX IF NOT EXISTS idx_anki_reviews_reviewed_at ON anki_reviews(reviewed_at);
+      CREATE INDEX IF NOT EXISTS idx_anki_reviews_unlock_consumed ON anki_reviews(unlock_consumed);
     `;
 
     this.driver.exec(ddl);
@@ -582,11 +681,17 @@ export class Database {
       logger.info('Migrating database: Adding draining to activity_rollups');
       this.driver.exec("ALTER TABLE activity_rollups ADD COLUMN draining INTEGER NOT NULL DEFAULT 0");
     }
+    const hasEmergency = rollupInfo.some(c => c.name === 'emergency');
+    if (!hasEmergency) {
+      logger.info('Migrating database: Adding emergency to activity_rollups');
+      this.driver.exec("ALTER TABLE activity_rollups ADD COLUMN emergency INTEGER NOT NULL DEFAULT 0");
+    }
 
     // Migration: Add analytics tables for existing databases
     this.migrateAnalyticsTables();
     this.migrateLiteraryAnalyticsTables();
     this.migrateWritingAnalyticsTables();
+    this.migrateAnkiTables();
   }
 
   private migrateAnalyticsTables() {
@@ -616,6 +721,23 @@ export class Database {
 
     if (tables.length < 6) {
       logger.info('Writing analytics tables created/verified');
+    }
+  }
+
+  private migrateAnkiTables() {
+    const tables = this.driver.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('anki_decks', 'anki_cards', 'anki_reviews')"
+    ).all() as Array<{ name: string }>;
+
+    if (tables.length < 3) {
+      logger.info('Anki tables created/verified');
+    }
+
+    const ankiReviewInfo = this.driver.prepare("PRAGMA table_info(anki_reviews)").all() as Array<{ name: string }>;
+    const hasUnlockConsumed = ankiReviewInfo.some(c => c.name === 'unlock_consumed');
+    if (!hasUnlockConsumed) {
+      logger.info('Migrating database: Adding unlock_consumed to anki_reviews');
+      this.driver.exec("ALTER TABLE anki_reviews ADD COLUMN unlock_consumed INTEGER NOT NULL DEFAULT 0");
     }
   }
 

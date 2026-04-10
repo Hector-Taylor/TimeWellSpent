@@ -4,6 +4,8 @@ import type { WalletManager } from './wallet';
 import type { GuardrailColorFilter } from '@shared/types';
 import { logger } from '@shared/logger';
 import { reducePaywallSessionLifecycle } from '@shared/paywallSessionLifecycle';
+import { canonicalizeDomain, isSameDomainOrSubdomain, normalizeOriginPathUrl } from '@shared/domainCanonicalization';
+import { evaluatePaywallAccess } from '@shared/paywallAccessPolicy';
 
 export type PaywallSession = {
   domain: string;
@@ -14,6 +16,7 @@ export type PaywallSession = {
   lastTick: number;
   startedAt?: number;
   paused?: boolean;
+  manualPaused?: boolean;
   purchasePrice?: number;
   purchasedSeconds?: number;
   spendRemainder?: number;
@@ -44,18 +47,21 @@ export type PaywallDiagnosticEvent = {
 };
 
 function normaliseBaseUrl(url: string): string | null {
-  try {
-    const parsed = new URL(url);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch {
-    return null;
-  }
+  return normalizeOriginPathUrl(url);
 }
 
 function urlsMatch(expectedBaseUrl: string, actualUrl: string) {
   const actualBase = normaliseBaseUrl(actualUrl);
   if (!actualBase) return false;
   return expectedBaseUrl === actualBase;
+}
+
+function normaliseSessionDomain(domain: string): string | null {
+  return canonicalizeDomain(domain ?? '');
+}
+
+function domainMatchesSession(sessionDomain: string, actualDomain: string) {
+  return isSameDomainOrSubdomain(actualDomain, sessionDomain);
 }
 
 export class PaywallManager extends EventEmitter {
@@ -74,8 +80,39 @@ export class PaywallManager extends EventEmitter {
     }
   }
 
+  private normalizeSessionKey(domain: string) {
+    return normaliseSessionDomain(domain) ?? domain.trim().toLowerCase();
+  }
+
+  private getSessionEntry(domain: string): { key: string; session: PaywallSession } | null {
+    const key = this.resolveSessionKey(domain);
+    if (!key) return null;
+    const session = this.sessions.get(key);
+    if (!session) return null;
+    return { key, session };
+  }
+
+  private setSession(domain: string, session: PaywallSession) {
+    const key = this.normalizeSessionKey(domain);
+    const next: PaywallSession = { ...session, domain: key };
+    this.sessions.set(key, next);
+    return next;
+  }
+
   getSession(domain: string) {
-    return this.sessions.get(domain) ?? null;
+    const entry = this.getSessionEntry(domain);
+    if (!entry) return null;
+    return entry.session;
+  }
+
+  private resolveSessionKey(domain: string) {
+    const normalized = this.normalizeSessionKey(domain);
+    if (!normalized) return null;
+    if (this.sessions.has(normalized)) return normalized;
+    for (const key of this.sessions.keys()) {
+      if (domainMatchesSession(key, normalized)) return key;
+    }
+    return null;
   }
 
   getDiagnostics(limit = 200) {
@@ -87,17 +124,32 @@ export class PaywallManager extends EventEmitter {
     this.diagnostics = [];
   }
 
+  private ensureRate(domain: string) {
+    const normalizedDomain = this.normalizeSessionKey(domain);
+    const existing = this.market.getRate(normalizedDomain);
+    if (existing) return existing;
+    const fallback = {
+      domain: normalizedDomain,
+      ratePerMin: 3,
+      packs: [
+        { minutes: 10, price: 25 },
+        { minutes: 30, price: 60 },
+        { minutes: 60, price: 100 }
+      ],
+      hourlyModifiers: Array(24).fill(1)
+    };
+    this.market.upsertRate(fallback);
+    return fallback;
+  }
+
   hasValidPass(domain: string, url?: string) {
-    const session = this.sessions.get(domain);
-    if (!session) return false;
-
-    if (session.allowedUrl) {
-      if (!url) return false;
-      if (!urlsMatch(session.allowedUrl, url)) return false;
-    }
-
-    if (session.mode === 'metered' || session.mode === 'store') return true;
-    return session.remainingSeconds > 0;
+    const entry = this.getSessionEntry(domain);
+    if (!entry) return false;
+    const access = evaluatePaywallAccess(entry.session, {
+      currentUrl: url ?? null,
+      normalizeUrl: normaliseBaseUrl
+    });
+    return access.allowed;
   }
 
   listSessions() {
@@ -105,7 +157,19 @@ export class PaywallManager extends EventEmitter {
   }
 
   clearSession(domain: string) {
-    this.sessions.delete(domain);
+    const entry = this.getSessionEntry(domain);
+    if (!entry) return;
+    this.sessions.delete(entry.key);
+  }
+
+  expireAllSessions(reason = 'day-rollover', options?: { refundUnusedPacks?: boolean }) {
+    const keys = [...this.sessions.keys()];
+    let expired = 0;
+    for (const key of keys) {
+      const ended = this.endSession(key, reason, { refundUnused: Boolean(options?.refundUnusedPacks) });
+      if (ended) expired += 1;
+    }
+    return expired;
   }
 
   cancelPack(domain: string) {
@@ -113,40 +177,42 @@ export class PaywallManager extends EventEmitter {
   }
 
   startStore(domain: string, price: number, url?: string) {
-    this.wallet.spend(price, { type: 'store-purchase', domain, url });
+    const sessionDomain = this.normalizeSessionKey(domain);
+    this.wallet.spend(price, { type: 'store-purchase', domain: sessionDomain, url });
     this.emit('wallet-update', this.wallet.getSnapshot());
 
     const session: PaywallSession = {
-      domain,
+      domain: sessionDomain,
       mode: 'store',
       ratePerMin: 0,
       remainingSeconds: Infinity,
       lastTick: Date.now(),
       startedAt: Date.now(),
       paused: false,
+      manualPaused: false,
       spendRemainder: 0,
       purchasePrice: price,
       allowedUrl: url ? normaliseBaseUrl(url) ?? undefined : undefined
     };
-    this.sessions.set(domain, session);
+    const saved = this.setSession(sessionDomain, session);
     this.recordDiagnostic({
       ts: Date.now(),
       event: 'session-started',
-      domain,
-      mode: session.mode,
-      remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
-      paused: Boolean(session.paused)
+      domain: saved.domain,
+      mode: saved.mode,
+      remainingSeconds: Number.isFinite(saved.remainingSeconds) ? saved.remainingSeconds : null,
+      paused: Boolean(saved.paused)
     });
-    this.emit('session-started', session);
-    return session;
+    this.emit('session-started', saved);
+    return saved;
   }
 
   startMetered(domain: string, ratePerMin?: number, meteredMultiplier = 1, colorFilter: GuardrailColorFilter = 'full-color') {
-    const rate = this.market.getRate(domain);
-    if (!rate) throw new Error(`No market rate configured for ${domain}`);
+    const sessionDomain = this.normalizeSessionKey(domain);
+    const rate = this.ensureRate(sessionDomain);
     const effectiveRate = Number.isFinite(ratePerMin as number) ? Number(ratePerMin) : rate.ratePerMin;
     const session: PaywallSession = {
-      domain,
+      domain: sessionDomain,
       mode: 'metered',
       colorFilter,
       ratePerMin: effectiveRate,
@@ -154,20 +220,21 @@ export class PaywallManager extends EventEmitter {
       lastTick: Date.now(),
       startedAt: Date.now(),
       paused: false,
+      manualPaused: false,
       spendRemainder: 0,
       meteredMultiplier
     };
-    this.sessions.set(domain, session);
+    const saved = this.setSession(sessionDomain, session);
     this.recordDiagnostic({
       ts: Date.now(),
       event: 'session-started',
-      domain,
-      mode: session.mode,
-      remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
-      paused: Boolean(session.paused)
+      domain: saved.domain,
+      mode: saved.mode,
+      remainingSeconds: Number.isFinite(saved.remainingSeconds) ? saved.remainingSeconds : null,
+      paused: Boolean(saved.paused)
     });
-    this.emit('session-started', session);
-    return session;
+    this.emit('session-started', saved);
+    return saved;
   }
 
   notifyWalletUpdated(snapshot: { balance: number }) {
@@ -177,38 +244,40 @@ export class PaywallManager extends EventEmitter {
   startEmergency(domain: string, justification: string): PaywallSession;
   startEmergency(domain: string, justification: string, options: { durationSeconds?: number; allowedUrl?: string }): PaywallSession;
   startEmergency(domain: string, justification: string, options: { durationSeconds?: number; allowedUrl?: string } = {}) {
+    const sessionDomain = this.normalizeSessionKey(domain);
     const session: PaywallSession = {
-      domain,
+      domain: sessionDomain,
       mode: 'emergency',
       ratePerMin: 0,
       remainingSeconds: Number.isFinite(options.durationSeconds as number) ? Math.max(1, Math.round(options.durationSeconds as number)) : Infinity,
       lastTick: Date.now(),
       startedAt: Date.now(),
       paused: false,
+      manualPaused: false,
       spendRemainder: 0,
       justification,
       lastReminder: Date.now(),
-      allowedUrl: options.allowedUrl
+      allowedUrl: options.allowedUrl ? normaliseBaseUrl(options.allowedUrl) ?? undefined : undefined
     };
-    this.sessions.set(domain, session);
+    const saved = this.setSession(sessionDomain, session);
     this.recordDiagnostic({
       ts: Date.now(),
       event: 'session-started',
-      domain,
-      mode: session.mode,
-      remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
-      paused: Boolean(session.paused)
+      domain: saved.domain,
+      mode: saved.mode,
+      remainingSeconds: Number.isFinite(saved.remainingSeconds) ? saved.remainingSeconds : null,
+      paused: Boolean(saved.paused)
     });
-    this.emit('session-started', session);
-    return session;
+    this.emit('session-started', saved);
+    return saved;
   }
 
   buyPack(domain: string, minutes: number, price: number, options?: { colorFilter?: GuardrailColorFilter; effectiveRatePerMin?: number }) {
-    const rate = this.market.getRate(domain);
-    if (!rate) throw new Error(`No market rate configured for ${domain}`);
+    const sessionDomain = this.normalizeSessionKey(domain);
+    const rate = this.ensureRate(sessionDomain);
     const now = Date.now();
-    const existing = this.sessions.get(domain);
-    this.wallet.spend(price, { type: 'frivolity-pack', domain, minutes });
+    const existing = this.getSessionEntry(sessionDomain)?.session;
+    this.wallet.spend(price, { type: 'frivolity-pack', domain: sessionDomain, minutes });
     this.emit('wallet-update', this.wallet.getSnapshot());
     const purchasedSeconds = minutes * 60;
     const existingPack = existing?.mode === 'pack' ? existing : null;
@@ -225,13 +294,14 @@ export class PaywallManager extends EventEmitter {
         remainingSeconds: Math.max(0, existingPack.remainingSeconds) + purchasedSeconds,
         lastTick: now,
         paused: false,
+        manualPaused: false,
         spendRemainder: 0,
         purchasePrice: (existingPack.purchasePrice ?? 0) + price,
         purchasedSeconds: (existingPack.purchasedSeconds ?? 0) + purchasedSeconds,
         packChainCount: (existingPack.packChainCount ?? 1) + 1
       }
       : {
-        domain,
+        domain: sessionDomain,
         mode: 'pack',
         colorFilter,
         ratePerMin: effectiveRatePerMin,
@@ -239,58 +309,153 @@ export class PaywallManager extends EventEmitter {
         lastTick: now,
         startedAt: now,
         paused: false,
+        manualPaused: false,
         spendRemainder: 0,
         purchasePrice: price,
         purchasedSeconds,
         packChainCount: 1
       };
-    this.sessions.set(domain, session);
+    const saved = this.setSession(sessionDomain, session);
     this.recordDiagnostic({
       ts: Date.now(),
       event: 'session-started',
-      domain,
-      mode: session.mode,
-      remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
-      paused: Boolean(session.paused)
+      domain: saved.domain,
+      mode: saved.mode,
+      remainingSeconds: Number.isFinite(saved.remainingSeconds) ? saved.remainingSeconds : null,
+      paused: Boolean(saved.paused)
     });
-    this.emit('session-started', session);
-    return session;
+    this.emit('session-started', saved);
+    return saved;
+  }
+
+  grantPack(domain: string, minutes: number, options?: { colorFilter?: GuardrailColorFilter; effectiveRatePerMin?: number }) {
+    const sessionDomain = this.normalizeSessionKey(domain);
+    const rate = this.ensureRate(sessionDomain);
+    const now = Date.now();
+    const existing = this.getSessionEntry(sessionDomain)?.session;
+    const purchasedSeconds = Math.max(1, Math.round(minutes)) * 60;
+    const existingPack = existing?.mode === 'pack' ? existing : null;
+    const colorFilter = options?.colorFilter ?? existingPack?.colorFilter ?? 'full-color';
+    const effectiveRatePerMin = Number.isFinite(options?.effectiveRatePerMin as number)
+      ? Number(options?.effectiveRatePerMin)
+      : rate.ratePerMin;
+
+    const session: PaywallSession = existingPack
+      ? {
+        ...existingPack,
+        mode: 'pack',
+        colorFilter,
+        ratePerMin: effectiveRatePerMin,
+        remainingSeconds: Math.max(0, existingPack.remainingSeconds) + purchasedSeconds,
+        lastTick: now,
+        paused: false,
+        manualPaused: false,
+        spendRemainder: 0,
+        purchasePrice: existingPack.purchasePrice ?? 0,
+        purchasedSeconds: (existingPack.purchasedSeconds ?? 0) + purchasedSeconds,
+        packChainCount: (existingPack.packChainCount ?? 1) + 1
+      }
+      : {
+        domain: sessionDomain,
+        mode: 'pack',
+        colorFilter,
+        ratePerMin: effectiveRatePerMin,
+        remainingSeconds: purchasedSeconds,
+        lastTick: now,
+        startedAt: now,
+        paused: false,
+        manualPaused: false,
+        spendRemainder: 0,
+        purchasePrice: 0,
+        purchasedSeconds,
+        packChainCount: 1
+      };
+
+    const saved = this.setSession(sessionDomain, session);
+    this.recordDiagnostic({
+      ts: Date.now(),
+      event: 'session-started',
+      domain: saved.domain,
+      mode: saved.mode,
+      remainingSeconds: Number.isFinite(saved.remainingSeconds) ? saved.remainingSeconds : null,
+      paused: Boolean(saved.paused),
+      reason: 'study-unlock'
+    });
+    this.emit('session-started', saved);
+    return saved;
   }
 
   pause(domain: string) {
-    const session = this.sessions.get(domain);
-    if (!session || session.paused) return;
+    const entry = this.getSessionEntry(domain);
+    if (!entry || entry.session.paused) return;
+    const session = entry.session;
     Object.assign(session, reducePaywallSessionLifecycle(session, { type: 'pause' }));
+    session.manualPaused = true;
     this.recordDiagnostic({
       ts: Date.now(),
       event: 'session-paused',
-      domain,
+      domain: session.domain,
       mode: session.mode,
       remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
       paused: true,
       reason: 'manual'
     });
-    this.emit('session-paused', { domain, reason: 'manual' });
+    this.emit('session-paused', { domain: session.domain, reason: 'manual' });
   }
 
   resume(domain: string) {
-    const session = this.sessions.get(domain);
-    if (!session || !session.paused) return;
+    const entry = this.getSessionEntry(domain);
+    if (!entry || !entry.session.paused) return;
+    const session = entry.session;
     Object.assign(session, reducePaywallSessionLifecycle(session, { type: 'resume' }));
+    session.manualPaused = false;
     this.recordDiagnostic({
       ts: Date.now(),
       event: 'session-resumed',
-      domain,
+      domain: session.domain,
       mode: session.mode,
       remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
       paused: false
     });
-    this.emit('session-resumed', { domain });
+    this.emit('session-resumed', { domain: session.domain });
+  }
+
+  constrainEmergency(domain: string, durationSeconds: number) {
+    const entry = this.getSessionEntry(domain);
+    if (!entry || entry.session.mode !== 'emergency') return null;
+    const session = entry.session;
+
+    const now = Date.now();
+    const boundedSeconds = Math.max(1, Math.round(durationSeconds));
+    Object.assign(
+      session,
+      reducePaywallSessionLifecycle(session, {
+        type: 'patch',
+        patch: {
+          remainingSeconds: boundedSeconds,
+          lastTick: now,
+          lastReminder: now,
+          paused: false,
+          manualPaused: false
+        } as Partial<PaywallSession>
+      })
+    );
+    this.recordDiagnostic({
+      ts: now,
+      event: 'session-tick',
+      domain: session.domain,
+      mode: session.mode,
+      remainingSeconds: session.remainingSeconds,
+      paused: Boolean(session.paused),
+      reason: 'constrained'
+    });
+    return { ...session };
   }
 
   endSession(domain: string, reason: string = 'manual', options?: { refundUnused?: boolean }) {
-    const session = this.sessions.get(domain);
-    if (!session) return null;
+    const entry = this.getSessionEntry(domain);
+    if (!entry) return null;
+    const { key, session } = entry;
 
     let refund = 0;
     if (options?.refundUnused && session.mode === 'pack' && session.purchasePrice && session.purchasedSeconds) {
@@ -311,17 +476,17 @@ export class PaywallManager extends EventEmitter {
 
     const endedAt = Date.now();
     const durationSeconds = session.startedAt ? Math.round((endedAt - session.startedAt) / 1000) : null;
-    this.sessions.delete(domain);
+    this.sessions.delete(key);
     this.recordDiagnostic({
       ts: endedAt,
       event: 'session-ended',
-      domain,
+      domain: session.domain,
       mode: session.mode,
       remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
       paused: Boolean(session.paused),
       reason
     });
-    this.emit('session-ended', { domain, reason, refund, startedAt: session.startedAt ?? null, durationSeconds });
+    this.emit('session-ended', { domain: session.domain, reason, refund, startedAt: session.startedAt ?? null, durationSeconds });
     return session;
   }
 
@@ -330,7 +495,12 @@ export class PaywallManager extends EventEmitter {
     const currentHour = new Date().getHours();
 
     for (const session of [...this.sessions.values()]) {
-      let isActive = activeDomain ? session.domain === activeDomain : false;
+      // Emergency sessions should not flap in and out of paused state when
+      // activity samples briefly lose browser URL/domain context.
+      const keepEmergencyActive = session.mode === 'emergency' && !session.manualPaused && !session.allowedUrl;
+      let isActive = keepEmergencyActive
+        ? true
+        : (activeDomain ? domainMatchesSession(session.domain, activeDomain) : false);
 
       if (isActive && session.allowedUrl) {
         if (!activeUrl || !urlsMatch(session.allowedUrl, activeUrl)) isActive = false;
@@ -339,6 +509,7 @@ export class PaywallManager extends EventEmitter {
       if (!isActive) {
         if (!session.paused) {
           Object.assign(session, reducePaywallSessionLifecycle(session, { type: 'pause' }));
+          session.manualPaused = false;
           this.recordDiagnostic({
             ts: now,
             event: 'session-paused',
@@ -364,8 +535,22 @@ export class PaywallManager extends EventEmitter {
           });
         }
         continue;
+      } else if (session.paused && session.manualPaused) {
+        this.recordDiagnostic({
+          ts: now,
+          event: 'session-ignored-inactive',
+          domain: session.domain,
+          mode: session.mode,
+          remainingSeconds: Number.isFinite(session.remainingSeconds) ? session.remainingSeconds : null,
+          paused: true,
+          reason: 'manual-hold',
+          activeDomain: activeDomain ?? null,
+          activeUrl: activeUrl ?? null
+        });
+        continue;
       } else if (session.paused) {
         Object.assign(session, reducePaywallSessionLifecycle(session, { type: 'resume' }));
+        session.manualPaused = false;
         this.recordDiagnostic({
           ts: now,
           event: 'session-resumed',

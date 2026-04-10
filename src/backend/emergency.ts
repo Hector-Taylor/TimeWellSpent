@@ -4,6 +4,16 @@ import type { PaywallManager } from './paywall';
 import type { ConsumptionLogService } from './consumption';
 import { getEmergencyPolicyConfig, normaliseBaseUrl } from './emergencyPolicy';
 import { logger } from '@shared/logger';
+import { DAY_START_HOUR, getLocalDayStartMs } from '@shared/time';
+import { evaluateEmergencyStart, usageForDay } from '@shared/emergencyUsage';
+
+function dayKeyForMs(referenceMs: number) {
+  const dayStart = new Date(getLocalDayStartMs(referenceMs, DAY_START_HOUR));
+  const year = dayStart.getFullYear();
+  const month = String(dayStart.getMonth() + 1).padStart(2, '0');
+  const day = String(dayStart.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 
 export class EmergencyService {
   constructor(
@@ -21,29 +31,13 @@ export class EmergencyService {
     }
 
     const now = Date.now();
-    const today = new Date(now).toISOString().slice(0, 10);
-    const current = this.settings.getEmergencyUsageState();
-    const usage =
-      current.day === today
-        ? current
-        : { day: today, tokensUsed: 0, cooldownUntil: null };
-
-    if (usage.cooldownUntil && now < usage.cooldownUntil) {
-      const remainingMinutes = Math.max(1, Math.ceil((usage.cooldownUntil - now) / 60_000));
-      throw new Error(`Emergency cooldown active (${remainingMinutes}m remaining).`);
+    const today = dayKeyForMs(now);
+    const usage = usageForDay(this.settings.getEmergencyUsageState(), today);
+    const decision = evaluateEmergencyStart(now, usage, policy);
+    if (!decision.allowed) {
+      throw new Error(decision.error);
     }
-
-    if (typeof policy.tokensPerDay === 'number') {
-      if (usage.tokensUsed >= policy.tokensPerDay) {
-        throw new Error(`No emergency uses left today (${policy.tokensPerDay}/day).`);
-      }
-    }
-
-    const nextUsage = {
-      ...usage,
-      tokensUsed: usage.tokensUsed + (typeof policy.tokensPerDay === 'number' ? 1 : 0),
-      cooldownUntil: policy.cooldownSeconds > 0 ? now + policy.cooldownSeconds * 1000 : null
-    };
+    const nextUsage = decision.nextUsage;
     this.settings.setEmergencyUsageState(nextUsage);
 
     if (policy.debtCoins > 0) {
@@ -55,10 +49,17 @@ export class EmergencyService {
       this.paywall.notifyWalletUpdated(snapshot);
     }
 
-    const allowedUrl =
-      policy.urlLocked && options?.url
-        ? normaliseBaseUrl(options.url)
-        : undefined;
+    let allowedUrl: string | undefined;
+    if (policy.urlLocked) {
+      if (!options?.url) {
+        throw new Error('This emergency policy requires an exact URL.');
+      }
+      const normalizedUrl = normaliseBaseUrl(options.url);
+      if (!normalizedUrl) {
+        throw new Error('Emergency URL must be a valid http(s) URL.');
+      }
+      allowedUrl = normalizedUrl;
+    }
 
     logger.info('Starting emergency session', { domain, policy: policy.id, allowedUrl });
     const session = this.paywall.startEmergency(domain, justification, {
@@ -76,6 +77,12 @@ export class EmergencyService {
       }
     });
     return session;
+  }
+
+  constrain(domain: string, durationSeconds: number) {
+    const boundedSeconds = Math.max(1, Math.round(durationSeconds));
+    logger.info('Constraining emergency session', { domain, durationSeconds: boundedSeconds });
+    return this.paywall.constrainEmergency(domain, boundedSeconds);
   }
 
   recordReview(outcome: 'kept' | 'not-kept') {

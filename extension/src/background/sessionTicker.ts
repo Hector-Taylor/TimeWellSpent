@@ -1,8 +1,10 @@
 import type { MarketRate, PaywallSession } from '../storage';
 import { reducePaywallSessionLifecycle } from '../../../src/shared/paywallSessionLifecycle';
+import { evaluatePaywallAccess } from '../../../src/shared/paywallAccessPolicy';
 
 type SessionTickerStorage = {
   getAllSessions(): Promise<Record<string, PaywallSession>>;
+  getSession(domain: string): Promise<PaywallSession | null>;
   setSession(domain: string, session: PaywallSession): Promise<void>;
   clearSession(domain: string): Promise<void>;
   getMarketRate(domain: string): Promise<MarketRate | null>;
@@ -28,6 +30,7 @@ type ShowBlockScreen = (
 
 type MaybeSendSessionFade = (tabId: number, session: PaywallSession) => Promise<void>;
 type MaybeSendEncouragement = (tabId: number, domain: string, session: PaywallSession) => Promise<void>;
+type HandlePackExpired = (tabId: number, domain: string) => Promise<void>;
 
 export type ExtensionSessionTickerController = {
   startSessionTicker(): void;
@@ -43,6 +46,7 @@ export type CreateExtensionSessionTickerDeps = {
   maybeSendEncouragement: MaybeSendEncouragement;
   queueWalletTransaction: QueueWalletTransaction;
   meteredPremiumMultiplier: number;
+  onPackExpired?: HandlePackExpired;
   tickerIntervalMs?: number;
 };
 
@@ -89,7 +93,13 @@ export function createExtensionSessionTickerController(
     const pauseAll = async () => {
       await Promise.all(
         Object.entries(sessions).map(([domain, s]) =>
-          deps.storage.setSession(domain, reducePaywallSessionLifecycle(s, { type: 'pause' }))
+          deps.storage.setSession(
+            domain,
+            reducePaywallSessionLifecycle(
+              { ...s, manualPaused: s.manualPaused ?? false } as PaywallSession,
+              { type: 'pause' }
+            )
+          )
         )
       );
     };
@@ -108,38 +118,47 @@ export function createExtensionSessionTickerController(
     const url = new URL(activeTab.url);
     const activeDomain = url.hostname.replace(/^www\./, '');
 
-    let session = sessions[activeDomain];
+    let session: PaywallSession | null = sessions[activeDomain] ?? null;
 
     await Promise.all(
       Object.entries(sessions).map(async ([domain, s]) => {
         if (domain !== activeDomain && !s.paused) {
-          await deps.storage.setSession(domain, reducePaywallSessionLifecycle(s, { type: 'pause' }));
-        } else if (domain === activeDomain && s.paused) {
-          await deps.storage.setSession(domain, reducePaywallSessionLifecycle(s, { type: 'resume' }));
+          const paused = reducePaywallSessionLifecycle(s, { type: 'pause' });
+          await deps.storage.setSession(domain, { ...paused, manualPaused: false });
+        } else if (domain === activeDomain && s.paused && !s.manualPaused) {
+          const resumed = reducePaywallSessionLifecycle(s, { type: 'resume' });
+          await deps.storage.setSession(domain, { ...resumed, manualPaused: false, lastTick: now });
         }
       })
     );
 
+    session = (await deps.storage.getSession(activeDomain)) ?? null;
     if (!session) return;
 
-    if (session.mode !== 'emergency' && session.allowedUrl) {
-      const current = deps.baseUrl(activeTab.url);
-      if (!current || current !== session.allowedUrl) {
-        if (!session.paused) {
-          session = reducePaywallSessionLifecycle(session, { type: 'pause' });
-          await deps.storage.setSession(activeDomain, session);
-        }
-        if (activeTab.id) {
-          await deps.showBlockScreen(activeTab.id, activeDomain, 'url-locked', 'session-url-locked');
-        }
-        return;
+    if (session.mode === 'emergency' && !session.manualPaused) {
+      // Emergency sessions should remain active unless explicitly manually paused.
+      // Clear stale URL locks/paused flags that could cause re-block loops.
+      if (session.paused || session.allowedUrl) {
+        session = reducePaywallSessionLifecycle(session, {
+          type: 'patch',
+          patch: { allowedUrl: undefined, paused: false, manualPaused: false, lastTick: now } as Partial<PaywallSession>
+        });
+        await deps.storage.setSession(activeDomain, session);
       }
-    }
+    } else {
+      const access = evaluatePaywallAccess(session, {
+        currentUrl: activeTab.url,
+        normalizeUrl: deps.baseUrl
+      });
 
-    if (session.mode === 'emergency') {
-      if (session.allowedUrl) {
-        const current = deps.baseUrl(activeTab.url);
-        if (!current || current !== session.allowedUrl) {
+      if (!access.allowed) {
+        if (access.reason === 'manual-paused') {
+          if (activeTab.id) {
+            await deps.showBlockScreen(activeTab.id, activeDomain, 'paused', 'session-paused');
+          }
+          return;
+        }
+        if (access.reason === 'url-locked') {
           if (!session.paused) {
             session = reducePaywallSessionLifecycle(session, { type: 'pause' });
             await deps.storage.setSession(activeDomain, session);
@@ -151,6 +170,16 @@ export function createExtensionSessionTickerController(
         }
       }
 
+      if (access.shouldAutoResume) {
+        session = reducePaywallSessionLifecycle(session, {
+          type: 'patch',
+          patch: { paused: false, manualPaused: false, lastTick: now } as Partial<PaywallSession>
+        });
+        await deps.storage.setSession(activeDomain, session);
+      }
+    }
+
+    if (session.mode === 'emergency') {
       const reminderIntervalMs = 300 * 1000;
       const lastReminder = session.lastReminder ?? session.startedAt;
       if (Date.now() - lastReminder > reminderIntervalMs) {
@@ -193,6 +222,9 @@ export function createExtensionSessionTickerController(
 
       if (activeTab.id) {
         await deps.maybeSendSessionFade(activeTab.id, session);
+        if (Number.isFinite(session.remainingSeconds)) {
+          await deps.maybeSendEncouragement(activeTab.id, activeDomain, session);
+        }
       }
       return;
     }
@@ -265,7 +297,11 @@ export function createExtensionSessionTickerController(
       console.log(`⏰ Time's up for ${activeDomain}`);
       await deps.storage.clearSession(activeDomain);
       if (activeTab.id) {
-        await deps.showBlockScreen(activeTab.id, activeDomain, 'time-expired', 'session-expired');
+        if (deps.onPackExpired) {
+          await deps.onPackExpired(activeTab.id, session.domain ?? activeDomain);
+        } else {
+          await deps.showBlockScreen(activeTab.id, session.domain ?? activeDomain, 'time-expired', 'session-expired');
+        }
       }
     } else {
       await deps.storage.setSession(activeDomain, session);

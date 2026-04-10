@@ -27,7 +27,6 @@ export const LINK_PREVIEW_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const LINK_PREVIEW_MAX_ENTRIES = 250;
 
 export type IdleState = 'active' | 'idle' | 'locked';
-export type EmergencyPolicyId = 'off' | 'gentle' | 'balanced' | 'strict';
 
 export type RouletteOpen = {
     openedAt: number;
@@ -42,25 +41,3 @@ export type TabPeekState = {
     lastNavigationAt: number | null;
     lastUrl: string | null;
 };
-
-export type EmergencyPolicyConfig = {
-    id: EmergencyPolicyId;
-    durationSeconds: number;
-    tokensPerDay: number | null;
-    cooldownSeconds: number;
-    urlLocked: boolean;
-};
-
-export function getEmergencyPolicyConfig(id: EmergencyPolicyId): EmergencyPolicyConfig {
-    switch (id) {
-        case 'off':
-            return { id, durationSeconds: 0, tokensPerDay: 0, cooldownSeconds: 0, urlLocked: true };
-        case 'gentle':
-            return { id, durationSeconds: 5 * 60, tokensPerDay: null, cooldownSeconds: 0, urlLocked: true };
-        case 'strict':
-            return { id, durationSeconds: 2 * 60, tokensPerDay: 1, cooldownSeconds: 60 * 60, urlLocked: true };
-        case 'balanced':
-        default:
-            return { id: 'balanced', durationSeconds: 3 * 60, tokensPerDay: 2, cooldownSeconds: 30 * 60, urlLocked: true };
-    }
-}

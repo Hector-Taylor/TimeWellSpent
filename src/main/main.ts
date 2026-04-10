@@ -3,19 +3,22 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, Notification, nativeTheme, dialog, session } from 'electron';
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, Notification, nativeTheme, dialog, session, screen, type OpenDialogOptions } from 'electron';
 import { createBackend } from '@backend/server';
 import { Database } from '@backend/storage';
 import { createUrlWatcher } from '@backend/urlWatcher';
 import { createIpc } from './ipc';
 import { SyncService } from './sync';
 import { logger } from '@shared/logger';
+import type { WritingHudSnapshot } from '@shared/types';
 
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string;
 declare const MAIN_WINDOW_VITE_NAME: string;
 
 const isMac = process.platform === 'darwin';
 let mainWindow: BrowserWindow | null = null;
+let writingHudWindow: BrowserWindow | null = null;
+let latestWritingHudSnapshot: WritingHudSnapshot | null = null;
 let tray: Tray | null = null;
 let db: Database | null = null;
 let stopBackend: (() => Promise<void>) | null = null;
@@ -42,6 +45,7 @@ const MISSING_EXTENSION_NAG_MESSAGES = [
   'Serious face: Chrome is open without the extension. You are one autoplay away from regret.',
   'Protection reminder: your browser is running without guardrails. Re-enable the extension.'
 ] as const;
+const WRITING_HUD_SIZE = { width: 336, height: 186 };
 
 function randomInt(min: number, max: number) {
   const lo = Math.ceil(Math.min(min, max));
@@ -124,6 +128,262 @@ async function isChromeRunning() {
   } catch {
     return false;
   }
+}
+
+function writingHudHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Writing HUD</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: rgba(14, 16, 26, 0.96);
+      --bg-card: rgba(255, 255, 255, 0.04);
+      --border: rgba(255, 255, 255, 0.14);
+      --fg: #eef5ff;
+      --muted: rgba(222, 234, 255, 0.72);
+      --accent: #66d3ff;
+      --accent2: #a97dff;
+      --success: #70e4a8;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: "SF Pro Text", "Inter", -apple-system, system-ui, sans-serif;
+      background: transparent;
+      color: var(--fg);
+    }
+    .shell {
+      width: 100%;
+      height: 100%;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background:
+        radial-gradient(320px 180px at 0% -20%, rgba(102, 211, 255, 0.18), transparent 68%),
+        radial-gradient(320px 180px at 100% -10%, rgba(169, 125, 255, 0.18), transparent 70%),
+        var(--bg);
+      box-shadow: 0 16px 38px rgba(0, 0, 0, 0.45);
+      padding: 10px 11px;
+      display: grid;
+      gap: 8px;
+      -webkit-app-region: drag;
+    }
+    .top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .title {
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.2;
+      max-width: 240px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .meta {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .hideBtn {
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--fg);
+      border-radius: 8px;
+      font-size: 11px;
+      padding: 4px 8px;
+      cursor: pointer;
+      -webkit-app-region: no-drag;
+    }
+    .timer {
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      padding: 8px 9px;
+      background: var(--bg-card);
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: baseline;
+    }
+    .timer strong {
+      font-size: 23px;
+      line-height: 1;
+      letter-spacing: 0.02em;
+      color: var(--accent);
+    }
+    .timer span {
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .stat {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px;
+      background: rgba(255, 255, 255, 0.03);
+      text-align: center;
+    }
+    .stat b {
+      display: block;
+      font-size: 13px;
+      color: var(--fg);
+      line-height: 1.1;
+    }
+    .stat i {
+      display: block;
+      margin-top: 2px;
+      font-style: normal;
+      font-size: 10px;
+      color: var(--muted);
+      line-height: 1.1;
+    }
+    .sprint {
+      margin-top: -1px;
+      font-size: 11px;
+      color: var(--success);
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="top">
+      <div>
+        <div class="title" id="title">Writing Session</div>
+        <div class="meta" id="meta">Desktop HUD</div>
+      </div>
+      <button class="hideBtn" id="hideBtn" type="button">Hide</button>
+    </header>
+    <section class="timer">
+      <strong id="active">0m</strong>
+      <span id="mode">Tracking</span>
+    </section>
+    <section class="stats">
+      <div class="stat"><b id="focused">0m</b><i>focused</i></div>
+      <div class="stat"><b id="keys">0</b><i>keys</i></div>
+      <div class="stat"><b id="words">0</b><i>words</i></div>
+      <div class="stat"><b id="net">+0</b><i>net</i></div>
+    </section>
+    <div class="sprint" id="sprint"></div>
+  </main>
+  <script>
+    const byId = (id) => document.getElementById(id);
+    const fmtDuration = (seconds) => {
+      const mins = Math.max(0, Math.round((Number(seconds) || 0) / 60));
+      const h = Math.floor(mins / 60);
+      const m = mins % 60;
+      return h > 0 ? h + 'h ' + m + 'm' : m + 'm';
+    };
+    const fmtSigned = (value) => {
+      const n = Number(value) || 0;
+      return (n >= 0 ? '+' : '') + n;
+    };
+
+    const render = (payload) => {
+      if (!payload || typeof payload !== 'object') return;
+      byId('title').textContent = payload.title || 'Writing Session';
+      const modeLabel = payload.mode === 'external' ? 'External target' : 'Editor';
+      const location = payload.locationLabel ? String(payload.locationLabel) : 'Desktop';
+      byId('meta').textContent = location + ' · ' + modeLabel;
+      byId('mode').textContent = payload.targetKind ? String(payload.targetKind) : 'Tracking';
+      byId('active').textContent = fmtDuration(payload.activeSecondsTotal);
+      byId('focused').textContent = fmtDuration(payload.focusedSecondsTotal);
+      byId('keys').textContent = (Number(payload.keystrokesTotal) || 0).toLocaleString();
+      byId('words').textContent = (Number(payload.currentWordCount) || 0).toLocaleString();
+      byId('net').textContent = fmtSigned(payload.netWordsTotal);
+      const sprint = byId('sprint');
+      if (payload.sprintMinutes && payload.remainingSprintSeconds != null) {
+        const left = fmtDuration(payload.remainingSprintSeconds);
+        sprint.textContent = payload.remainingSprintSeconds > 0 ? 'Sprint: ' + left + ' left' : 'Sprint complete';
+      } else {
+        sprint.textContent = '';
+      }
+    };
+
+    const hideBtn = byId('hideBtn');
+    hideBtn?.addEventListener('click', () => {
+      window.twsp?.writingHud?.hide?.();
+    });
+
+    window.twsp?.events?.on('writing-hud:update', render);
+    window.twsp?.events?.on('writing-hud:clear', () => window.close());
+  </script>
+</body>
+</html>`;
+}
+
+async function ensureWritingHudWindow() {
+  if (writingHudWindow && !writingHudWindow.isDestroyed()) {
+    return writingHudWindow;
+  }
+
+  const { width, height } = WRITING_HUD_SIZE;
+  const workArea = screen.getPrimaryDisplay().workArea;
+  const x = workArea.x + Math.max(0, workArea.width - width - 18);
+  const y = workArea.y + 18;
+
+  writingHudWindow = new BrowserWindow({
+    width,
+    height,
+    x,
+    y,
+    show: false,
+    frame: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    transparent: true,
+    hasShadow: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false
+    }
+  });
+
+  writingHudWindow.on('closed', () => {
+    writingHudWindow = null;
+  });
+
+  const html = writingHudHtml();
+  await writingHudWindow.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`);
+  writingHudWindow.setAlwaysOnTop(true, 'floating');
+  try {
+    writingHudWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  } catch {
+    // unsupported on some platforms
+  }
+  writingHudWindow.showInactive();
+  if (latestWritingHudSnapshot) {
+    writingHudWindow.webContents.send('writing-hud:update', latestWritingHudSnapshot);
+  }
+
+  return writingHudWindow;
+}
+
+function clearWritingHudWindow() {
+  latestWritingHudSnapshot = null;
+  if (writingHudWindow && !writingHudWindow.isDestroyed()) {
+    writingHudWindow.webContents.send('writing-hud:clear', {});
+    writingHudWindow.close();
+  }
+  writingHudWindow = null;
 }
 
 async function createWindow() {
@@ -259,6 +519,27 @@ async function bootstrap() {
   db = new Database();
   console.log('Database initialized');
 
+  const pickAnkiDeckFile = async () => {
+    const pickerOptions: OpenDialogOptions = {
+      title: 'Choose Anki Deck Package',
+      buttonLabel: 'Select Deck',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Anki Deck Packages', extensions: ['apkg', 'colpkg'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    };
+    const parent = BrowserWindow.getFocusedWindow() ?? mainWindow;
+    const result = parent
+      ? await dialog.showOpenDialog(parent, pickerOptions)
+      : await dialog.showOpenDialog(pickerOptions);
+    if (result.canceled || !Array.isArray(result.filePaths) || result.filePaths.length === 0) {
+      return null;
+    }
+    const selected = result.filePaths[0];
+    return typeof selected === 'string' && selected.trim() ? selected : null;
+  };
+
   const backend = await createBackend(db, {
     onAuthCallback: (url) => {
       if (syncService) {
@@ -267,6 +548,7 @@ async function bootstrap() {
         pendingAuthUrl = url;
       }
     },
+    pickAnkiDeckFile,
     friendsProvider: {
       profile: async () => (syncService ? syncService.getProfile() : null),
       meSummary: async (windowHours) => {
@@ -657,7 +939,26 @@ async function bootstrap() {
   backend.friends.on('published', () => emitToRenderers('friends:published', {}));
   backend.friends.on('updated', (payload) => emitToRenderers('friends:updated', payload));
 
-  createIpc({ backend, db, sync: syncService });
+  createIpc({ backend, db, sync: syncService, pickAnkiDeckFile });
+
+  ipcMain.handle('writing-hud:show', async (_event, payload: WritingHudSnapshot) => {
+    latestWritingHudSnapshot = payload;
+    const hud = await ensureWritingHudWindow();
+    if (!hud.isDestroyed()) {
+      hud.showInactive();
+      hud.webContents.send('writing-hud:update', payload);
+    }
+  });
+
+  ipcMain.handle('writing-hud:update', async (_event, payload: WritingHudSnapshot) => {
+    latestWritingHudSnapshot = payload;
+    if (!writingHudWindow || writingHudWindow.isDestroyed()) return;
+    writingHudWindow.webContents.send('writing-hud:update', payload);
+  });
+
+  ipcMain.handle('writing-hud:hide', async () => {
+    clearWritingHudWindow();
+  });
 
   monitorHealthInterval = setInterval(async () => {
     const chromeRunning = await isChromeRunning();
@@ -715,6 +1016,7 @@ app.on('window-all-closed', async () => {
 });
 
 app.on('before-quit', async () => {
+  clearWritingHudWindow();
   if (monitorHealthInterval) {
     clearInterval(monitorHealthInterval);
     monitorHealthInterval = null;

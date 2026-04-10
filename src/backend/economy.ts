@@ -58,6 +58,7 @@ export class EconomyEngine extends EventEmitter {
   };
   private earnTimer: NodeJS.Timeout;
   private spendTimer: NodeJS.Timeout;
+  private spendTimerIntervalMs: number;
   private rates: EconomyRateGetters;
   private drainingRemainder = 0;
   private lastSpendTickAt: number | null = null;
@@ -72,7 +73,8 @@ export class EconomyEngine extends EventEmitter {
     super();
     this.rates = rates ?? DEFAULT_RATES;
     this.earnTimer = setInterval(() => this.tickEarn(), 60_000);
-    this.spendTimer = setInterval(() => this.tickSpend(), this.rates.getSpendIntervalSeconds() * 1000);
+    this.spendTimerIntervalMs = this.rates.getSpendIntervalSeconds() * 1000;
+    this.spendTimer = setInterval(() => this.tickSpend(), this.spendTimerIntervalMs);
 
     this.paywall.on('session-ended', (payload) => {
       this.emit('paywall-session-ended', payload);
@@ -178,6 +180,7 @@ export class EconomyEngine extends EventEmitter {
   }
 
   private tickSpend() {
+    this.ensureSpendTimerInterval();
     const now = Date.now();
     const configuredIntervalSec = this.rates.getSpendIntervalSeconds();
     const elapsedSec = this.lastSpendTickAt == null ? configuredIntervalSec : Math.max(1, Math.floor((now - this.lastSpendTickAt) / 1000));
@@ -215,6 +218,14 @@ export class EconomyEngine extends EventEmitter {
         }
       }
     }
+  }
+
+  private ensureSpendTimerInterval() {
+    const nextIntervalMs = Math.max(1_000, Math.round(this.rates.getSpendIntervalSeconds() * 1000));
+    if (nextIntervalMs === this.spendTimerIntervalMs) return;
+    clearInterval(this.spendTimer);
+    this.spendTimerIntervalMs = nextIntervalMs;
+    this.spendTimer = setInterval(() => this.tickSpend(), this.spendTimerIntervalMs);
   }
 
   private ensureRate(domain: string): MarketRate {
@@ -272,6 +283,15 @@ export class EconomyEngine extends EventEmitter {
       logger.info(`Creating ad-hoc pack for ${domain} (${safeMinutes} minutes @ ${price} coins, chain x${multiplier})`);
     }
     return this.paywall.buyPack(domain, safeMinutes, price, { colorFilter, effectiveRatePerMin });
+  }
+
+  grantStudyPack(domain: string, minutes: number, options?: { colorFilter?: GuardrailColorFilter }) {
+    const safeMinutes = Math.max(1, Math.round(minutes));
+    const rate = this.ensureRate(domain);
+    const colorFilter = options?.colorFilter ?? 'full-color';
+    const colorMultiplier = getColorFilterPriceMultiplier(colorFilter);
+    const effectiveRatePerMin = rate.ratePerMin * colorMultiplier;
+    return this.paywall.grantPack(domain, safeMinutes, { colorFilter, effectiveRatePerMin });
   }
 
   startStore(domain: string, price: number, url?: string) {

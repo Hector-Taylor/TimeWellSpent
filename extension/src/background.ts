@@ -1,39 +1,29 @@
 import { storage, type DailyOnboardingState, type LibraryItem, type LibraryPurpose, type PendingActivityEvent, type PomodoroSession, type PaywallSession, type ReflectionSlideshowSettings, type WritingHudSession } from './storage';
-import { DESKTOP_API_URL, DESKTOP_WS_URL } from './constants';
+import { CONTEXT_MENU_IDS, DEFAULT_UNLOCK_PRICE, DESKTOP_API_URL, DESKTOP_WS_URL, NOTIFICATION_ICON } from './constants';
 import {
     getPomodoroSiteBlockReason,
     isPomodoroSiteAllowed,
     normalizePomodoroDomain,
     parsePomodoroSiteTarget
 } from '../../src/shared/pomodoroMatcher';
+import { createEmergencyCommandHandlers } from './background/emergencyCommands';
+import { createPaywallSessionCommandHandlers } from './background/paywallSessionCommands';
+import { createExtensionSessionTickerController } from './background/sessionTicker';
+import { evaluatePaywallAccess } from '../../src/shared/paywallAccessPolicy';
+import { parseExtensionSyncEnvelope } from '../../src/shared/extensionSyncContract';
+import type { EmergencyPolicyId, GuardrailColorFilter } from '../../src/shared/types';
 import { getWritingTargetIdentity, matchesWritingTargetUrl, type WritingTargetKind } from './writing/targetAdapters';
 
 type IdleState = 'active' | 'idle' | 'locked';
-type EmergencyPolicyId = 'off' | 'gentle' | 'balanced' | 'strict';
 type TimeoutHandle = ReturnType<typeof setTimeout>;
 type IntervalHandle = ReturnType<typeof setInterval>;
 
-const DEFAULT_UNLOCK_PRICE = 12;
-const NOTIFICATION_ICON = chrome.runtime.getURL('assets/notification.png');
 const POMODORO_STALE_MS = 45_000;
 const DAILY_START_HOUR = 4;
-const CONTEXT_MENU_IDS = {
-    rootSave: 'tws-save',
-    rootDomain: 'tws-domain',
-    saveReplace: 'save-to-library-replace',
-    saveProductive: 'save-to-library-productive',
-    saveAllow: 'save-to-library-allow',
-    saveTemptation: 'save-to-library-temptation',
-    savePriced: 'save-to-library-priced',
-    domainProductive: 'label-domain-productive',
-    domainNeutral: 'label-domain-neutral',
-    domainFrivolous: 'label-domain-frivolous'
-} as const;
 
 let ws: WebSocket | null = null;
 let reconnectTimer: TimeoutHandle | null = null;
 let heartbeatTimer: IntervalHandle | null = null;
-let sessionTicker: IntervalHandle | null = null;
 let devSimulateDesktopDisconnect = false;
 let devLogSessionDrift = false;
 let idleState: IdleState = 'active';
@@ -49,36 +39,36 @@ const lastEncouragement = new Map<string, number>();
 const lastEncouragementMessage = new Map<string, string>();
 const doomscrollNotificationMap = new Map<string, { breakUrl: string; rescue?: { url: string; label: string } }>();
 const ENCOURAGEMENT_MESSAGES = [
-    'Check in: did you mean {domain}?',
-    'This minute can be yours.',
-    'Step out before the spiral.',
-    'Quiet win: close the tab.',
-    'Trade this scroll for progress.',
-    'Small pause, better choice.',
-    'Breathe, then decide.',
-    'The feed will keep going.',
-    'Choose intent over habit.',
-    'Save {domain} for a break.',
-    'Start the tiniest real step.',
-    'If it is noise, exit.',
-    'Future you is watching.',
-    'Take control back.',
-    'Gentle nudge: zoom out.',
-    'Less feed, more focus.',
-    'Protect the streak now.',
-    'Attention is a budget.',
-    'Close this and begin.',
-    'Is this helping today?',
-    'End the loop here.',
-    'Spend focus on purpose.',
-    'Pause; nothing urgent here.',
-    'Aim at what matters.',
-    'One clean choice, then go.',
-    'Move {domain} off the path.',
-    'Give tonight a calmer mind.',
-    'Pick the hard task first.',
-    'You can stop now.',
-    'Leave now; thank yourself later.'
+    'Breathe. Choose the next right tab.',
+    'This feed is comfort with a hidden bill.',
+    'Step out of {domain} and back to intent.',
+    'A reset now still counts as progress.',
+    'If it is not the task, close it.',
+    'Action first, mood second.',
+    '{domain} will still exist in an hour.',
+    'One hard switch beats ten soft excuses.',
+    'This is delay pretending to be prep.',
+    'Protect your focus while it is here.',
+    'Leave {domain}. Resume the real work.',
+    'You only need one clear next move.',
+    'Easy now can cost you later.',
+    'Closing this tab is a strong vote.',
+    'Breaks help when you choose them.',
+    'Exit {domain} before the drift deepens.',
+    'No guilt needed. Just redirect.',
+    'Your goals lose when this loop wins.',
+    'Small effort is still real effort.',
+    'This rabbit hole has no reward.',
+    'Return to the highest-value task.',
+    'Discomfort is often the doorway.',
+    'Close {domain}. Keep your word.',
+    'The urge is loud, not in charge.',
+    'Give yourself three focused minutes.',
+    'Another click will not resolve this.',
+    'Stop sampling. Start finishing.',
+    'Save {domain} for after a work block.',
+    'Be gentle with yourself and firm with the tab.',
+    'End the detour. Continue your session.'
 ];
 const NYT_GAME_LINKS = [
     { label: 'NYT Mini', url: 'https://www.nytimes.com/crosswords/game/mini' },
@@ -97,6 +87,10 @@ type RouletteOpen = {
 
 const rouletteByTabId = new Map<number, RouletteOpen>();
 const rouletteNotificationMap = new Map<string, RouletteOpen>();
+const sessionConsistencySyncByDomain = new Map<string, number>();
+const SESSION_CONSISTENCY_SYNC_COOLDOWN_MS = 3_000;
+const emergencyStartGraceByDomain = new Map<string, number>();
+const EMERGENCY_START_GRACE_MS = 12_000;
 
 type TabPeekState = {
     createdAt: number;
@@ -107,13 +101,15 @@ type TabPeekState = {
 const tabPeekState = new Map<number, TabPeekState>();
 const PEEK_NEW_PAGE_WINDOW_MS = 5000;
 const METERED_PREMIUM_MULTIPLIER = 3.5;
-type GuardrailColorFilter = 'full-color' | 'greyscale' | 'redscale';
 const COLOR_FILTER_PRICE_MULTIPLIER: Record<GuardrailColorFilter, number> = {
     'full-color': 1,
     greyscale: 0.55,
     redscale: 0.7
 };
 const EXTENSION_HEARTBEAT_INTERVAL_MS = 20_000;
+const DESKTOP_AUTHORITY_STALE_MS = 45_000;
+const HOMEBASE_EXIT_FADE_MS = 1400;
+const HOMEBASE_ENTRY_FADE_MS = 1600;
 const BEHAVIOR_EVENT_FLUSH_BATCH = 200;
 const BEHAVIOR_EVENT_FLUSH_DELAY_MS = 2_000;
 const BEHAVIOR_EVENT_FLUSH_RETRY_MS = 8_000;
@@ -126,6 +122,7 @@ const DOOMSCROLL_MAX_CLICK_EVENTS = 3;
 const DOOMSCROLL_MIN_SCROLL_RATIO = 0.8;
 const DOOMSCROLL_MIN_SESSION_AGE_MS = 45_000;
 const DOOMSCROLL_INTERVENTION_COOLDOWN_MS = 2 * 60_000;
+let lastDesktopAuthorityAt = 0;
 
 type BehaviorEventType = 'scroll' | 'click' | 'keystroke' | 'focus' | 'blur' | 'idle_start' | 'idle_end' | 'visibility';
 type UserActivityKind = 'mouse-move' | 'mouse-down' | 'key-down' | 'scroll' | 'wheel' | 'touch-start' | 'focus';
@@ -193,6 +190,152 @@ type ReflectionPhoto = {
     domain: string | null;
     imageDataUrl: string;
 };
+type AnkiDeckSummary = {
+    id: number;
+    name: string;
+    sourcePath: string | null;
+    cardCount: number;
+    dueCount: number;
+    reviewedToday: number;
+    lastImportedAt: string | null;
+    lastReviewedAt: string | null;
+};
+type AnkiDueCard = {
+    id: number;
+    deckId: number;
+    deckName: string;
+    front: string;
+    back: string;
+    tags: string[];
+    noteType: string | null;
+    dueAt: string;
+    intervalDays: number;
+    easeFactor: number;
+    repetitions: number;
+    lapses: number;
+    suspended: boolean;
+    lastReviewedAt: string | null;
+};
+type AnkiStatusPayload = {
+    decks: AnkiDeckSummary[];
+    dueCards: AnkiDueCard[];
+    totalDue: number;
+    reviewedToday: number;
+    totalReviewMsToday: number;
+    availableUnlockReviews: number;
+    unlockThreshold: number;
+    unlocksAvailable: number;
+};
+type AnkiAnalyticsPayload = {
+    windowDays: number;
+    generatedAt: string;
+    desiredRetention: number;
+    snapshot: {
+        cardsTotal: number;
+        cardsActive: number;
+        cardsLearned: number;
+        cardsMature: number;
+        cardsSuspended: number;
+        dueNow: number;
+        dueIn7Days: number;
+        dueIn30Days: number;
+        reviews: number;
+        successfulReviews: number;
+        successRate: number | null;
+        trueRetention: number | null;
+        matureRetention: number | null;
+        youngRetention: number | null;
+        averageResponseMs: number | null;
+        reviewMinutes: number;
+        currentStreakDays: number;
+        availableUnlockReviews: number;
+    };
+    ratings: {
+        again: number;
+        hard: number;
+        good: number;
+        easy: number;
+    };
+    daily: Array<{
+        day: string;
+        reviews: number;
+        successfulReviews: number;
+        successRate: number | null;
+        again: number;
+        hard: number;
+        good: number;
+        easy: number;
+        reviewMinutes: number;
+    }>;
+    hourly: Array<{
+        hour: number;
+        reviews: number;
+        successRate: number | null;
+        averageResponseMs: number | null;
+    }>;
+    heatmap: {
+        startDay: string;
+        endDay: string;
+        maxReviews: number;
+        cells: Array<{ day: string; reviews: number; level: 0 | 1 | 2 | 3 | 4 }>;
+    };
+    decks: Array<{
+        id: number;
+        name: string;
+        cardsTotal: number;
+        dueNow: number;
+        reviews: number;
+        retention: number | null;
+    }>;
+    risks: Array<{
+        id: string;
+        level: 'info' | 'warning';
+        title: string;
+        detail: string;
+    }>;
+    encouragement: string[];
+};
+type ZoteroProgressItem = {
+    itemKey: string;
+    attachmentKey?: string | null;
+    title: string;
+    subtitle?: string | null;
+    collectionPath?: string | null;
+    progress?: number | null;
+    currentPage?: number | null;
+    totalPages?: number | null;
+    lastSeenAt: string;
+    lastProgressChangeAt?: string | null;
+    pagesAdvancedWindow: number;
+    checkpointsWindow: number;
+    stalledDays?: number | null;
+};
+type ZoteroAnalyticsPayload = {
+    windowDays: number;
+    generatedAt: string;
+    snapshot: {
+        trackedItems: number;
+        activeItems: number;
+        completedItems: number;
+        progressedItemsWindow: number;
+        checkpointsWindow: number;
+        pagesAdvancedWindow: number;
+        averageProgress: number | null;
+        medianProgress: number | null;
+        lastSyncAt?: string | null;
+    };
+    progressBuckets: Array<{ id: string; label: string; count: number }>;
+    daily: Array<{
+        day: string;
+        checkpoints: number;
+        progressedEvents: number;
+        itemsTouched: number;
+        pagesAdvanced: number;
+    }>;
+    topProgressed: ZoteroProgressItem[];
+    recentlyOpened: ZoteroProgressItem[];
+    insights: string[];
+};
 type BehaviorEventPayload = {
     timestamp: string;
     domain: string;
@@ -225,12 +368,6 @@ function getColorFilterPriceMultiplier(mode: GuardrailColorFilter): number {
     return COLOR_FILTER_PRICE_MULTIPLIER[mode] ?? 1;
 }
 
-function packChainMultiplier(chainCount: number) {
-    if (chainCount <= 0) return 1;
-    if (chainCount === 1) return 1.35;
-    if (chainCount === 2) return 1.75;
-    return 2.35;
-}
 const IS_DEV_BUILD = (() => {
     try {
         return !chrome.runtime.getManifest().update_url;
@@ -238,28 +375,6 @@ const IS_DEV_BUILD = (() => {
         return false;
     }
 })();
-
-type EmergencyPolicyConfig = {
-    id: EmergencyPolicyId;
-    durationSeconds: number;
-    tokensPerDay: number | null;
-    cooldownSeconds: number;
-    urlLocked: boolean;
-};
-
-function getEmergencyPolicyConfig(id: EmergencyPolicyId): EmergencyPolicyConfig {
-    switch (id) {
-        case 'off':
-            return { id, durationSeconds: 0, tokensPerDay: 0, cooldownSeconds: 0, urlLocked: true };
-        case 'gentle':
-            return { id, durationSeconds: 5 * 60, tokensPerDay: null, cooldownSeconds: 0, urlLocked: false };
-        case 'strict':
-            return { id, durationSeconds: 2 * 60, tokensPerDay: 1, cooldownSeconds: 60 * 60, urlLocked: false };
-        case 'balanced':
-        default:
-            return { id: 'balanced', durationSeconds: 3 * 60, tokensPerDay: 2, cooldownSeconds: 30 * 60, urlLocked: false };
-    }
-}
 
 function normalizeSessionFromDesktop(
     session: Partial<PaywallSession>,
@@ -278,16 +393,33 @@ function normalizeSessionFromDesktop(
     const ratePerMin = Number.isFinite(ratePerMinRaw)
         ? ratePerMinRaw
         : (existing?.ratePerMin ?? 0);
-    const remainingRaw = Number(session.remainingSeconds);
-    const remainingSeconds = Number.isFinite(remainingRaw)
-        ? remainingRaw
-        : (existing?.remainingSeconds ?? (mode === 'metered' || mode === 'store' ? Infinity : 0));
+    const remainingValue = session.remainingSeconds;
+    const remainingParsed = typeof remainingValue === 'number'
+        ? remainingValue
+        : (typeof remainingValue === 'string' ? Number(remainingValue) : NaN);
+    const defaultRemaining = mode === 'metered' || mode === 'store' || mode === 'emergency' ? Infinity : 0;
+    // Desktop JSON encodes Infinity as null. Treat null for infinite modes as no-expiry.
+    const remainingSeconds = Number.isFinite(remainingParsed)
+        ? remainingParsed
+        : (remainingValue === null ? defaultRemaining : (existing?.remainingSeconds ?? defaultRemaining));
+    const hasAllowedUrl = Object.prototype.hasOwnProperty.call(session, 'allowedUrl');
+    let allowedUrl: string | undefined;
+    if (hasAllowedUrl) {
+        allowedUrl = typeof session.allowedUrl === 'string' && session.allowedUrl.trim().length > 0 ? session.allowedUrl : undefined;
+    } else if (mode === 'emergency') {
+        // Don't carry forward stale URL locks for emergency sessions.
+        allowedUrl = undefined;
+    } else {
+        allowedUrl = existing?.allowedUrl;
+    }
 
     return {
         ...existing,
         ...session,
         domain,
         mode,
+        allowedUrl,
+        manualPaused: typeof session.manualPaused === 'boolean' ? session.manualPaused : (existing?.manualPaused ?? false),
         ratePerMin,
         remainingSeconds,
         startedAt,
@@ -539,17 +671,10 @@ async function emitPomodoroBlock(payload: { target: string; kind: 'app' | 'site'
     });
 }
 
-function estimatePackRefund(session: { mode: 'metered' | 'pack' | 'emergency' | 'store'; purchasePrice?: number; purchasedSeconds?: number; remainingSeconds: number }) {
-    if (session.mode !== 'pack') return 0;
-    if (!session.purchasePrice || !session.purchasedSeconds) return 0;
-    const unusedSeconds = Math.max(0, Math.min(session.purchasedSeconds, session.remainingSeconds));
-    const unusedFraction = unusedSeconds / session.purchasedSeconds;
-    return Math.round(session.purchasePrice * unusedFraction);
-}
-
 // Initialize storage on startup
 storage.init().then(() => {
     console.log('TimeWellSpent: Storage initialized');
+    void storage.rolloverIfNeeded();
     startSessionTicker();
     hydrateIdleState();
     tryConnectToDesktop();
@@ -627,6 +752,7 @@ function tryConnectToDesktop() {
 
     ws.onopen = async () => {
         console.log('✅ Connected to desktop app');
+        lastDesktopAuthorityAt = Date.now();
         if (reconnectTimer) {
             clearTimeout(reconnectTimer);
             reconnectTimer = null;
@@ -647,6 +773,7 @@ function tryConnectToDesktop() {
     ws.onclose = () => {
         console.log('❌ Disconnected from desktop app (extension will work offline)');
         stopHeartbeatTimer();
+        lastDesktopAuthorityAt = 0;
         ws = null;
         scheduleReconnect();
     };
@@ -654,11 +781,21 @@ function tryConnectToDesktop() {
     ws.onerror = (err) => {
         console.error('Desktop connection error:', err);
         stopHeartbeatTimer();
+        lastDesktopAuthorityAt = 0;
+        if (ws) {
+            try {
+                ws.close();
+            } catch {
+                // Ignore close failures.
+            }
+        }
         ws = null;
+        scheduleReconnect();
     };
 
     ws.onmessage = (event) => {
         try {
+            lastDesktopAuthorityAt = Date.now();
             const data = JSON.parse(event.data);
             handleDesktopMessage(data);
         } catch (e) {
@@ -688,6 +825,11 @@ function stopHeartbeatTimer() {
     if (!heartbeatTimer) return;
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
+}
+
+function hasFreshDesktopAuthority() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    return Date.now() - lastDesktopAuthorityAt <= DESKTOP_AUTHORITY_STALE_MS;
 }
 
 function scheduleReconnect() {
@@ -728,8 +870,13 @@ async function syncFromDesktop() {
         const before = devLogSessionDrift ? await storage.getAllSessions() : null;
         const response = await fetch(`${DESKTOP_API_URL}/extension/state`, { cache: 'no-store' });
         if (response.ok) {
-            const desktopState = await response.json();
-            await storage.updateFromDesktop(desktopState);
+            const raw = await response.json();
+            const parsed = parseExtensionSyncEnvelope(raw);
+            if (parsed.warnings.length) {
+                console.warn('[extension-sync]', ...parsed.warnings);
+            }
+            await storage.updateFromDesktop(parsed.state as Record<string, unknown>);
+            lastDesktopAuthorityAt = Date.now();
             if (before && devLogSessionDrift) {
                 const after = await storage.getAllSessions();
                 logSessionDrift(before, after, 'sync');
@@ -739,6 +886,22 @@ async function syncFromDesktop() {
     } catch (e) {
         console.log('Desktop app not available for sync');
     }
+}
+
+async function maybeRefreshSessionConsistency(domain: string, source: string) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const prefix = source.split(':')[0] ?? '';
+    if (prefix !== 'webNavigation' && prefix !== 'onUpdated' && prefix !== 'onActivated' && prefix !== 'content-heartbeat') return;
+    const now = Date.now();
+    const localSession = await storage.getSession(domain);
+    if (localSession && !localSession.paused) {
+        // Avoid wiping an actively running local session with a stale desktop snapshot.
+        return;
+    }
+    const last = sessionConsistencySyncByDomain.get(domain) ?? 0;
+    if (now - last < SESSION_CONSISTENCY_SYNC_COOLDOWN_MS) return;
+    sessionConsistencySyncByDomain.set(domain, now);
+    await syncFromDesktop().catch(() => { });
 }
 
 function handleDesktopMessage(data: any) {
@@ -756,9 +919,14 @@ function handleDesktopMessage(data: any) {
     } else if (data.type === 'paywall-session-started') {
         const session = data.payload;
         if (session?.domain) {
+            emergencyStartGraceByDomain.delete(session.domain);
             storage.getSession(session.domain).then((existing) => {
                 const normalized = normalizeSessionFromDesktop(session, session.domain, existing ?? undefined);
-                storage.setSession(session.domain, normalized);
+                storage.setSession(session.domain, {
+                    ...normalized,
+                    paused: false,
+                    manualPaused: false
+                });
                 if (normalized.mode !== 'emergency') {
                     storage.setLastFrivolityAt(normalized.startedAt ?? Date.now());
                 }
@@ -770,27 +938,56 @@ function handleDesktopMessage(data: any) {
     } else if (data.type === 'paywall-session-ended') {
         if (data.payload?.domain) {
             const { domain, reason } = data.payload;
-            storage.getSession(domain).then((existing) => {
-                if (existing?.mode === 'emergency' && reason === 'emergency-expired') {
-                    storage.recordEmergencyEnded({
+            emergencyStartGraceByDomain.delete(domain);
+            const payloadStartedAt = Number.isFinite(data.payload?.startedAt)
+                ? Number(data.payload.startedAt)
+                : null;
+            storage.getSession(domain).then(async (existing) => {
+                if (!existing) return;
+                const existingStartedAt = Number.isFinite(existing.startedAt)
+                    ? Number(existing.startedAt)
+                    : null;
+                const staleByStartedAt = payloadStartedAt != null
+                    && existingStartedAt != null
+                    && payloadStartedAt + 1000 < existingStartedAt;
+                const ambiguousEmergencyEnd = existing.mode === 'emergency'
+                    && reason !== 'emergency-expired'
+                    && reason !== 'day-rollover'
+                    && (
+                        payloadStartedAt == null
+                        || existingStartedAt == null
+                        || payloadStartedAt + 1000 < existingStartedAt
+                    );
+
+                if (staleByStartedAt || ambiguousEmergencyEnd) {
+                    console.log(`↩️ Ignoring stale session-ended for ${domain} (${reason})`);
+                    return;
+                }
+
+                if (existing.mode === 'emergency' && reason === 'emergency-expired') {
+                    await storage.recordEmergencyEnded({
                         domain,
                         justification: existing.justification,
                         endedAt: Date.now()
                     });
                 }
-                storage.clearSession(domain);
-            });
-            console.log(`🛑 Session ended for ${domain} (${reason})`);
+                await storage.clearSession(domain);
+                console.log(`🛑 Session ended for ${domain} (${reason})`);
 
-            // Immediately check if we need to block the current tab
-            getActiveHttpTab().then(async (tab) => {
+                // Immediately check if we need to block the current tab.
+                const tab = await getActiveHttpTab();
                 if (tab && tab.url && tab.id) {
                     const tabDomain = new URL(tab.url).hostname.replace(/^www\./, '');
-                    if (tabDomain === domain) {
-                        console.log(`🚫 Immediately blocking ${domain} due to session end`);
-                        await showBlockScreen(tab.id, domain, reason, 'session-ended', {
-                            keepPageVisible: reason === 'emergency-expired'
-                        });
+                    if (matchesSessionDomain(tabDomain, domain)) {
+                        if (shouldTransitionToHomebase(reason)) {
+                            console.log(`🌒 Transitioning ${domain} to TimeWellSpent homebase (${reason})`);
+                            await transitionTabToHomebase(tab.id, domain, reason);
+                        } else {
+                            console.log(`🚫 Immediately blocking ${domain} due to session end`);
+                            await showBlockScreen(tab.id, domain, reason, 'session-ended', {
+                                keepPageVisible: reason === 'emergency-expired'
+                            });
+                        }
                     }
                 }
             });
@@ -798,29 +995,54 @@ function handleDesktopMessage(data: any) {
     } else if (data.type === 'paywall-session-paused') {
         if (data.payload?.domain) {
             const domain = data.payload.domain;
+            // Older desktop builds can omit pause reasons; default to inactive so we
+            // never hard-lock sessions unless an explicit manual pause is sent.
+            const reason = typeof data.payload.reason === 'string' ? data.payload.reason : 'inactive';
+            const isManualPause = reason === 'manual';
+            console.log(`⏸️ Session paused for ${domain} (${reason})`);
             storage.getSession(domain).then((session) => {
                 if (session) {
-                    storage.setSession(domain, { ...session, paused: true });
+                    if (session.mode === 'emergency') {
+                        // Emergency mode should remain live unless this extension
+                        // itself explicitly pauses it.
+                        storage.setSession(session.domain ?? domain, {
+                            ...session,
+                            paused: false,
+                            manualPaused: false
+                        });
+                        return;
+                    }
+                    storage.setSession(session.domain ?? domain, {
+                        ...session,
+                        paused: true,
+                        manualPaused: isManualPause
+                    });
                 }
             });
 
-            // Also block if currently viewing this domain (since it's paused)
-            getActiveHttpTab().then(async (tab) => {
-                if (tab && tab.url && tab.id) {
-                    const tabDomain = new URL(tab.url).hostname.replace(/^www\./, '');
-                    if (tabDomain === domain) {
-                        console.log(`🚫 Immediately blocking ${domain} due to pause`);
-                        await showBlockScreen(tab.id, domain, 'paused', 'session-paused');
-                    }
-                }
-            });
+            // Only manual pauses should immediately block.
+            // Inactive pauses are auto-resumable once the user is back on the matching tab.
+            if (isManualPause) {
+                storage.getSession(domain).then((session) => {
+                    if (session?.mode === 'emergency') return;
+                    getActiveHttpTab().then(async (tab) => {
+                        if (tab && tab.url && tab.id) {
+                            const tabDomain = new URL(tab.url).hostname.replace(/^www\./, '');
+                            if (matchesSessionDomain(tabDomain, domain)) {
+                                console.log(`🚫 Immediately blocking ${domain} due to manual pause`);
+                                await showBlockScreen(tab.id, domain, 'paused', 'session-paused');
+                            }
+                        }
+                    });
+                });
+            }
         }
     } else if (data.type === 'paywall-session-resumed') {
         if (data.payload?.domain) {
             const domain = data.payload.domain;
             storage.getSession(domain).then((session) => {
                 if (session) {
-                    storage.setSession(domain, { ...session, paused: false });
+                    storage.setSession(session.domain ?? domain, { ...session, paused: false, manualPaused: false });
                 }
             });
         }
@@ -960,7 +1182,8 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
 
     try {
         const url = new URL(urlString);
-        const domain = url.hostname.replace(/^www\./, '');
+        const rawDomain = url.hostname.replace(/^www\./, '');
+        const domain = normalizeDomainInput(rawDomain) ?? rawDomain;
 
         // console.log(`🔍 Checking ${domain} (source: ${source})`);
 
@@ -1007,29 +1230,46 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
         const isFrivolous = await storage.isFrivolous(domain);
 
         if (isFrivolous) {
+            await maybeRefreshSessionConsistency(domain, source);
             const session = await storage.getSession(domain);
 
             if (session) {
-                let sessionApplies = false;
-                if (session.allowedUrl) {
-                    const current = baseUrl(urlString);
-                    sessionApplies = Boolean(current && current === session.allowedUrl);
-                } else if (session.mode === 'metered') {
-                    sessionApplies = true;
-                } else {
-                    sessionApplies = session.remainingSeconds > 0;
-                }
-
-                if (sessionApplies) {
-                    // Avoid stale paused flags forcing a block while user is back on
-                    // the paid domain.
-                    if (session.paused) {
-                        await storage.setSession(domain, {
+                if (session.mode === 'emergency') {
+                    const sessionDomain = normalizeDomainInput(session.domain ?? domain) ?? domain;
+                    if (session.manualPaused) {
+                        await showBlockScreen(tabId, domain, 'paused', source);
+                        return;
+                    }
+                    // Emergency should be domain-wide; heal stale flags/locks and allow.
+                    if (session.paused || session.allowedUrl) {
+                        await storage.setSession(sessionDomain, {
                             ...session,
+                            allowedUrl: undefined,
                             paused: false,
+                            manualPaused: false,
                             lastTick: Date.now()
                         });
                     }
+                    return;
+                }
+
+                const access = evaluatePaywallAccess(session, { currentUrl: urlString, normalizeUrl: baseUrl });
+
+                if (access.allowed) {
+                    if (access.shouldAutoResume) {
+                        const sessionDomain = normalizeDomainInput(session.domain ?? domain) ?? domain;
+                        await storage.setSession(sessionDomain, {
+                            ...session,
+                            paused: false,
+                            manualPaused: false,
+                            lastTick: Date.now()
+                        });
+                    }
+                    return;
+                }
+
+                if (access.reason === 'manual-paused') {
+                    await showBlockScreen(tabId, domain, 'paused', source);
                     return;
                 }
             }
@@ -1040,9 +1280,25 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
                 if (started) return;
             }
 
+            const emergencyGraceUntil = emergencyStartGraceByDomain.get(domain) ?? 0;
+            if (!session && emergencyGraceUntil > Date.now()) {
+                await maybeRefreshSessionConsistency(domain, `${source}:emergency-grace`);
+                const recovered = await storage.getSession(domain);
+                if (recovered?.mode === 'emergency') {
+                    emergencyStartGraceByDomain.delete(domain);
+                    return;
+                }
+                console.log(`⏳ Holding block during emergency start grace for ${domain} (${Math.max(0, Math.round((emergencyGraceUntil - Date.now()) / 1000))}s left)`);
+                return;
+            }
+            if (emergencyGraceUntil > 0 && emergencyGraceUntil <= Date.now()) {
+                emergencyStartGraceByDomain.delete(domain);
+            }
+
             // No session (or invalid URL-locked session) - BLOCK!
-            const reason = session?.allowedUrl ? 'url-locked' : undefined;
-            console.log(`🚫 Blocking ${domain} (source: ${source})`);
+            const access = evaluatePaywallAccess(session, { currentUrl: urlString, normalizeUrl: baseUrl });
+            const reason = access.reason === 'url-locked' ? 'url-locked' : undefined;
+            console.log(`🚫 Blocking ${domain} (source: ${source}, access=${access.reason}, mode=${session?.mode ?? 'none'}, paused=${Boolean(session?.paused)}, manualPaused=${Boolean(session?.manualPaused)}, allowedUrl=${session?.allowedUrl ?? 'none'})`);
             await showBlockScreen(tabId, domain, reason, source);
         } else {
             // console.log(`✨ ${domain} - allowed (not frivolous)`);
@@ -1056,195 +1312,26 @@ async function checkAndBlockUrl(tabId: number, urlString: string, source: string
 // Session Ticker (Every 15 seconds)
 // ============================================================================
 
+const sessionTickerController = createExtensionSessionTickerController({
+    storage,
+    isDesktopConnected: hasFreshDesktopAuthority,
+    baseUrl,
+    showBlockScreen,
+    maybeSendSessionFade,
+    maybeSendEncouragement,
+    queueWalletTransaction,
+    meteredPremiumMultiplier: METERED_PREMIUM_MULTIPLIER,
+    onPackExpired: async (tabId, domain) => {
+        await transitionTabToHomebase(tabId, domain, 'time-expired');
+    }
+});
+
 function startSessionTicker() {
-    if (sessionTicker) return;
-
-    sessionTicker = setInterval(async () => {
-        await tickSessions();
-    }, 15000);
-}
-
-function getSafeElapsedSeconds(session: PaywallSession, now: number) {
-    const startedAt = Number.isFinite(session.startedAt) ? session.startedAt : now;
-    const lastTick = Number.isFinite(session.lastTick) ? Number(session.lastTick) : startedAt;
-    if (!Number.isFinite(session.startedAt)) session.startedAt = startedAt;
-    if (!Number.isFinite(session.lastTick)) session.lastTick = lastTick;
-    const deltaSeconds = Math.round((now - lastTick) / 1000);
-    if (!Number.isFinite(deltaSeconds) || deltaSeconds <= 0) return 0;
-    return deltaSeconds;
+    sessionTickerController.startSessionTicker();
 }
 
 async function tickSessions() {
-    const now = Date.now();
-
-    // If connected to desktop, let it handle the economy/spending.
-    // We just sync the state via events.
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        return;
-    }
-
-    const sessions = await storage.getAllSessions();
-    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
-
-    const pauseAll = async () => {
-        await Promise.all(Object.entries(sessions).map(([domain, s]) => storage.setSession(domain, { ...s, paused: true })));
-    };
-
-    if (activeTabs.length === 0) {
-        await pauseAll();
-        return;
-    }
-
-    const activeTab = activeTabs[0];
-    if (!activeTab.url || !activeTab.url.startsWith('http')) {
-        await pauseAll();
-        return;
-    }
-
-    const url = new URL(activeTab.url);
-    const activeDomain = url.hostname.replace(/^www\./, '');
-
-    // Tick the session for the current domain
-    const session = sessions[activeDomain];
-    Object.entries(sessions).forEach(async ([domain, s]) => {
-        if (domain !== activeDomain && !s.paused) {
-            await storage.setSession(domain, { ...s, paused: true });
-        } else if (domain === activeDomain && s.paused) {
-            await storage.setSession(domain, { ...s, paused: false });
-        }
-    });
-    if (!session) return;
-
-    if (session.mode !== 'emergency' && session.allowedUrl) {
-        const current = baseUrl(activeTab.url);
-        if (!current || current !== session.allowedUrl) {
-            if (!session.paused) {
-                await storage.setSession(activeDomain, { ...session, paused: true });
-            }
-            if (activeTab.id) {
-                await showBlockScreen(activeTab.id, activeDomain, 'url-locked', 'session-url-locked');
-            }
-            return;
-        }
-    }
-
-    if (session.mode === 'emergency') {
-        if (session.allowedUrl) {
-            const current = baseUrl(activeTab.url);
-            if (!current || current !== session.allowedUrl) {
-                if (!session.paused) {
-                    await storage.setSession(activeDomain, { ...session, paused: true });
-                }
-                if (activeTab.id) {
-                    await showBlockScreen(activeTab.id, activeDomain, 'url-locked', 'session-url-locked');
-                }
-                return;
-            }
-        }
-
-        const reminderIntervalMs = 300 * 1000; // default 5m for offline mode
-        const lastReminder = session.lastReminder ?? session.startedAt;
-        if (Date.now() - lastReminder > reminderIntervalMs) {
-            session.lastReminder = Date.now();
-            await storage.setSession(activeDomain, session);
-            chrome.notifications?.create(`tws-reminder-${activeDomain}-${Date.now()}`, {
-                type: 'basic',
-                iconUrl: 'icons/icon128.png',
-                title: 'Emergency access reminder',
-                message: `Emergency mode is still active for ${activeDomain}. Is this still an emergency?${session.justification ? ` Reason: ${session.justification}.` : ''}`
-            });
-        }
-
-        const elapsedSeconds = getSafeElapsedSeconds(session, now);
-        if (Number.isFinite(session.remainingSeconds)) {
-            session.remainingSeconds -= elapsedSeconds;
-        }
-        session.lastTick = now;
-        if (Number.isFinite(session.remainingSeconds) && session.remainingSeconds <= 0) {
-            await storage.recordEmergencyEnded({
-                domain: activeDomain,
-                justification: session.justification,
-                endedAt: now
-            });
-            await storage.clearSession(activeDomain);
-                if (activeTab.id) {
-                    await showBlockScreen(activeTab.id, activeDomain, 'emergency-expired', 'session-expired', {
-                        keepPageVisible: true
-                    });
-                }
-        } else {
-            await storage.setSession(activeDomain, session);
-        }
-        if (activeTab.id) {
-            await maybeSendSessionFade(activeTab.id, session);
-        }
-        return;
-    } else if (session.mode === 'metered') {
-        // Pay-as-you-go: deduct coins using the latest rate
-        const meteredMultiplier = session.meteredMultiplier ?? METERED_PREMIUM_MULTIPLIER;
-        const marketBaseRate = (await storage.getMarketRate(activeDomain))?.ratePerMin;
-        const fallbackBaseRate = session.ratePerMin / Math.max(1, meteredMultiplier);
-        const currentRate = (marketBaseRate ?? fallbackBaseRate) * meteredMultiplier;
-        // Calculate actual elapsed seconds since last tick
-        const elapsedSeconds = getSafeElapsedSeconds(session, now);
-        // Carry forward fractional coins so we don't over-charge
-        const accrued = (currentRate / 60) * elapsedSeconds + (session.spendRemainder ?? 0);
-        const cost = Math.floor(accrued); // whole coins to spend this tick
-        const remainder = accrued - cost;
-        try {
-            if (cost > 0) {
-                await storage.spendCoins(cost);
-                await queueWalletTransaction({
-                    type: 'spend',
-                    amount: cost,
-                    ts: new Date(now).toISOString(),
-                    meta: {
-                        source: 'extension',
-                        reason: 'metered-tick',
-                        domain: activeDomain,
-                        mode: 'metered',
-                        elapsedSeconds
-                    }
-                });
-            }
-            session.ratePerMin = currentRate;
-            session.spendRemainder = remainder;
-            session.lastTick = now;
-            await storage.setSession(activeDomain, session);
-        } catch (e) {
-            // Insufficient funds - clear session and block
-            console.log(`❌ Insufficient funds for ${activeDomain}`);
-            await storage.clearSession(activeDomain);
-            if (activeTab.id) {
-                await showBlockScreen(activeTab.id, activeDomain, 'insufficient-funds', 'session-insufficient-funds');
-            }
-        }
-        if (activeTab.id) {
-            await maybeSendSessionFade(activeTab.id, session);
-            await maybeSendEncouragement(activeTab.id, activeDomain, session);
-        }
-    } else {
-        // Pack mode: countdown time using actual elapsed time
-        const elapsedSeconds = getSafeElapsedSeconds(session, now);
-        if (!Number.isFinite(session.remainingSeconds)) {
-            session.remainingSeconds = typeof session.purchasedSeconds === 'number' ? session.purchasedSeconds : 0;
-        }
-        session.remainingSeconds -= elapsedSeconds;
-        session.lastTick = now;
-        if (session.remainingSeconds <= 0) {
-            console.log(`⏰ Time's up for ${activeDomain}`);
-            await storage.clearSession(activeDomain);
-            if (activeTab.id) {
-                await showBlockScreen(activeTab.id, activeDomain, 'time-expired', 'session-expired');
-            }
-        } else {
-            await storage.setSession(activeDomain, session);
-        }
-        if (activeTab.id) {
-            await maybeSendSessionFade(activeTab.id, session);
-            await maybeSendEncouragement(activeTab.id, activeDomain, session);
-        }
-    }
+    await sessionTickerController.tickSessions();
 }
 
 async function hydrateIdleState() {
@@ -1315,6 +1402,26 @@ async function getActiveHttpTab(): Promise<chrome.tabs.Tab | null> {
     const tab = tabs[0];
     if (!tab.url || !tab.url.startsWith('http')) return null;
     return tab;
+}
+
+async function findTabIdForDomain(domain: string): Promise<number | null> {
+    const normalizedDomain = normalizeDomainInput(domain) ?? domain;
+    if (!normalizedDomain) return null;
+    const tabs = await chrome.tabs.query({ lastFocusedWindow: true });
+    for (const tab of tabs) {
+        if (typeof tab.id !== 'number' || typeof tab.url !== 'string' || !tab.url.startsWith('http')) continue;
+        try {
+            const parsed = new URL(tab.url);
+            const tabDomainRaw = parsed.hostname.replace(/^www\./, '');
+            const tabDomain = normalizeDomainInput(tabDomainRaw) ?? tabDomainRaw;
+            if (matchesSessionDomain(tabDomain, normalizedDomain)) {
+                return tab.id;
+            }
+        } catch {
+            // Ignore malformed URLs.
+        }
+    }
+    return null;
 }
 
 function emitActivity(event: PendingActivityEvent) {
@@ -1433,41 +1540,6 @@ async function ensureContentScript(tabId: number) {
     }
 }
 
-async function preHidePage(tabId: number) {
-    try {
-        await chrome.scripting.executeScript({
-            target: { tabId },
-            func: () => {
-                const STYLE_ID = 'tws-page-hide';
-                if (document.getElementById(STYLE_ID)) return;
-                const styleTag = document.createElement('style');
-                styleTag.id = STYLE_ID;
-                styleTag.textContent = `
-                  html, body { background: #000 !important; }
-                  body > :not(#tws-shadow-host) { display: none !important; }
-                `;
-                document.documentElement.prepend(styleTag);
-            }
-        });
-    } catch {
-        // Ignore scripting errors (not permitted or not ready)
-    }
-}
-
-async function clearPreHidePage(tabId: number) {
-    try {
-        await chrome.scripting.executeScript({
-            target: { tabId },
-            func: () => {
-                const styleTag = document.getElementById('tws-page-hide');
-                styleTag?.remove();
-            }
-        });
-    } catch {
-        // Ignore scripting errors
-    }
-}
-
 async function getPeekPayload(tabId: number, source?: string) {
     const state = await storage.getState();
     const enabled = state.settings?.peekEnabled !== false;
@@ -1486,9 +1558,6 @@ async function showBlockScreen(
     source?: string,
     options?: { keepPageVisible?: boolean }
 ) {
-    if (!options?.keepPageVisible) {
-        await preHidePage(tabId);
-    }
     await ensureContentScript(tabId);
 
     try {
@@ -1496,16 +1565,49 @@ async function showBlockScreen(
         await chrome.tabs.sendMessage(tabId, {
             type: 'BLOCK_SCREEN',
             payload: { domain, reason, peek, keepPageVisible: options?.keepPageVisible ?? false }
-        });
+        }, { frameId: 0 });
         console.log(`🔒 Block screen message sent to tab ${tabId} for ${domain}`);
     } catch (error) {
         console.warn('Failed to send block message', error);
-        await clearPreHidePage(tabId);
+    }
+}
+
+function shouldTransitionToHomebase(reason?: string) {
+    return reason === 'completed' || reason === 'manual-end' || reason === 'cancelled' || reason === 'day-rollover' || reason === 'time-expired' || reason === 'ended';
+}
+
+function getHomebaseReturnUrl(domain: string, reason?: string) {
+    const url = new URL(chrome.runtime.getURL('newtab.html'));
+    url.searchParams.set('tws_transition', 'return-home');
+    url.searchParams.set('tws_transition_ms', String(HOMEBASE_ENTRY_FADE_MS));
+    if (domain) url.searchParams.set('from_domain', domain);
+    if (reason) url.searchParams.set('session_reason', reason);
+    return url.toString();
+}
+
+async function transitionTabToHomebase(tabId: number, domain: string, reason?: string) {
+    const targetUrl = getHomebaseReturnUrl(domain, reason);
+    try {
+        await ensureContentScript(tabId);
+        await chrome.tabs.sendMessage(tabId, {
+            type: 'SESSION_HOME_TRANSITION',
+            payload: { fadeOutMs: HOMEBASE_EXIT_FADE_MS }
+        });
+        await new Promise((resolve) => setTimeout(resolve, HOMEBASE_EXIT_FADE_MS));
+    } catch {
+        // Fall back to direct navigation if the content script is unavailable.
+    }
+
+    try {
+        await chrome.tabs.update(tabId, { url: targetUrl });
+        return true;
+    } catch (error) {
+        console.warn('Failed to transition tab to homebase', error);
+        return false;
     }
 }
 
 async function showDailyOnboardingScreen(tabId: number, domain: string, forced = false) {
-    await preHidePage(tabId);
     await ensureContentScript(tabId);
     try {
         await chrome.tabs.sendMessage(tabId, {
@@ -1515,7 +1617,74 @@ async function showDailyOnboardingScreen(tabId: number, domain: string, forced =
         console.log(`🌅 Daily onboarding shown for ${domain}`);
     } catch (error) {
         console.warn('Failed to send daily onboarding message', error);
-        await clearPreHidePage(tabId);
+    }
+}
+
+async function tryShowEmergencyIntentCheckOnTab(tabId: number, payload: { domain: string; justification?: string }) {
+    const message = {
+        type: 'EMERGENCY_INTENT_CHECK' as const,
+        payload
+    };
+
+    try {
+        const response = await chrome.tabs.sendMessage(tabId, message, { frameId: 0 });
+        return response?.ok === true;
+    } catch {
+        // Retry once after explicit reinjection for tabs where the content script is late.
+    }
+
+    await ensureContentScript(tabId);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    try {
+        const response = await chrome.tabs.sendMessage(tabId, message, { frameId: 0 });
+        return response?.ok === true;
+    } catch (error) {
+        console.warn('Failed to show emergency intent check', { tabId, error });
+        return false;
+    }
+}
+
+async function showEmergencyIntentCheck(tabId: number | null | undefined, payload: { domain: string; justification?: string }) {
+    const tryPrompt = async () => {
+        const candidateTabIds: number[] = [];
+        if (typeof tabId === 'number') candidateTabIds.push(tabId);
+
+        const domainTabId = await findTabIdForDomain(payload.domain);
+        if (typeof domainTabId === 'number' && !candidateTabIds.includes(domainTabId)) {
+            candidateTabIds.push(domainTabId);
+        }
+
+        const activeTab = await getActiveHttpTab();
+        if (typeof activeTab?.id === 'number' && !candidateTabIds.includes(activeTab.id)) {
+            candidateTabIds.push(activeTab.id);
+        }
+
+        for (const candidateTabId of candidateTabIds) {
+            const shown = await tryShowEmergencyIntentCheckOnTab(candidateTabId, payload);
+            if (shown) return true;
+        }
+
+        // Last fallback: try every http tab in the last focused window.
+        const tabs = await chrome.tabs.query({ lastFocusedWindow: true });
+        for (const tab of tabs) {
+            if (typeof tab.id !== 'number') continue;
+            if (!tab.url || !tab.url.startsWith('http')) continue;
+            if (candidateTabIds.includes(tab.id)) continue;
+            const shown = await tryShowEmergencyIntentCheckOnTab(tab.id, payload);
+            if (shown) return true;
+        }
+
+        return false;
+    };
+
+    if (await tryPrompt()) return;
+
+    // Timing fallback: the paywall overlay can still be closing when emergency starts.
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    const shownAfterDelay = await tryPrompt();
+    if (!shownAfterDelay) {
+        console.warn('Emergency intent prompt could not be shown on any candidate tab', payload);
     }
 }
 
@@ -1686,7 +1855,7 @@ async function maybeTriggerDoomscrollIntervention(
     now: number
 ) {
     if (session.paused) return;
-    if (session.mode === 'emergency') return;
+    if (session.mode === 'emergency' && !Number.isFinite(session.remainingSeconds)) return;
     const discouragementEnabled = await storage.getDiscouragementEnabled();
     if (!discouragementEnabled) return;
     const isFriv = await storage.isFrivolous(domain);
@@ -1792,7 +1961,10 @@ async function notifyPomodoroBlock(domain: string, mode: PomodoroSession['mode']
     }
 }
 
-async function preferDesktopPurchase(path: '/paywall/packs' | '/paywall/metered', payload: Record<string, unknown>) {
+async function preferDesktopPurchase(
+    path: '/paywall/packs' | '/paywall/metered',
+    payload: Record<string, unknown>
+): Promise<{ ok: true; session: unknown } | { ok: false; error: string }> {
     try {
         const response = await fetch(`${DESKTOP_API_URL}${path}`, {
             method: 'POST',
@@ -1808,15 +1980,62 @@ async function preferDesktopPurchase(path: '/paywall/packs' | '/paywall/metered'
             } as any
         });
         await storage.setLastFrivolityAt(Date.now());
-        await syncFromDesktop(); // refresh wallet + rates
-        return { ok: true, session };
+        return { ok: true as const, session };
     } catch (error) {
         console.log('Desktop purchase failed, falling back to local', error);
-        return { ok: false, error: (error as Error).message };
+        return { ok: false as const, error: (error as Error).message };
     }
 }
 
+async function waitForLocalEmergencySession(domain: string, timeoutMs = 1800): Promise<PaywallSession | null> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const session = await storage.getSession(domain);
+        if (session?.mode === 'emergency') {
+            return session;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 60));
+    }
+    return null;
+}
+
+async function fetchDesktopPaywallStatusSession(domain: string): Promise<Partial<PaywallSession> | null> {
+    const response = await fetch(`${DESKTOP_API_URL}/paywall/status?domain=${encodeURIComponent(domain)}`, { cache: 'no-store' });
+    if (!response.ok) return null;
+    const payload = await response.json() as { session?: Partial<PaywallSession> | null };
+    if (!payload?.session || typeof payload.session !== 'object') return null;
+    return payload.session;
+}
+
 async function preferDesktopEmergency(payload: { domain: string; justification: string; url?: string }) {
+    const domain = normalizeDomainInput(payload.domain) ?? payload.domain;
+
+    if (sendDesktopWsEvent('paywall:start-emergency', payload)) {
+        console.log(`📡 Requested emergency start via desktop WS for ${domain}`);
+        const wsSession = await waitForLocalEmergencySession(domain);
+        if (wsSession) {
+            return { ok: true as const, session: wsSession };
+        }
+        try {
+            const statusSession = await fetchDesktopPaywallStatusSession(domain);
+            if (statusSession?.mode === 'emergency') {
+                const sessionDomain = statusSession.domain ?? domain;
+                await storage.updateFromDesktop({
+                    sessions: {
+                        [sessionDomain]: statusSession
+                    } as any
+                });
+                const synced = await storage.getSession(domain);
+                if (synced?.mode === 'emergency') {
+                    return { ok: true as const, session: synced };
+                }
+            }
+        } catch (error) {
+            console.warn(`Failed to confirm WS emergency session for ${domain}`, error);
+        }
+        console.warn(`WS emergency start did not materialize for ${domain}; falling back to REST`);
+    }
+
     try {
         const response = await fetch(`${DESKTOP_API_URL}/paywall/emergency`, {
             method: 'POST',
@@ -1832,10 +2051,9 @@ async function preferDesktopEmergency(payload: { domain: string; justification: 
         const session = await response.json();
         await storage.updateFromDesktop({
             sessions: {
-                [session.domain]: session
+                [session.domain ?? domain]: session
             } as any
         });
-        await syncFromDesktop(); // refresh wallet + rates
         return { ok: true as const, session };
     } catch (error) {
         console.log('Desktop emergency start failed, falling back to local', error);
@@ -1843,15 +2061,9 @@ async function preferDesktopEmergency(payload: { domain: string; justification: 
     }
 }
 
-async function preferDesktopChallengePass(payload: {
-    domain: string;
-    durationSeconds?: number;
-    solvedSquares?: number;
-    requiredSquares?: number;
-    elapsedSeconds?: number;
-}) {
+async function preferDesktopConstrainEmergency(payload: { domain: string; durationSeconds?: number }) {
     try {
-        const response = await fetch(`${DESKTOP_API_URL}/paywall/challenge-pass`, {
+        const response = await fetch(`${DESKTOP_API_URL}/paywall/emergency/constrain`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
@@ -1859,8 +2071,8 @@ async function preferDesktopChallengePass(payload: {
         });
         if (!response.ok) {
             const body = await response.json().catch(() => null);
-            const message = body?.error ? String(body.error) : 'Desktop rejected challenge pass';
-            return { ok: false as const, error: message };
+            const message = body?.error ? String(body.error) : 'Desktop rejected emergency update';
+            return { ok: false as const, error: message, canFallback: response.status >= 500 };
         }
         const session = await response.json();
         await storage.updateFromDesktop({
@@ -1868,12 +2080,10 @@ async function preferDesktopChallengePass(payload: {
                 [session.domain]: session
             } as any
         });
-        await storage.setLastFrivolityAt(Date.now());
-        await syncFromDesktop();
         return { ok: true as const, session };
     } catch (error) {
-        console.log('Desktop challenge pass failed, falling back to local', error);
-        return { ok: false as const, error: (error as Error).message };
+        console.log('Desktop emergency constrain failed, falling back to local', error);
+        return { ok: false as const, error: (error as Error).message, canFallback: true as const };
     }
 }
 
@@ -1894,193 +2104,246 @@ async function preferDesktopEnd(domain: string) {
     }
 }
 
+function sendDesktopWsEvent(type: string, payload: unknown) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify({ type, payload }));
+    return true;
+}
+
+const paywallSessionCommands = createPaywallSessionCommandHandlers({
+    storage,
+    preferDesktopPurchase,
+    preferDesktopEnd,
+    sendWsEvent: sendDesktopWsEvent,
+    postStartStoreFallback: async (payload) => {
+        try {
+            const response = await fetch(`${DESKTOP_API_URL}/paywall/start-store-fallback`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                cache: 'no-store'
+            });
+            return response.ok;
+        } catch {
+            return false;
+        }
+    },
+    syncFromDesktop,
+    queueWalletTransaction,
+    queueConsumptionEvent,
+    baseUrl,
+    normalizeGuardrailColorFilter,
+    getColorFilterPriceMultiplier,
+    meteredPremiumMultiplier: METERED_PREMIUM_MULTIPLIER,
+    getActiveHttpTab,
+    matchesSessionDomain,
+    transitionTabToHomebase: async (tabId, domain, reason) => {
+        await transitionTabToHomebase(tabId, domain, reason);
+    }
+});
+
+const emergencyCommands = createEmergencyCommandHandlers({
+    storage,
+    preferDesktopEmergency,
+    preferDesktopConstrainEmergency,
+    normalizeSessionFromDesktop,
+    normalizeDomainInput,
+    showEmergencyIntentCheck,
+    queueConsumptionEvent,
+    baseUrl,
+    maybeSendSessionFade,
+    checkAndBlockUrl,
+    getActiveHttpTab,
+    deliverEncouragement,
+    sendEmergencyReviewViaWs: ({ outcome, domain }) => {
+        return sendDesktopWsEvent('paywall:emergency-review', { outcome, domain });
+    },
+    sendEmergencyReviewToDesktop: async (outcome) => {
+        await fetch(`${DESKTOP_API_URL}/paywall/emergency-review`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ outcome }),
+            cache: 'no-store',
+        });
+    }
+});
+
 // ============================================================================
 // Message Handling (from content scripts)
 // ============================================================================
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.type === 'GET_STATUS') {
-        handleGetStatus(message.payload).then(sendResponse);
-        return true; // Async response
-    } else if (message.type === 'GET_REFLECTION_PHOTOS') {
-        handleGetReflectionPhotos(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'GET_DEV_FLAGS') {
-        sendResponse?.({
-            success: true,
-            flags: {
-                isDev: IS_DEV_BUILD,
-                simulateDisconnect: devSimulateDesktopDisconnect,
-                logSessionDrift: devLogSessionDrift
+function getDevFlags() {
+    return {
+        isDev: IS_DEV_BUILD,
+        simulateDisconnect: devSimulateDesktopDisconnect,
+        logSessionDrift: devLogSessionDrift
+    };
+}
+
+function applyDevFlags(payload: unknown) {
+    if (!IS_DEV_BUILD) {
+        return { success: false, error: 'Dev tools unavailable in this build.' };
+    }
+
+    const simulateDisconnect = (payload as { simulateDisconnect?: unknown } | null)?.simulateDisconnect;
+    const logSessionDrift = (payload as { logSessionDrift?: unknown } | null)?.logSessionDrift;
+
+    if (typeof simulateDisconnect === 'boolean') {
+        devSimulateDesktopDisconnect = simulateDisconnect;
+
+        if (devSimulateDesktopDisconnect) {
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
             }
-        });
-        return true;
-    } else if (message.type === 'SET_DEV_FLAGS') {
-        if (!IS_DEV_BUILD) {
-            sendResponse?.({ success: false, error: 'Dev tools unavailable in this build.' });
+            if (ws) {
+                try {
+                    ws.close();
+                } catch {
+                    // ignore
+                }
+                ws = null;
+            }
+        } else {
+            tryConnectToDesktop();
+        }
+    }
+
+    if (typeof logSessionDrift === 'boolean') {
+        devLogSessionDrift = logSessionDrift;
+    }
+
+    return { success: true, flags: getDevFlags() };
+}
+
+function respondAsync(sendResponse: (response?: unknown) => void, task: () => Promise<unknown>) {
+    task().then(sendResponse);
+    return true;
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    const type = typeof message?.type === 'string' ? message.type : '';
+    const payload = message?.payload;
+
+    switch (type) {
+        case 'GET_STATUS':
+            return respondAsync(sendResponse, () => handleGetStatus(payload));
+        case 'GET_REFLECTION_PHOTOS':
+            return respondAsync(sendResponse, () => handleGetReflectionPhotos(payload));
+        case 'GET_DEV_FLAGS':
+            sendResponse({ success: true, flags: getDevFlags() });
             return true;
-        }
-        const simulateDisconnect = message.payload?.simulateDisconnect;
-        const logSessionDrift = message.payload?.logSessionDrift;
-        if (typeof simulateDisconnect === 'boolean') {
-            devSimulateDesktopDisconnect = simulateDisconnect;
-            if (devSimulateDesktopDisconnect) {
-                if (reconnectTimer) {
-                    clearTimeout(reconnectTimer);
-                    reconnectTimer = null;
-                }
-                if (ws) {
-                    try {
-                        ws.close();
-                    } catch {
-                        // ignore
-                    }
-                    ws = null;
-                }
-            } else {
-                tryConnectToDesktop();
-            }
-        }
-        if (typeof logSessionDrift === 'boolean') {
-            devLogSessionDrift = logSessionDrift;
-        }
-        sendResponse?.({
-            success: true,
-            flags: {
-                isDev: IS_DEV_BUILD,
-                simulateDisconnect: devSimulateDesktopDisconnect,
-                logSessionDrift: devLogSessionDrift
-            }
-        });
-        return true;
-    } else if (message.type === 'GET_CONNECTION') {
-        handleGetConnection().then(sendResponse);
-        return true;
-    } else if (message.type === 'GET_FRIENDS') {
-        handleGetFriends().then(sendResponse);
-        return true;
-    } else if (message.type === 'GET_TROPHIES') {
-        handleGetTrophies().then(sendResponse);
-        return true;
-    } else if (message.type === 'GET_FRIEND_TIMELINE') {
-        handleGetFriendTimeline(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'PAGE_HEARTBEAT') {
-        handlePageHeartbeat(message.payload, _sender).then(sendResponse);
-        return true;
-    } else if (message.type === 'USER_ACTIVITY') {
-        void handleUserActivity((message.payload ?? {}) as UserActivityPayload, _sender);
-        sendResponse?.({ ok: true });
-        return true;
-    } else if (message.type === 'GET_LINK_PREVIEWS') {
-        handleGetLinkPreviews(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'GET_WRITING_REDIRECTS') {
-        handleGetWritingRedirects(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'OPEN_WRITING_TARGET') {
-        handleOpenWritingTarget(message.payload, _sender).then(sendResponse);
-        return true;
-    } else if (message.type === 'WRITING_HUD_PROGRESS') {
-        handleWritingHudProgress(message.payload, _sender).then(sendResponse);
-        return true;
-    } else if (message.type === 'WRITING_HUD_END') {
-        handleWritingHudEnd(message.payload, _sender).then(sendResponse);
-        return true;
-    } else if (message.type === 'OPEN_URL') {
-        handleOpenUrl(message.payload, _sender).then(sendResponse);
-        return true;
-    } else if (message.type === 'OPEN_EXTENSION_PAGE') {
-        handleOpenExtensionPage(message.payload, _sender).then(sendResponse);
-        return true;
-    } else if (message.type === 'OPEN_APP') {
-        handleOpenApp(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'OPEN_DESKTOP_ACTION') {
-        handleOpenDesktopAction(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'OPEN_DESKTOP_VIEW') {
-        handleOpenDesktopView(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'UPSERT_LIBRARY_ITEM') {
-        handleUpsertLibraryItem(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'SET_DOMAIN_CATEGORY') {
-        handleSetDomainCategory(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'BUY_PACK') {
-        handleBuyPack(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'START_METERED') {
-        handleStartMetered(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'PAUSE_SESSION') {
-        handlePauseSession(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'RESUME_SESSION') {
-        handleResumeSession(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'END_SESSION') {
-        handleEndSession(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'START_EMERGENCY') {
-        handleStartEmergency(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'START_CHALLENGE_PASS') {
-        handleStartChallengePass(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'START_STORE_SESSION') {
-        handleStartStoreSession(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'EMERGENCY_REVIEW') {
-        handleEmergencyReview(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'MARK_LIBRARY_CONSUMED') {
-        handleMarkLibraryConsumed(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'MARK_READING_CONSUMED') {
-        handleMarkReadingConsumed(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'SET_ROT_MODE') {
-        handleSetRotMode(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'SET_DISCOURAGEMENT_MODE') {
-        handleSetDiscouragementMode(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'SET_DISCOURAGEMENT_INTERVAL') {
-        handleSetDiscouragementInterval(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'SET_SPEND_GUARD') {
-        handleSetSpendGuard(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'SET_CAMERA_MODE') {
-        handleSetCameraMode(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'SET_GUARDRAIL_COLOR_FILTER') {
-        handleSetGuardrailColorFilter(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'SET_ALWAYS_GREYSCALE') {
-        handleSetAlwaysGreyscale(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'SET_REFLECTION_SLIDESHOW_SETTINGS') {
-        handleSetReflectionSlideshowSettings(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'DAILY_ONBOARDING_SAVE') {
-        handleDailyOnboardingSave(message.payload, _sender).then(sendResponse);
-        return true;
-    } else if (message.type === 'DAILY_ONBOARDING_SKIP') {
-        handleDailyOnboardingSkip(message.payload, _sender).then(sendResponse);
-        return true;
-    } else if (message.type === 'REQUEST_POMODORO_OVERRIDE') {
-        handlePomodoroOverrideRequest(message.payload).then(sendResponse);
-        return true;
-    } else if (message.type === 'OPEN_SHORTCUTS') {
-        chrome.tabs.create({ url: 'chrome://extensions/shortcuts' }).then(() => {
-            sendResponse({ success: true });
-        }).catch(() => {
-            sendResponse({ success: false, error: 'Unable to open shortcuts page' });
-        });
-        return true;
+        case 'SET_DEV_FLAGS':
+            sendResponse(applyDevFlags(payload));
+            return true;
+        case 'GET_CONNECTION':
+            return respondAsync(sendResponse, () => handleGetConnection());
+        case 'GET_FRIENDS':
+            return respondAsync(sendResponse, () => handleGetFriends());
+        case 'GET_TROPHIES':
+            return respondAsync(sendResponse, () => handleGetTrophies());
+        case 'GET_FRIEND_TIMELINE':
+            return respondAsync(sendResponse, () => handleGetFriendTimeline(payload));
+        case 'PAGE_HEARTBEAT':
+            return respondAsync(sendResponse, () => handlePageHeartbeat(payload, sender));
+        case 'USER_ACTIVITY':
+            void handleUserActivity((payload ?? {}) as UserActivityPayload, sender);
+            sendResponse({ ok: true });
+            return true;
+        case 'GET_LINK_PREVIEWS':
+            return respondAsync(sendResponse, () => handleGetLinkPreviews(payload));
+        case 'GET_WRITING_REDIRECTS':
+            return respondAsync(sendResponse, () => handleGetWritingRedirects(payload));
+        case 'GET_ANKI_STATUS':
+            return respondAsync(sendResponse, () => handleGetAnkiStatus(payload));
+        case 'GET_ANKI_ANALYTICS':
+            return respondAsync(sendResponse, () => handleGetAnkiAnalytics(payload));
+        case 'GET_ZOTERO_ANALYTICS':
+            return respondAsync(sendResponse, () => handleGetZoteroAnalytics(payload));
+        case 'PICK_ANKI_DECK':
+            return respondAsync(sendResponse, () => handlePickAnkiDeck());
+        case 'IMPORT_ANKI_DECK':
+            return respondAsync(sendResponse, () => handleImportAnkiDeck(payload));
+        case 'REVIEW_ANKI_CARD':
+            return respondAsync(sendResponse, () => handleReviewAnkiCard(payload));
+        case 'START_ANKI_UNLOCK':
+            return respondAsync(sendResponse, () => handleStartAnkiUnlock(payload));
+        case 'OPEN_WRITING_TARGET':
+            return respondAsync(sendResponse, () => handleOpenWritingTarget(payload, sender));
+        case 'WRITING_HUD_PROGRESS':
+            return respondAsync(sendResponse, () => handleWritingHudProgress(payload, sender));
+        case 'WRITING_HUD_END':
+            return respondAsync(sendResponse, () => handleWritingHudEnd(payload, sender));
+        case 'OPEN_URL':
+            return respondAsync(sendResponse, () => handleOpenUrl(payload, sender));
+        case 'OPEN_EXTENSION_PAGE':
+            return respondAsync(sendResponse, () => handleOpenExtensionPage(payload, sender));
+        case 'OPEN_APP':
+            return respondAsync(sendResponse, () => handleOpenApp(payload));
+        case 'OPEN_DESKTOP_ACTION':
+            return respondAsync(sendResponse, () => handleOpenDesktopAction(payload));
+        case 'OPEN_DESKTOP_VIEW':
+            return respondAsync(sendResponse, () => handleOpenDesktopView(payload));
+        case 'UPSERT_LIBRARY_ITEM':
+            return respondAsync(sendResponse, () => handleUpsertLibraryItem(payload));
+        case 'SET_DOMAIN_CATEGORY':
+            return respondAsync(sendResponse, () => handleSetDomainCategory(payload));
+        case 'BUY_PACK':
+            return respondAsync(sendResponse, () => handleBuyPack(payload));
+        case 'START_METERED':
+            return respondAsync(sendResponse, () => handleStartMetered(payload));
+        case 'PAUSE_SESSION':
+            return respondAsync(sendResponse, () => handlePauseSession(payload));
+        case 'RESUME_SESSION':
+            return respondAsync(sendResponse, () => handleResumeSession(payload));
+        case 'END_SESSION':
+            return respondAsync(sendResponse, () => handleEndSession(payload));
+        case 'START_EMERGENCY':
+            return respondAsync(sendResponse, () => handleStartEmergency(payload, sender));
+        case 'EMERGENCY_INTENT_DECISION':
+            return respondAsync(sendResponse, () => handleEmergencyIntentDecision(payload, sender));
+        case 'START_CHALLENGE_PASS':
+            sendResponse({ success: false, error: 'Challenge unlock is temporarily unavailable.' });
+            return true;
+        case 'START_STORE_SESSION':
+            return respondAsync(sendResponse, () => handleStartStoreSession(payload));
+        case 'EMERGENCY_REVIEW':
+            return respondAsync(sendResponse, () => handleEmergencyReview(payload));
+        case 'MARK_LIBRARY_CONSUMED':
+            return respondAsync(sendResponse, () => handleMarkLibraryConsumed(payload));
+        case 'MARK_READING_CONSUMED':
+            return respondAsync(sendResponse, () => handleMarkReadingConsumed(payload));
+        case 'SET_ROT_MODE':
+            return respondAsync(sendResponse, () => handleSetRotMode(payload));
+        case 'SET_DISCOURAGEMENT_MODE':
+            return respondAsync(sendResponse, () => handleSetDiscouragementMode(payload));
+        case 'SET_DISCOURAGEMENT_INTERVAL':
+            return respondAsync(sendResponse, () => handleSetDiscouragementInterval(payload));
+        case 'SET_SPEND_GUARD':
+            return respondAsync(sendResponse, () => handleSetSpendGuard(payload));
+        case 'SET_CAMERA_MODE':
+            return respondAsync(sendResponse, () => handleSetCameraMode(payload));
+        case 'SET_GUARDRAIL_COLOR_FILTER':
+            return respondAsync(sendResponse, () => handleSetGuardrailColorFilter(payload));
+        case 'SET_ALWAYS_GREYSCALE':
+            return respondAsync(sendResponse, () => handleSetAlwaysGreyscale(payload));
+        case 'SET_REFLECTION_SLIDESHOW_SETTINGS':
+            return respondAsync(sendResponse, () => handleSetReflectionSlideshowSettings(payload));
+        case 'DAILY_ONBOARDING_SAVE':
+            return respondAsync(sendResponse, () => handleDailyOnboardingSave(payload, sender));
+        case 'DAILY_ONBOARDING_SKIP':
+            return respondAsync(sendResponse, () => handleDailyOnboardingSkip(payload, sender));
+        case 'REQUEST_POMODORO_OVERRIDE':
+            return respondAsync(sendResponse, () => handlePomodoroOverrideRequest(payload));
+        case 'OPEN_SHORTCUTS':
+            chrome.tabs.create({ url: 'chrome://extensions/shortcuts' }).then(() => {
+                sendResponse({ success: true });
+            }).catch(() => {
+                sendResponse({ success: false, error: 'Unable to open shortcuts page' });
+            });
+            return true;
+        default:
+            return false;
     }
 });
 
@@ -2134,6 +2397,9 @@ async function handlePageHeartbeat(payload: { url?: string; title?: string; medi
         }, 'content-heartbeat', tabId);
 
         if (ws && ws.readyState === WebSocket.OPEN) {
+            if (tabId != null) {
+                await checkAndBlockUrl(tabId, url, 'content-heartbeat');
+            }
             const domain = new URL(url).hostname.replace(/^www\./, '');
             const session = await storage.getSession(domain);
             if (tabId != null && session) {
@@ -2760,6 +3026,13 @@ function normalizeDomainInput(raw: string) {
     return cleaned || null;
 }
 
+function matchesSessionDomain(actualDomain: string | null | undefined, sessionDomain: string | null | undefined) {
+    const actual = normalizeDomain(normalizeDomainInput(actualDomain ?? '') ?? '');
+    const session = normalizeDomain(normalizeDomainInput(sessionDomain ?? '') ?? '');
+    if (!actual || !session) return false;
+    return actual === session || actual.endsWith(`.${session}`);
+}
+
 function dedupeDomains(items: string[]) {
     const seen = new Set<string>();
     const result: string[] = [];
@@ -3081,8 +3354,49 @@ async function promptForUnlockDetails(tabId: number, defaults: { url: string; pr
     return payload as { url: string; price: number; title?: string | null };
 }
 
+async function fetchAnkiStatusFromDesktop(payload?: { deckId?: number | null; limit?: number }): Promise<AnkiStatusPayload> {
+    try {
+        const query = new URLSearchParams();
+        if (typeof payload?.deckId === 'number' && Number.isFinite(payload.deckId) && payload.deckId > 0) {
+            query.set('deckId', String(Math.round(payload.deckId)));
+        }
+        if (typeof payload?.limit === 'number' && Number.isFinite(payload.limit)) {
+            query.set('limit', String(Math.max(1, Math.min(200, Math.round(payload.limit)))));
+        }
+        const suffix = query.toString() ? `?${query.toString()}` : '';
+        const response = await fetch(`${DESKTOP_API_URL}/anki/status${suffix}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error(`Anki status unavailable (${response.status})`);
+        const data = await response.json() as Partial<AnkiStatusPayload>;
+        return {
+            decks: Array.isArray(data.decks) ? data.decks as AnkiDeckSummary[] : [],
+            dueCards: Array.isArray(data.dueCards) ? data.dueCards as AnkiDueCard[] : [],
+            totalDue: Number.isFinite(data.totalDue) ? Number(data.totalDue) : 0,
+            reviewedToday: Number.isFinite(data.reviewedToday) ? Number(data.reviewedToday) : 0,
+            totalReviewMsToday: Number.isFinite(data.totalReviewMsToday) ? Number(data.totalReviewMsToday) : 0,
+            availableUnlockReviews: Number.isFinite(data.availableUnlockReviews) ? Number(data.availableUnlockReviews) : 0,
+            unlockThreshold: Number.isFinite(data.unlockThreshold) ? Number(data.unlockThreshold) : 6,
+            unlocksAvailable: Number.isFinite(data.unlocksAvailable) ? Number(data.unlocksAvailable) : 0
+        };
+    } catch {
+        return {
+            decks: [],
+            dueCards: [],
+            totalDue: 0,
+            reviewedToday: 0,
+            totalReviewMsToday: 0,
+            availableUnlockReviews: 0,
+            unlockThreshold: 6,
+            unlocksAvailable: 0
+        };
+    }
+}
+
 async function handleGetStatus(payload: { domain: string; url?: string }) {
-    await syncFromDesktop().catch(() => { });
+    const localSession = await storage.getSession(payload.domain);
+    if (!localSession || localSession.paused) {
+        // Keep status responsive, but avoid overwriting active local sessions during HUD polling.
+        await syncFromDesktop().catch(() => { });
+    }
     const balance = await storage.getBalance();
     const rate = await storage.getMarketRate(payload.domain);
     const session = await storage.getSession(payload.domain);
@@ -3116,6 +3430,8 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
     const consumedReading = state.consumedReading ?? {};
     readingItems = readingItems.filter((item: any) => item?.id && !consumedReading[String(item.id)]);
 
+    const anki = await fetchAnkiStatusFromDesktop({ limit: 24 });
+
     return {
         balance,
         rate,
@@ -3131,6 +3447,7 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
         emergency: state.emergency,
         dailyOnboarding: state.dailyOnboarding ?? null,
         settings: {
+            theme: state.settings.theme ?? 'lavender',
             idleThreshold: state.settings.idleThreshold ?? 15,
             continuityWindowSeconds: state.settings.continuityWindowSeconds ?? 120,
             productivityGoalHours: state.settings.productivityGoalHours ?? 2,
@@ -3151,7 +3468,8 @@ async function handleGetStatus(payload: { domain: string; url?: string }) {
             productiveItems: libraryItems.filter((item) => item.purpose === 'productive' && !item.consumedAt),
             productiveDomains: state.settings.productiveDomains ?? [],
             readingItems
-        }
+        },
+        anki
     };
 }
 
@@ -3249,6 +3567,154 @@ async function handleGetWritingRedirects(payload: { domain?: string; limit?: num
     }
 }
 
+async function handleGetAnkiStatus(payload: { deckId?: number; limit?: number }) {
+    const data = await fetchAnkiStatusFromDesktop({
+        deckId: typeof payload?.deckId === 'number' ? payload.deckId : null,
+        limit: typeof payload?.limit === 'number' ? payload.limit : 24
+    });
+    return { success: true, data };
+}
+
+async function handleGetAnkiAnalytics(payload: { days?: number }) {
+    try {
+        const rawDays = Number(payload?.days);
+        const days = Number.isFinite(rawDays) ? Math.max(1, Math.min(365, Math.round(rawDays))) : 30;
+        const query = new URLSearchParams({ days: String(days) });
+        const response = await fetch(`${DESKTOP_API_URL}/anki/analytics?${query.toString()}`, { cache: 'no-store' });
+        if (!response.ok) {
+            const body = await response.json().catch(() => null) as { error?: string } | null;
+            throw new Error(body?.error ?? `Anki analytics unavailable (${response.status})`);
+        }
+        const data = await response.json() as AnkiAnalyticsPayload;
+        return { success: true, data };
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+}
+
+async function handleGetZoteroAnalytics(payload: { days?: number; limit?: number; sync?: boolean }) {
+    try {
+        const rawDays = Number(payload?.days);
+        const days = Number.isFinite(rawDays) ? Math.max(1, Math.min(180, Math.round(rawDays))) : 30;
+        const rawLimit = Number(payload?.limit);
+        const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(20, Math.round(rawLimit))) : 8;
+        const sync = payload?.sync !== false;
+        const query = new URLSearchParams({
+            days: String(days),
+            limit: String(limit),
+            sync: sync ? '1' : '0'
+        });
+        const response = await fetch(`${DESKTOP_API_URL}/integrations/zotero/analytics?${query.toString()}`, { cache: 'no-store' });
+        if (!response.ok) {
+            const body = await response.json().catch(() => null) as { error?: string } | null;
+            throw new Error(body?.error ?? `Zotero analytics unavailable (${response.status})`);
+        }
+        const data = await response.json() as ZoteroAnalyticsPayload;
+        return { success: true, data };
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+}
+
+async function handlePickAnkiDeck() {
+    try {
+        const response = await fetch(`${DESKTOP_API_URL}/anki/pick-file`, {
+            method: 'POST',
+            cache: 'no-store'
+        });
+        if (!response.ok) {
+            const body = await response.json().catch(() => null) as { error?: string } | null;
+            throw new Error(body?.error ?? `Deck picker unavailable (${response.status})`);
+        }
+        const data = await response.json() as { path?: string | null; cancelled?: boolean };
+        const path = typeof data.path === 'string' && data.path.trim() ? data.path.trim() : null;
+        return { success: true, path, cancelled: Boolean(data.cancelled) };
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+}
+
+async function handleImportAnkiDeck(payload: { path?: string }) {
+    try {
+        const filePath = typeof payload?.path === 'string' ? payload.path.trim() : '';
+        if (!filePath) throw new Error('Deck path is required');
+        const response = await fetch(`${DESKTOP_API_URL}/anki/import-file`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            body: JSON.stringify({ path: filePath })
+        });
+        if (!response.ok) {
+            const body = await response.json().catch(() => null) as { error?: string } | null;
+            throw new Error(body?.error ?? `Deck import failed (${response.status})`);
+        }
+        const data = await response.json();
+        await syncFromDesktop().catch(() => { });
+        return { success: true, ...data };
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+}
+
+async function handleReviewAnkiCard(payload: { cardId?: number; rating?: string; responseMs?: number }) {
+    try {
+        const cardId = Number(payload?.cardId);
+        const rating = typeof payload?.rating === 'string' ? payload.rating : '';
+        if (!Number.isFinite(cardId) || cardId <= 0) throw new Error('Invalid card id');
+        if (!['again', 'hard', 'good', 'easy'].includes(rating)) throw new Error('Invalid review rating');
+        const response = await fetch(`${DESKTOP_API_URL}/anki/review`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            body: JSON.stringify({
+                cardId: Math.round(cardId),
+                rating,
+                responseMs: Number.isFinite(payload?.responseMs as number) ? Math.max(50, Math.round(payload?.responseMs as number)) : undefined
+            })
+        });
+        if (!response.ok) {
+            const body = await response.json().catch(() => null) as { error?: string } | null;
+            throw new Error(body?.error ?? `Review submit failed (${response.status})`);
+        }
+        const data = await response.json();
+        await syncFromDesktop().catch(() => { });
+        return { success: true, ...data };
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+}
+
+async function handleStartAnkiUnlock(payload: { domain?: string; minutes?: number; requiredReviews?: number }) {
+    try {
+        const domain = typeof payload?.domain === 'string' ? payload.domain.trim() : '';
+        if (!domain) throw new Error('Domain is required');
+        const minutes = Number.isFinite(payload?.minutes as number) ? Math.max(1, Math.min(120, Math.round(payload?.minutes as number))) : 10;
+        const requiredReviews = Number.isFinite(payload?.requiredReviews as number)
+            ? Math.max(1, Math.min(50, Math.round(payload?.requiredReviews as number)))
+            : 6;
+        const response = await fetch(`${DESKTOP_API_URL}/anki/unlock`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            body: JSON.stringify({ domain, minutes, requiredReviews })
+        });
+        if (!response.ok) {
+            const body = await response.json().catch(() => null) as { error?: string } | null;
+            throw new Error(body?.error ?? `Unlock failed (${response.status})`);
+        }
+        const data = await response.json() as { session?: PaywallSession };
+        const session = data.session;
+        if (session?.domain) {
+            await storage.setSession(session.domain, session);
+            await storage.setLastFrivolityAt(Date.now());
+        }
+        await syncFromDesktop().catch(() => { });
+        return { success: true, ...data };
+    } catch (error) {
+        return { success: false, error: (error as Error).message };
+    }
+}
+
 async function handleGetFriendTimeline(payload: { userId: string; hours?: number }) {
     try {
         const hours = payload?.hours ?? 24;
@@ -3330,70 +3796,7 @@ async function handleSetReflectionSlideshowSettings(payload: Partial<ReflectionS
 }
 
 async function handleStartStoreSession(payload: { domain: string; price: number; url?: string }) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'paywall:start-store', payload }));
-        return { success: true };
-    }
-
-    // Fallback? Store purchase requires wallet deduction. 
-    // Extension has local wallet state.
-    try {
-        await storage.spendCoins(payload.price);
-        const session = {
-            domain: payload.domain,
-            mode: 'store' as const,
-            ratePerMin: 0,
-            remainingSeconds: Infinity,
-            startedAt: Date.now(),
-            lastTick: Date.now(),
-            paused: false,
-            purchasePrice: payload.price,
-            spendRemainder: 0,
-            allowedUrl: payload.url ? baseUrl(payload.url) ?? undefined : undefined
-        };
-        await storage.setSession(payload.domain, session);
-        await storage.setLastFrivolityAt(Date.now());
-
-        // Notify desktop if possible via HTTP even if WS is down.
-        let fallbackOk = false;
-        try {
-            const response = await fetch(`${DESKTOP_API_URL}/paywall/start-store-fallback`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-                cache: 'no-store'
-            });
-            fallbackOk = response.ok;
-        } catch {
-            fallbackOk = false;
-        }
-
-        if (fallbackOk) {
-            await syncFromDesktop();
-        } else {
-            await queueWalletTransaction({
-                type: 'spend',
-                amount: payload.price,
-                meta: {
-                    source: 'extension',
-                    reason: 'store-start',
-                    domain: payload.domain,
-                    url: payload.url ?? null
-                }
-            });
-            await queueConsumptionEvent({
-                kind: 'frivolous-session',
-                title: payload.domain,
-                url: session.allowedUrl ?? null,
-                domain: payload.domain,
-                meta: { mode: 'store', purchasePrice: payload.price, allowedUrl: session.allowedUrl ?? null }
-            });
-        }
-
-        return { success: true, session };
-    } catch (err) {
-        return { success: false, error: (err as Error).message };
-    }
+    return paywallSessionCommands.startStoreSession(payload);
 }
 
 async function handleGetConnection() {
@@ -3769,354 +4172,53 @@ async function handleMarkReadingConsumed(payload: { id?: string; consumed?: bool
 }
 
 async function handleBuyPack(payload: { domain: string; minutes: number; colorFilter?: GuardrailColorFilter }) {
-    const safeMinutes = Math.max(1, Math.round(Number(payload.minutes)));
-    const configuredFilter = normalizeGuardrailColorFilter(payload.colorFilter ?? await storage.getGuardrailColorFilter());
-    const colorFilter = (await storage.getAlwaysGreyscale()) ? 'greyscale' : configuredFilter;
-    const colorMultiplier = getColorFilterPriceMultiplier(colorFilter);
-    const result = await preferDesktopPurchase('/paywall/packs', {
-        domain: payload.domain,
-        minutes: safeMinutes,
-        colorFilter
-    });
-    if (result.ok) return { success: true, session: result.session };
-
-    // Fallback to local
-    const rate = await storage.getMarketRate(payload.domain);
-    if (!rate) return { success: false, error: 'No rate configured for this domain' };
-    const pack = rate.packs.find(p => p.minutes === safeMinutes);
-    const basePrice = pack ? pack.price : Math.max(1, Math.round(safeMinutes * rate.ratePerMin));
-    const existing = await storage.getSession(payload.domain);
-    const chainCount = existing?.mode === 'pack' ? (existing.packChainCount ?? 1) : 0;
-    const multiplier = packChainMultiplier(chainCount);
-    const chargedPrice = Math.max(1, Math.round(basePrice * multiplier * colorMultiplier));
-    const effectiveRatePerMin = rate.ratePerMin * colorMultiplier;
-
-    try {
-        await storage.spendCoins(chargedPrice);
-        await queueWalletTransaction({
-            type: 'spend',
-            amount: chargedPrice,
-            meta: {
-                source: 'extension',
-                reason: 'pack-purchase',
-                domain: payload.domain,
-                minutes: safeMinutes,
-                basePrice,
-                chainCount,
-                chainMultiplier: multiplier,
-                colorFilter,
-                colorMultiplier
-            }
-        });
-        const now = Date.now();
-        const purchasedSeconds = safeMinutes * 60;
-        const existingPack = existing?.mode === 'pack' ? existing : null;
-        const session = existingPack
-            ? {
-                ...existingPack,
-                mode: 'pack' as const,
-                colorFilter,
-                ratePerMin: effectiveRatePerMin,
-                remainingSeconds: Math.max(0, existingPack.remainingSeconds) + purchasedSeconds,
-                lastTick: now,
-                paused: false,
-                spendRemainder: 0,
-                purchasePrice: (existingPack.purchasePrice ?? 0) + chargedPrice,
-                purchasedSeconds: (existingPack.purchasedSeconds ?? 0) + purchasedSeconds,
-                packChainCount: (existingPack.packChainCount ?? 1) + 1
-            }
-            : {
-                domain: payload.domain,
-                mode: 'pack' as const,
-                colorFilter,
-                ratePerMin: effectiveRatePerMin,
-                remainingSeconds: purchasedSeconds,
-                startedAt: now,
-                lastTick: now,
-                spendRemainder: 0,
-                purchasePrice: chargedPrice,
-                purchasedSeconds,
-                packChainCount: 1
-            };
-        await storage.setSession(payload.domain, session);
-        await storage.setLastFrivolityAt(Date.now());
-        await queueConsumptionEvent({
-            kind: 'frivolous-session',
-            title: payload.domain,
-            domain: payload.domain,
-            meta: {
-                mode: 'pack',
-                purchasePrice: chargedPrice,
-                basePrice,
-                purchasedSeconds,
-                chainCount,
-                chainMultiplier: multiplier,
-                colorFilter,
-                colorMultiplier
-            }
-        });
-        console.log(`✅ Purchased ${safeMinutes} minutes for ${payload.domain} (offline mode, ${chargedPrice} coins)`);
-        return { success: true, session };
-    } catch (error) {
-        return { success: false, error: (error as Error).message };
-    }
+    return paywallSessionCommands.buyPack(payload);
 }
 
 async function handleStartMetered(payload: { domain: string; colorFilter?: GuardrailColorFilter }) {
-    const configuredFilter = normalizeGuardrailColorFilter(payload.colorFilter ?? await storage.getGuardrailColorFilter());
-    const colorFilter = (await storage.getAlwaysGreyscale()) ? 'greyscale' : configuredFilter;
-    const colorMultiplier = getColorFilterPriceMultiplier(colorFilter);
-    const result = await preferDesktopPurchase('/paywall/metered', { domain: payload.domain, colorFilter });
-    if (result.ok) return { success: true, session: result.session };
-
-    // Fallback to local
-    const rate = await storage.getMarketRate(payload.domain);
-    if (!rate) return { success: false, error: 'No rate configured for this domain' };
-
-    const meteredMultiplier = METERED_PREMIUM_MULTIPLIER * colorMultiplier;
-    const session = {
-        domain: payload.domain,
-        mode: 'metered' as const,
-        colorFilter,
-        ratePerMin: rate.ratePerMin * meteredMultiplier,
-        remainingSeconds: Infinity,
-        startedAt: Date.now(),
-        spendRemainder: 0,
-        meteredMultiplier
-    };
-
-    await storage.setSession(payload.domain, session);
-    await storage.setLastFrivolityAt(Date.now());
-    await queueConsumptionEvent({
-        kind: 'frivolous-session',
-        title: payload.domain,
-        domain: payload.domain,
-        meta: { mode: 'metered', colorFilter, colorMultiplier }
-    });
-    console.log(`✅ Started metered session for ${payload.domain} (offline mode)`);
-    return { success: true, session };
+    return paywallSessionCommands.startMetered(payload);
 }
 
 async function handlePauseSession(payload: { domain: string }) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'paywall:pause', payload }));
-    }
-    const session = await storage.getSession(payload.domain);
-    if (session) {
-        session.paused = true;
-        await storage.setSession(payload.domain, session);
-        return { success: true };
-    }
-    return { success: false, error: 'No session found' };
+    return paywallSessionCommands.pauseSession(payload);
 }
 
 async function handleResumeSession(payload: { domain: string }) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'paywall:resume', payload }));
-    }
-    const session = await storage.getSession(payload.domain);
-    if (session) {
-        session.paused = false;
-        await storage.setSession(payload.domain, session);
-        return { success: true };
-    }
-    return { success: false, error: 'No session found' };
+    return paywallSessionCommands.resumeSession(payload);
 }
 
 async function handleEndSession(payload: { domain: string }) {
-    const session = await storage.getSession(payload.domain);
-    if (!session) {
-        return { success: false, error: 'No session found' };
-    }
-
-    const refund = estimatePackRefund(session);
-
-    const canSignalDesktop = ws && ws.readyState === WebSocket.OPEN;
-    if (canSignalDesktop && ws) {
-        ws.send(JSON.stringify({ type: 'paywall:end', payload: { domain: payload.domain } }));
-    }
-
-    const desktopResult = canSignalDesktop ? { ok: true } : await preferDesktopEnd(payload.domain);
-    if (!desktopResult.ok) {
-        if (refund > 0) {
-            await storage.earnCoins(refund);
-            await queueWalletTransaction({
-                type: 'earn',
-                amount: refund,
-                meta: {
-                    source: 'extension',
-                    reason: 'pack-refund',
-                    domain: payload.domain
-                }
-            });
-        }
-    }
-
-    await storage.clearSession(payload.domain);
-
-    const activeTab = await getActiveHttpTab();
-    if (activeTab && activeTab.url && activeTab.id) {
-        const tabDomain = new URL(activeTab.url).hostname.replace(/^www\./, '');
-        if (tabDomain === payload.domain) {
-            await showBlockScreen(activeTab.id, payload.domain, 'ended', 'session-ended');
-        }
-    }
-
-    return { success: true, refund };
+    return paywallSessionCommands.endSession(payload);
 }
 
-async function handleStartEmergency(payload: { domain: string; justification: string; url?: string }) {
-    const desktopResult = await preferDesktopEmergency(payload);
-    if (desktopResult.ok) return { success: true, session: desktopResult.session };
-    if (!desktopResult.canFallback) return { success: false, error: desktopResult.error };
-
-    const state = await storage.getState();
-    const policyId = (state.settings.emergencyPolicy ?? 'balanced') as EmergencyPolicyId;
-    const policy = getEmergencyPolicyConfig(policyId);
-    if (policy.id === 'off') return { success: false, error: 'Emergency access is disabled in Settings.' };
-
-    const now = Date.now();
-    const today = new Date(now).toISOString().slice(0, 10);
-    const current = await storage.getEmergencyUsage();
-    const usage =
-        current.day === today
-            ? current
-            : { day: today, tokensUsed: 0, cooldownUntil: null };
-
-    if (usage.cooldownUntil && now < usage.cooldownUntil) {
-        const remainingMinutes = Math.max(1, Math.ceil((usage.cooldownUntil - now) / 60_000));
-        return { success: false, error: `Emergency cooldown active (${remainingMinutes}m remaining).` };
-    }
-    if (typeof policy.tokensPerDay === 'number' && usage.tokensUsed >= policy.tokensPerDay) {
-        return { success: false, error: `No emergency uses left today (${policy.tokensPerDay}/day).` };
-    }
-
-    const nextUsage = {
-        ...usage,
-        tokensUsed: usage.tokensUsed + (typeof policy.tokensPerDay === 'number' ? 1 : 0),
-        cooldownUntil: policy.cooldownSeconds > 0 ? now + policy.cooldownSeconds * 1000 : null
-    };
-    await storage.setEmergencyUsage(nextUsage);
-
-    const allowedUrl = policy.urlLocked && payload.url ? baseUrl(payload.url) : null;
-
-    // Fallback to local (offline). No "debt" cost is applied because the extension wallet can't go negative.
-    const session = {
-        domain: payload.domain,
-        mode: 'emergency' as const,
-        ratePerMin: 0,
-        remainingSeconds: Number.POSITIVE_INFINITY,
-        startedAt: now,
-        lastTick: now,
-        paused: false,
-        spendRemainder: 0,
-        justification: payload.justification,
-        lastReminder: now,
-        allowedUrl: allowedUrl ?? undefined
-    };
-
-    await storage.setSession(payload.domain, session);
-    await queueConsumptionEvent({
-        kind: 'emergency-session',
-        title: payload.domain,
-        url: allowedUrl ?? null,
-        domain: payload.domain,
-        meta: {
-            justification: payload.justification,
-            policy: policy.id,
-            durationSeconds: null
+async function handleStartEmergency(
+    payload: { domain: string; justification: string; url?: string },
+    sender?: chrome.runtime.MessageSender
+) {
+    const result = await emergencyCommands.startEmergency(payload, sender);
+    if (result?.success) {
+        const domain = normalizeDomainInput(payload?.domain ?? '');
+        if (domain) {
+            emergencyStartGraceByDomain.set(domain, Date.now() + EMERGENCY_START_GRACE_MS);
         }
-    });
-    console.log(`✅ Started emergency session for ${payload.domain} (offline mode)`);
-    return { success: true, session };
+    }
+    return result;
 }
 
-async function handleStartChallengePass(payload: {
-    domain?: string;
-    durationSeconds?: number;
-    solvedSquares?: number;
-    requiredSquares?: number;
-    elapsedSeconds?: number;
-}) {
-    const domain = typeof payload?.domain === 'string' ? payload.domain.trim() : '';
-    if (!domain) return { success: false, error: 'Missing domain' };
-
-    const durationSeconds = Number.isFinite(payload.durationSeconds)
-        ? Math.max(60, Math.min(3600, Math.round(payload.durationSeconds as number)))
-        : 12 * 60;
-    const solvedSquares = Number.isFinite(payload.solvedSquares) ? Math.max(0, Math.round(payload.solvedSquares as number)) : null;
-    const requiredSquares = Number.isFinite(payload.requiredSquares) ? Math.max(1, Math.round(payload.requiredSquares as number)) : null;
-    const elapsedSeconds = Number.isFinite(payload.elapsedSeconds) ? Math.max(1, Math.round(payload.elapsedSeconds as number)) : null;
-
-    const desktopResult = await preferDesktopChallengePass({
-        domain,
-        durationSeconds,
-        solvedSquares: solvedSquares ?? undefined,
-        requiredSquares: requiredSquares ?? undefined,
-        elapsedSeconds: elapsedSeconds ?? undefined
-    });
-    if (desktopResult.ok) return { success: true, session: desktopResult.session };
-
-    const now = Date.now();
-    const session = {
-        domain,
-        mode: 'emergency' as const,
-        ratePerMin: 0,
-        remainingSeconds: durationSeconds,
-        startedAt: now,
-        lastTick: now,
-        paused: false,
-        spendRemainder: 0,
-        justification: 'Sudoku challenge unlock',
-        lastReminder: now
-    };
-
-    await storage.setSession(domain, session);
-    await storage.setLastFrivolityAt(now);
-    await queueConsumptionEvent({
-        kind: 'emergency-session',
-        title: domain,
-        domain,
-        meta: {
-            source: 'sudoku-challenge',
-            durationSeconds,
-            solvedSquares,
-            requiredSquares,
-            elapsedSeconds
-        }
-    });
-    console.log(`✅ Started Sudoku challenge pass for ${domain} (${durationSeconds}s, offline mode)`);
-    return { success: true, session };
+async function handleEmergencyIntentDecision(
+    payload: { domain?: string; outcome?: 'intentional' | 'accident' },
+    sender?: chrome.runtime.MessageSender
+) {
+    return emergencyCommands.emergencyIntentDecision(payload, sender);
 }
 
 async function handleEmergencyReview(payload: { outcome: 'kept' | 'not-kept'; domain?: string }) {
-    const outcome = payload?.outcome;
-    if (outcome !== 'kept' && outcome !== 'not-kept') return { success: false, error: 'Invalid outcome' };
-
-    const stats = await storage.recordEmergencyReview(outcome);
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'paywall:emergency-review', payload: { outcome, domain: payload.domain } }));
-        return { success: true, stats };
-    }
-
-    try {
-        await fetch(`${DESKTOP_API_URL}/paywall/emergency-review`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ outcome }),
-            cache: 'no-store',
-        });
-    } catch {
-        // Desktop unreachable; local stats still recorded.
-    }
-
-    return { success: true, stats };
+    return emergencyCommands.emergencyReview(payload);
 }
 
 // Keep alive
 chrome.runtime.onStartup.addListener(() => {
-    storage.init();
+    void storage.rolloverIfNeeded();
     tryConnectToDesktop();
     setupContextMenus();
 });
